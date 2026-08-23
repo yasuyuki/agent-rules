@@ -1,0 +1,19 @@
+{
+  "comment": "Portable always-on rule placement relative to a workspace root.",
+  "tools": {
+    "cursor": {
+      "path": ".cursor/rules/agent-rules--{id}.mdc",
+      "frontmatter": {
+        "description": "@summary",
+        "alwaysApply": "true"
+      }
+    },
+    "claude": {
+      "path": ".claude/rules/agent-rules--{id}.md"
+    },
+    "codex": {
+      "path": "AGENTS.md",
+      "mode": "section"
+    }
+  }
+}
