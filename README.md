@@ -3,8 +3,9 @@
 Portable source rules and a deterministic renderer for Claude Code, Cursor,
 and Codex workspaces.
 
-This repository is a public alpha candidate. It is not yet the live source of
-truth for the maintainer's environments.
+This repository is the live portable source of truth for the maintainer's
+environments. Environment-specific topology and private bindings are managed
+separately.
 
 ## Requirements
 
