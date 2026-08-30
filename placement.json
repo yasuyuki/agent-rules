@@ -2,7 +2,8 @@
   "comment": "Portable always-on rule placement. conventions are file layouts; tools name CLIs and the conventions they read.",
   "conventions": {
     "claude-rules-dir": {
-      "path": ".claude/rules/agent-rules--{id}.md"
+      "path": ".claude/rules/agent-rules--{id}.md",
+      "home_path": "rules/agent-rules--{id}.md"
     },
     "cursor-rules-dir": {
       "path": ".cursor/rules/agent-rules--{id}.mdc",
@@ -13,6 +14,7 @@
     },
     "agents-md-section": {
       "path": "AGENTS.md",
+      "home_path": "AGENTS.md",
       "mode": "section"
     },
     "agents-rules-dir": {

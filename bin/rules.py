@@ -78,13 +78,14 @@ def body_for_convention(meta, common, bindings, conv_id, placement):
     return out
 
 
-def load_rules(placement):
+def load_rules(placement, rules_dir=None):
+    directory = RULES_DIR if rules_dir is None else rules_dir
     rules = []
     known = set(placement["tools"])
-    for name in sorted(os.listdir(RULES_DIR)):
+    for name in sorted(os.listdir(directory)):
         if not name.endswith(".rule.md"):
             continue
-        path = os.path.join(RULES_DIR, name)
+        path = os.path.join(directory, name)
         meta, common, bindings = parse_rule(path)
         if meta["id"] != name[: -len(".rule.md")]:
             raise SystemExit("%s: id does not match the file name" % path)
@@ -99,7 +100,21 @@ def load_rules(placement):
             raise SystemExit("%s: binding for a tool not in tools: %s" % (path, sorted(unknown)))
         rules.append((meta, common, bindings))
     if not rules:
-        raise SystemExit("no rules found in %s" % RULES_DIR)
+        raise SystemExit("no rules found in %s" % directory)
+    return rules
+
+
+def load_rule_dirs(placement, rules_dirs):
+    rules, seen = [], set()
+    for rules_dir in rules_dirs:
+        for item in load_rules(placement, rules_dir):
+            rule_id = item[0]["id"]
+            if rule_id in seen:
+                raise SystemExit("duplicate rule id '%s'" % rule_id)
+            seen.add(rule_id)
+            rules.append(item)
+    if not rules:
+        raise SystemExit("no rules found in %s" % rules_dirs)
     return rules
 
 
