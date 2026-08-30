@@ -345,7 +345,8 @@ def render_sections(path, blocks):
 
 def check_state(rules, placement, locations, exceptions, sites, workspaces, all_locations):
     errors = []
-    files, sections = expected_writes(rules, placement, locations, exceptions, sites, workspaces)
+    reachable = [loc for loc in locations if site_reachable(sites[site_of(loc, workspaces)])]
+    files, sections = expected_writes(rules, placement, reachable, exceptions, sites, workspaces)
     printed = []
     for loc in locations:
         if loc["scope"] == "workspace":
