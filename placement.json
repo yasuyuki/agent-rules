@@ -30,7 +30,11 @@
         "env": "CLAUDE_CONFIG_DIR"
       },
       "reads": ["claude-rules-dir"],
-      "hooks": {"kind": "unverified"}
+      "hooks": {
+        "kind": "settings",
+        "path": "settings.json",
+        "events": ["PreToolUse", "PostToolUse", "Stop", "SessionEnd"]
+      }
     },
     "codex": {
       "entrypoint": "codex",
@@ -40,7 +44,10 @@
         "env": "CODEX_HOME"
       },
       "reads": ["agents-md-section"],
-      "hooks": {"kind": "unverified"}
+      "hooks": {
+        "kind": "none",
+        "reason": "CLI admits hooks (--dangerously-bypass-hook-trust) but no hooks file or documented path was found"
+      }
     },
     "cursor-agent": {
       "entrypoint": "cursor-agent",
@@ -49,7 +56,11 @@
         "default": "$HOME/.cursor"
       },
       "reads": ["cursor-rules-dir"],
-      "hooks": {"kind": "unverified"}
+      "hooks": {
+        "kind": "hooks.json",
+        "path": "hooks.json",
+        "events": ["observe", "block", "modify"]
+      }
     },
     "agy": {
       "entrypoint": "agy",
@@ -58,7 +69,10 @@
         "default": "$HOME/.gemini"
       },
       "reads": ["agents-md-section"],
-      "hooks": {"kind": "unverified"}
+      "hooks": {
+        "kind": "none",
+        "reason": "agy --help has no hook surface; session check is the recording gate"
+      }
     },
     "opencode": {
       "entrypoint": "opencode",
@@ -67,7 +81,10 @@
         "default": "$HOME/.opencode"
       },
       "reads": ["agents-md-section", "agents-rules-dir"],
-      "hooks": {"kind": "unverified"}
+      "hooks": {
+        "kind": "none",
+        "reason": "opencode --help has no hook surface; session check is the recording gate"
+      }
     }
   }
 }

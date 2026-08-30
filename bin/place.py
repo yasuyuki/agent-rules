@@ -59,6 +59,8 @@ def markdown_tsv(path, name, source=None):
     rows = []
     for line in lines[1:]:
         values = line.split("\t")
+        if len(values) < len(header):
+            values.extend([""] * (len(header) - len(values)))
         if len(values) != len(header):
             raise PlacementError("%s: malformed %s TSV row: %s" % (path, name, line))
         rows.append(dict(zip(header, values)))
@@ -408,6 +410,20 @@ def check_state(rules, placement, locations, exceptions, sites, workspaces, all_
                 errors.append("duplicate section '%s' in %s" % (rule_id, dest))
             elif actual[0] != blocks[rule_id]:
                 errors.append("section '%s' differs from canonical in %s" % (rule_id, dest))
+    for loc in reachable:
+        if loc["scope"] not in ("skills", "hooks") or loc["requirement"] != "required":
+            continue
+        target = loc.get("path", "").strip()
+        if not target:
+            errors.append("%s: required %s location has no path" % (loc["id"], loc["scope"]))
+            continue
+        try:
+            present = Path(target).exists()
+        except OSError:
+            errors.append("unreadable: %s" % target)
+            continue
+        if not present:
+            errors.append("missing: %s" % target)
     for site_id, site in sites.items():
         if not site_reachable(site):
             continue
