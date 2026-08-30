@@ -1,5 +1,8 @@
 from pathlib import Path
 import importlib.util
+import json
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -75,3 +78,64 @@ with tempfile.TemporaryDirectory() as directory:
     agents.write_text(text + "\n<!-- agent-rules:begin orphan -->\n", encoding="utf-8")
     run(workspace, "verify", expected=1)
     run(workspace, "render", expected=1)
+
+
+# A sixth tool that only reads existing conventions does not require a rules.py change.
+with tempfile.TemporaryDirectory() as directory:
+    dest = Path(directory) / "src"
+    (dest / "bin").mkdir(parents=True)
+    shutil.copy(RULES, dest / "bin" / "rules.py")
+    shutil.copytree(ROOT / "rules", dest / "rules")
+    placement = json.loads((ROOT / "placement.json").read_text(encoding="utf-8"))
+    placement["tools"]["extra"] = {
+        "entrypoint": "extra",
+        "credential": "$HOME/.extra/auth.json",
+        "configHome": {"default": "$HOME/.extra"},
+        "reads": ["agents-md-section"],
+        "hooks": {"kind": "unverified"},
+    }
+    (dest / "placement.json").write_text(json.dumps(placement), encoding="utf-8")
+    extra_rules = dest / "bin" / "rules.py"
+    workspace = Path(directory) / "ws"
+    for command in ("render", "verify"):
+        result = subprocess.run(
+            [sys.executable, str(extra_rules), command, str(workspace)],
+            cwd=dest,
+            text=True,
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            raise AssertionError(
+                f"sixth-tool {command} returned {result.returncode}\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
+
+
+# cli-status.sh (entrypoint, credential) pairs must match placement.json when the
+# sibling checkout is present. Public CI of this repo alone skips the file.
+cli_status = ROOT.parent / "wsl-agent-lifecycle" / "cli-status.sh"
+if cli_status.is_file():
+    text = cli_status.read_text(encoding="utf-8")
+    match = re.search(r'\nclis="(.*?)"', text, re.S)
+    if not match:
+        raise AssertionError("cli-status.sh: missing clis assignment")
+    pairs = {}
+    for line in match.group(1).splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        name, credential = line.split(None, 1)
+        pairs[name] = credential
+    placement = json.loads((ROOT / "placement.json").read_text(encoding="utf-8"))
+    for name, credential in pairs.items():
+        tool = placement["tools"][name]
+        if tool["entrypoint"] != name or tool["credential"] != credential:
+            raise AssertionError(
+                f"{name}: placement.json {(tool['entrypoint'], tool['credential'])} "
+                f"!= cli-status.sh {(name, credential)}"
+            )
+    if set(pairs) != set(placement["tools"]):
+        raise AssertionError(
+            f"tool ids differ: placement {sorted(placement['tools'])} "
+            f"cli-status {sorted(pairs)}"
+        )

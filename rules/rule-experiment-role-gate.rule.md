@@ -2,7 +2,6 @@
 id: rule-experiment-role-gate
 title: Rule experiment role gate
 summary: 実験の controller と subject の責務を分離し、baseline・測定・variant を越境変更しない。
-tools: [cursor, claude, codex]
 ---
 
 rule experiment では、最初に phase metadata の executor を読む。

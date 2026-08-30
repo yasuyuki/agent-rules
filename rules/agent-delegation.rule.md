@@ -2,7 +2,6 @@
 id: agent-delegation
 title: エージェント委譲
 summary: 独立して成果を改善する作業だけを委譲し、リードが統合と最終判定を担う。
-tools: [cursor, claude, codex]
 ---
 
 委譲は、独立して実行でき、品質または完了速度を実質的に改善するときだけ使う。些細な作業、

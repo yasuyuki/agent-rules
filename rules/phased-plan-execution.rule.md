@@ -2,7 +2,6 @@
 id: phased-plan-execution
 title: フェーズ分割プランの実行
 summary: 名指しされたフェーズだけを実行し、受け入れ条件は追跡ファイルの1行にする。完了は記録せず文書を削除する。
-tools: [cursor, claude, codex]
 ---
 
 `<repo>/.claude/plan-phases/<slug>/` にフェーズファイルがある作業では、ユーザーが該当 phase を
