@@ -310,7 +310,10 @@ def restore(manifest, backup_root):
 def site_reachable(site):
     if site.get("reach") == "absent":
         return False
-    return Path(site["home"]).exists()
+    try:
+        return Path(site["home"]).exists()
+    except OSError:
+        return False
 
 
 def detect_cli(site, spec):
@@ -321,8 +324,11 @@ def detect_cli(site, spec):
         names.append(entry + ".exe")
     for name in names:
         for rel in (Path(".local") / "bin" / name, Path("bin") / name, Path(".opencode") / "bin" / name):
-            if (home / rel).is_file():
-                return True
+            try:
+                if (home / rel).is_file():
+                    return True
+            except OSError:
+                continue
     return False
 
 
