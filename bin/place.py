@@ -198,8 +198,10 @@ def expected_writes(rules, placement, locations, exceptions, sites, workspaces):
 
 def managed_dir(location, conv_id, placement, sites, workspaces):
     spec = placement["conventions"][conv_id]
+    if spec.get("mode") == "section":
+        return None
     template = spec.get("home_path") if location["scope"] == "home" else spec.get("path", "")
-    if spec.get("mode") == "section" or "{id}" not in template:
+    if not template or "{id}" not in template:
         return None
     sample = location_file(location, conv_id, "x", placement, sites, workspaces)
     return sample.parent if sample else None
