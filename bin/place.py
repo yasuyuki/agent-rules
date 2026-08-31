@@ -334,6 +334,22 @@ def detect_cli(site, spec):
     return False
 
 
+def hooks_errors(location, target, placement):
+    """An existing hooks file still has to declare hooks."""
+    kind = placement["tools"].get(location["tool"], {}).get("hooks", {}).get("kind")
+    if kind == "none":
+        return ["%s: %s has no hooks surface" % (location["id"], location["tool"])]
+    if kind != "settings":
+        return []
+    try:
+        settings = json.loads(Path(target).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        return ["%s: unreadable settings %s (%s)" % (location["id"], target, error)]
+    if not isinstance(settings, dict) or not settings.get("hooks"):
+        return ["%s: no hooks declared in %s" % (location["id"], target)]
+    return []
+
+
 def declared_tools(locations, workspaces, site_id):
     found = set()
     for loc in locations.values():
@@ -424,6 +440,9 @@ def check_state(rules, placement, locations, exceptions, sites, workspaces, all_
             continue
         if not present:
             errors.append("missing: %s" % target)
+            continue
+        if loc["scope"] == "hooks":
+            errors.extend(hooks_errors(loc, target, placement))
     for site_id, site in sites.items():
         if not site_reachable(site):
             continue
@@ -536,6 +555,9 @@ def selfcheck(_args):
         root = Path(temporary)
         home, workspace = root / "home", root / "ws"
         home.mkdir()
+        (home / ".claude").mkdir()
+        settings = home / ".claude" / "settings.json"
+        settings.write_text('{"hooks": {"Stop": []}}', encoding="utf-8")
         (home / ".local" / "bin").mkdir(parents=True)
         (home / ".local" / "bin" / "claude").write_text("", encoding="utf-8")
         (home / ".local" / "bin" / "cursor-agent").write_text("", encoding="utf-8")
@@ -569,6 +591,12 @@ def selfcheck(_args):
         if not check(ns):
             raise PlacementError("selfcheck accepted an undeclared installed CLI")
         (home / ".local" / "bin" / "codex").unlink()
+        settings.write_text('{"theme": "dark"}', encoding="utf-8")
+        if not check(ns):
+            raise PlacementError("selfcheck accepted a hooks location without hooks")
+        settings.write_text('{"hooks": {"Stop": []}}', encoding="utf-8")
+        if check(ns):
+            raise PlacementError("selfcheck still failing after hooks returned")
         generated = workspace / ".cursor" / "rules" / "agent-rules--beta.mdc"
         generated.write_bytes(generated.read_bytes() + b"changed\n")
         if not check(ns):
