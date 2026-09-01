@@ -40,54 +40,93 @@ def parse_rule(path):
         if value.startswith("[") and value.endswith("]"):
             value = [item.strip() for item in value[1:-1].split(",") if item.strip()]
         meta[key] = value
-    for required in ("id", "title", "summary", "tools"):
+    for required in ("id", "title", "summary"):
         if required not in meta:
             raise SystemExit("%s: frontmatter is missing '%s'" % (path, required))
 
     parts = re.split(r"^<!-- binding: ([a-z0-9-]+) -->$", match.group(2), flags=re.M)
     bindings = {parts[i]: parts[i + 1] for i in range(1, len(parts), 2)}
-    unknown = set(bindings) - set(meta["tools"])
-    if unknown:
-        raise SystemExit("%s: binding for a tool not in tools: %s" % (path, sorted(unknown)))
     return meta, parts[0], bindings
 
 
-def body_for(meta, common, bindings, tool):
-    """The rule text a given tool receives: shared policy, then its binding."""
+def selected_tools(meta, placement):
+    names = meta.get("tools")
+    if not names:
+        return list(placement["tools"])
+    return names
+
+
+def convention_ids_for(meta, placement):
+    seen = []
+    for tool in selected_tools(meta, placement):
+        spec = placement["tools"].get(tool)
+        if spec is None:
+            raise SystemExit("placement.json has no entry for tool '%s'" % tool)
+        for conv_id in spec["reads"]:
+            if conv_id not in placement["conventions"]:
+                raise SystemExit("placement.json has no convention '%s'" % conv_id)
+            if conv_id not in seen:
+                seen.append(conv_id)
+    return seen
+
+
+def body_for_convention(meta, common, bindings, conv_id, placement):
     out = "# %s\n\n%s\n" % (meta["title"], common.strip())
-    if tool in bindings:
-        out += "\n%s\n" % bindings[tool].strip()
+    for tool in selected_tools(meta, placement):
+        if conv_id in placement["tools"][tool]["reads"] and tool in bindings:
+            out += "\n%s\n" % bindings[tool].strip()
     return out
 
 
-def load_rules():
+def load_rules(placement, rules_dir=None):
+    directory = RULES_DIR if rules_dir is None else rules_dir
     rules = []
-    for name in sorted(os.listdir(RULES_DIR)):
+    known = set(placement["tools"])
+    for name in sorted(os.listdir(directory)):
         if not name.endswith(".rule.md"):
             continue
-        path = os.path.join(RULES_DIR, name)
+        path = os.path.join(directory, name)
         meta, common, bindings = parse_rule(path)
         if meta["id"] != name[: -len(".rule.md")]:
             raise SystemExit("%s: id does not match the file name" % path)
         if not re.fullmatch(r"[a-z0-9-]+", meta["id"]):
             raise SystemExit("%s: id must contain only lowercase letters, digits, and hyphens" % path)
+        allowed = set(selected_tools(meta, placement))
+        missing = allowed - known
+        if missing:
+            raise SystemExit("%s: unknown tools: %s" % (path, sorted(missing)))
+        unknown = set(bindings) - allowed
+        if unknown:
+            raise SystemExit("%s: binding for a tool not in tools: %s" % (path, sorted(unknown)))
         rules.append((meta, common, bindings))
     if not rules:
-        raise SystemExit("no rules found in %s" % RULES_DIR)
+        raise SystemExit("no rules found in %s" % directory)
+    return rules
+
+
+def load_rule_dirs(placement, rules_dirs):
+    rules, seen = [], set()
+    for rules_dir in rules_dirs:
+        for item in load_rules(placement, rules_dir):
+            rule_id = item[0]["id"]
+            if rule_id in seen:
+                raise SystemExit("duplicate rule id '%s'" % rule_id)
+            seen.add(rule_id)
+            rules.append(item)
+    if not rules:
+        raise SystemExit("no rules found in %s" % rules_dirs)
     return rules
 
 
 def expected_files(rules, placement):
-    """(path, content) for every tool that writes one file per rule."""
+    """(path, content) for every convention that writes one file per rule."""
     out = {}
     for meta, common, bindings in rules:
-        for tool in meta["tools"]:
-            spec = placement["tools"].get(tool)
-            if spec is None:
-                raise SystemExit("placement.json has no entry for tool '%s'" % tool)
+        for conv_id in convention_ids_for(meta, placement):
+            spec = placement["conventions"][conv_id]
             if spec.get("mode") == "section":
                 continue
-            body = body_for(meta, common, bindings, tool)
+            body = body_for_convention(meta, common, bindings, conv_id, placement)
             if spec.get("frontmatter"):
                 header = "".join(
                     "%s: %s\n" % (key, meta["summary"] if value == "@summary" else value)
@@ -99,15 +138,15 @@ def expected_files(rules, placement):
 
 
 def expected_sections(rules, placement):
-    """(file, {id: content}) for tools that splice sections into one shared file."""
+    """(file, {id: content}) for conventions that splice sections into one shared file."""
     out = {}
     for meta, common, bindings in rules:
-        for tool in meta["tools"]:
-            spec = placement["tools"][tool]
+        for conv_id in convention_ids_for(meta, placement):
+            spec = placement["conventions"][conv_id]
             if spec.get("mode") != "section":
                 continue
-            out.setdefault(spec["path"], {})[meta["id"]] = body_for(
-                meta, common, bindings, tool
+            out.setdefault(spec["path"], {})[meta["id"]] = body_for_convention(
+                meta, common, bindings, conv_id, placement
             )
     return out
 
@@ -174,19 +213,23 @@ def write(path, content):
         handle.write(content)
 
 
+def convention_specs(placement):
+    return placement["conventions"].values()
+
+
 def main(argv):
     if len(argv) != 3 or argv[1] not in ("render", "verify"):
         raise SystemExit(__doc__)
     command, workspace = argv[1], os.path.abspath(argv[2])
     with open(PLACEMENT, encoding="utf-8") as handle:
         placement = json.load(handle)
-    rules = load_rules()
+    rules = load_rules(placement)
     files = expected_files(rules, placement)
     sections = expected_sections(rules, placement)
 
     if command == "render":
         expected_paths = set(files)
-        for spec in placement["tools"].values():
+        for spec in convention_specs(placement):
             template = spec.get("path", "")
             if spec.get("mode") == "section" or "{id}" not in template:
                 continue
@@ -219,7 +262,7 @@ def main(argv):
         elif actual != content:
             drift.append("differs from canonical: %s" % relative)
     expected_paths = set(files)
-    for spec in placement["tools"].values():
+    for spec in convention_specs(placement):
         template = spec.get("path", "")
         if spec.get("mode") == "section" or "{id}" not in template:
             continue

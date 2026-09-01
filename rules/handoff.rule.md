@@ -2,7 +2,6 @@
 id: handoff
 title: HANDOFF.md と ISSUES.md
 summary: 作業状態は HANDOFF.md、未着手の具体的な欠陥は ISSUES.md に現在形で維持する。対象は上へ辿って最初の1つ。
-tools: [cursor, claude, codex]
 ---
 
 会話の文脈を失っても、`HANDOFF.md` だけで再開できる状態を保つ。

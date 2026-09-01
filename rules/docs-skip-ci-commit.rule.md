@@ -2,7 +2,6 @@
 id: docs-skip-ci-commit
 title: ドキュメントのみ更新時の CI スキップ
 summary: ドキュメントだけのコミットには [skip ci] を含め、コードまたは設定を含むコミットには付けない。
-tools: [cursor, claude, codex]
 ---
 
 変更がドキュメントだけのコミットでは、CI を起動しないよう commit message の件名または本文に

@@ -2,7 +2,6 @@
 id: git-commit-policy
 title: Git commit の既定
 summary: 完了して検証済みの自分の変更だけを commit し、push・履歴操作・曖昧な差分はユーザー判断へ回す。
-tools: [cursor, claude, codex]
 ---
 
 作業が完了し、ユーザーに判断を仰ぐ理由がなければ、ターンを終える前に commit する。commit するのは
