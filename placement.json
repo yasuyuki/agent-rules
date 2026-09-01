@@ -1,90 +1,19 @@
 {
-  "comment": "Portable always-on rule placement. conventions are file layouts; tools name CLIs and the conventions they read.",
-  "conventions": {
-    "claude-rules-dir": {
-      "path": ".claude/rules/agent-rules--{id}.md",
-      "home_path": "rules/agent-rules--{id}.md"
-    },
-    "cursor-rules-dir": {
+  "comment": "Portable always-on rule placement relative to a workspace root.",
+  "tools": {
+    "cursor": {
       "path": ".cursor/rules/agent-rules--{id}.mdc",
       "frontmatter": {
         "description": "@summary",
         "alwaysApply": "true"
       }
     },
-    "agents-md-section": {
-      "path": "AGENTS.md",
-      "home_path": "AGENTS.md",
-      "mode": "section"
-    },
-    "agents-rules-dir": {
-      "path": ".agents/rules/agent-rules--{id}.md"
-    }
-  },
-  "tools": {
     "claude": {
-      "entrypoint": "claude",
-      "credential": "$HOME/.claude/.credentials.json",
-      "configHome": {
-        "default": "$HOME/.claude",
-        "env": "CLAUDE_CONFIG_DIR"
-      },
-      "reads": ["claude-rules-dir"],
-      "hooks": {
-        "kind": "settings",
-        "path": "settings.json",
-        "events": ["PreToolUse", "PostToolUse", "Stop", "SessionEnd"]
-      }
+      "path": ".claude/rules/agent-rules--{id}.md"
     },
     "codex": {
-      "entrypoint": "codex",
-      "credential": "$HOME/.codex/auth.json",
-      "configHome": {
-        "default": "$HOME/.codex",
-        "env": "CODEX_HOME"
-      },
-      "reads": ["agents-md-section"],
-      "hooks": {
-        "kind": "none",
-        "reason": "CLI admits hooks (--dangerously-bypass-hook-trust) but no hooks file or documented path was found"
-      }
-    },
-    "cursor-agent": {
-      "entrypoint": "cursor-agent",
-      "credential": "$config/cursor/auth.json",
-      "configHome": {
-        "default": "$HOME/.cursor"
-      },
-      "reads": ["cursor-rules-dir"],
-      "hooks": {
-        "kind": "hooks.json",
-        "path": "hooks.json",
-        "events": ["observe", "block", "modify"]
-      }
-    },
-    "agy": {
-      "entrypoint": "agy",
-      "credential": "$HOME/.gemini/antigravity-cli/antigravity-oauth-token",
-      "configHome": {
-        "default": "$HOME/.gemini"
-      },
-      "reads": ["agents-md-section"],
-      "hooks": {
-        "kind": "none",
-        "reason": "agy --help has no hook surface; session check is the recording gate"
-      }
-    },
-    "opencode": {
-      "entrypoint": "opencode",
-      "credential": "$data/opencode/auth.json",
-      "configHome": {
-        "default": "$HOME/.opencode"
-      },
-      "reads": ["agents-md-section", "agents-rules-dir"],
-      "hooks": {
-        "kind": "none",
-        "reason": "opencode --help has no hook surface; session check is the recording gate"
-      }
+      "path": "AGENTS.md",
+      "mode": "section"
     }
   }
 }

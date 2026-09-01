@@ -2,7 +2,7 @@
 id: subagent-model-cost
 title: Subagent モデル選定
 summary: ユーザー指定を優先し、未指定時は親以下の能力帯を既定にして必要な場合だけ上げる。
-tools: [cursor-agent]
+tools: [cursor]
 ---
 
 subagent の model は原則として親 agent と同等以下にする。

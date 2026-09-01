@@ -2,6 +2,7 @@
 id: msw-necessity
 title: MSW 必要性規則
 summary: 要求の最小受け入れ条件を先に定め、必要または未証明な主張だけを最小の行動と証拠で閉じる。
+tools: [cursor, claude, codex]
 ---
 
 作業開始時に contract、すなわち要求された deliverable と最小受け入れ条件を定義する。計画、変更、

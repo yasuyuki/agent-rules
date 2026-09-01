@@ -2,6 +2,7 @@
 id: proactive-commit
 title: 積極的なコミット
 summary: 検証済みで一つの意図にまとまった変更は、保留指示や判断事項がなければ積極的にコミットする。
+tools: [cursor, claude, codex]
 ---
 
 ユーザーが commit を明示しなくても、受け入れ条件を満たす一つの意図の変更は commit する。
