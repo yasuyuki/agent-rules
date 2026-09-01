@@ -1,7 +1,7 @@
 ---
 id: handoff
-title: HANDOFF.md と ISSUES.md
-summary: 作業状態は HANDOFF.md、未着手の具体的な欠陥は ISSUES.md に現在形で維持する。対象は上へ辿って最初の1つ。
+title: HANDOFF.md と未解決台帳
+summary: 作業状態は HANDOFF.md。未着手の具体的な欠陥は ISSUES.md、または README が名指しした GitHub Issues。対象は上へ辿って最初の1つ。
 ---
 
 会話の文脈を失っても、`HANDOFF.md` だけで再開できる状態を保つ。
@@ -35,11 +35,20 @@ summary: 作業状態は HANDOFF.md、未着手の具体的な欠陥は ISSUES.m
 - 手順や恒久的知識は README または docs、設計判断はコードまたは設計文書、長いログと計測値は
   専用ファイルへ置く
 
-その場で直さない具体的な欠陥は `ISSUES.md` に1件1行で残す。置き場は `HANDOFF.md` と同じ
-規則に従い、同じ directory に1つだけ置く。形式は
-`- [!] <症状> — <場所: file:line またはサブシステム>。<再現条件>` とし、`[!]` は放置すると
-データを壊すかリリースを止めるものだけに使う。直した、または着手すると決めた問題は
-`ISSUES.md` から消し、後者は `HANDOFF.md` の「次にやること」へ移す。
+その場で直さない具体的な欠陥は、`HANDOFF.md` と同じ directory の未解決台帳に1件残す。
+台帳は次の順で決める。
+
+1. その directory に `ISSUES.md` があれば、そこに1件1行で書く。形式は
+   `- [!] <症状> — <場所: file:line またはサブシステム>。<再現条件>` とし、`[!]` は放置すると
+   データを壊すかリリースを止めるものだけに使う
+2. 無ければ、同じ directory の README が GitHub Issues を未解決台帳と書いていれば、その
+   repository に Issue を1件作る。title は症状、body は場所と再現条件。`[!]` 相当は
+   label `critical`。書けなければ `HANDOFF.md` の途中状態へ1行残し、`ISSUES.md` は作らない
+3. どちらも無ければ `ISSUES.md` を作って 1 へ戻る
+
+直した問題は台帳から除く（GitHub なら close）。着手すると決めた問題は
+`HANDOFF.md` の「次にやること」へ移し、GitHub Issue は open のままにする。
+両方に置かない。
 
 コード、設定、リポジトリ状態、開発環境を変えた、検証した、または方針を決めたときは、最終応答前に
 `HANDOFF.md` を更新して読み返す。追跡・ignore 方針を勝手に変えず、local-data store は commit しない。
