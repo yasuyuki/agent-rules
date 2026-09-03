@@ -2,7 +2,7 @@
 """Project rules onto the sites and workspaces a declaration names.
 
     place.py check  --declaration <path> --rules <dir> [--rules <dir>]
-    place.py apply  --declaration <path> --rules <dir> [--rules <dir>] --backup-root <dir>
+    place.py apply  --declaration <path> --rules <dir> [--rules <dir>]
     place.py selfcheck
 
 Optional --site / --workspace / --scope restrict which location rows apply.
@@ -11,7 +11,6 @@ Optional --site / --workspace / --scope restrict which location rows apply.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib.util
 import json
 import os
@@ -34,14 +33,6 @@ spec.loader.exec_module(agent_rules)
 
 class PlacementError(RuntimeError):
     pass
-
-
-def sha256(path):
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def markdown_tsv(path, name, source=None):
@@ -218,16 +209,6 @@ def atomic_write(path, content):
     os.replace(temporary, path)
 
 
-def overlap_roots(locations, sites, workspaces):
-    roots = []
-    for loc in locations:
-        if loc["scope"] == "workspace":
-            roots.append(Path(workspaces[loc["anchor"]]["path"]))
-        elif loc["scope"] == "home":
-            roots.append(Path(sites[loc["anchor"]]["home"]))
-    return roots
-
-
 def affected_targets(files, sections, locations, placement, sites, workspaces):
     targets = list(files) + list(sections)
     for loc in locations:
@@ -257,12 +238,7 @@ def affected_targets(files, sections, locations, placement, sites, workspaces):
     return unique
 
 
-def preflight_targets(targets, backup_root, extra_roots=()):
-    backup = backup_root.resolve(strict=False)
-    for target in list(targets) + list(extra_roots):
-        resolved = target.resolve(strict=False)
-        if backup == resolved or backup in resolved.parents or resolved in backup.parents:
-            raise PlacementError("backup root overlaps affected target: %s" % target)
+def preflight_targets(targets):
     for target in targets:
         if target.is_symlink():
             raise PlacementError("affected target is a symlink: %s" % target)
@@ -270,43 +246,40 @@ def preflight_targets(targets, backup_root, extra_roots=()):
             raise PlacementError("affected target contains a symlink: %s" % target)
 
 
-def snapshot(targets, backup_root):
-    manifest, store = [], backup_root / "items"
-    store.mkdir(parents=True)
-    for number, target in enumerate(targets):
-        entry = {"path": str(target), "store": str(number), "kind": "missing"}
-        destination = store / str(number)
+def snapshot(targets):
+    shots = {}
+    for target in targets:
         if target.is_file():
-            entry.update(kind="file", sha256=sha256(target))
-            shutil.copy2(target, destination)
+            shots[target] = target.read_bytes()
         elif target.is_dir():
-            entry["kind"] = "dir"
-            shutil.copytree(target, destination)
-            entry["files"] = {
-                str(path.relative_to(target)): sha256(path)
+            shots[target] = {
+                path.relative_to(target).as_posix(): path.read_bytes()
                 for path in target.rglob("*")
                 if path.is_file()
             }
-        manifest.append(entry)
-    (backup_root / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    return manifest
+        else:
+            shots[target] = None
+    return shots
 
 
-def restore(manifest, backup_root):
-    for entry in manifest:
-        target = Path(entry["path"])
+def restore(shots):
+    for target, data in shots.items():
         if target.exists() or target.is_symlink():
             if target.is_dir() and not target.is_symlink():
                 shutil.rmtree(target)
             else:
                 target.unlink()
-        source = backup_root / "items" / entry["store"]
-        if entry["kind"] == "file":
+        if data is None:
+            continue
+        if isinstance(data, bytes):
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
-        elif entry["kind"] == "dir":
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(source, target)
+            target.write_bytes(data)
+            continue
+        target.mkdir(parents=True, exist_ok=True)
+        for rel, content in data.items():
+            dest = target.joinpath(*rel.split("/"))
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(content)
 
 
 def site_reachable(site):
@@ -515,15 +488,11 @@ def check(args):
 
 
 def apply(args):
-    backup_root = Path(args.backup_root)
-    if backup_root.exists():
-        raise PlacementError("backup root must not already exist: %s" % backup_root)
     placement, rules, sites, workspaces, locations, exceptions, selected = load_context(args)
     files, sections = expected_writes(rules, placement, selected, exceptions, sites, workspaces)
     targets = affected_targets(files, sections, selected, placement, sites, workspaces)
-    preflight_targets(targets, backup_root, overlap_roots(selected, sites, workspaces))
-    backup_root.mkdir(parents=True)
-    manifest = snapshot(targets, backup_root)
+    preflight_targets(targets)
+    shots = snapshot(targets)
     try:
         apply_projection(rules, placement, selected, exceptions, sites, workspaces)
         forced_failure = os.environ.get("PLACE_FORCE_POSTCHECK_FAILURE")
@@ -535,9 +504,9 @@ def apply(args):
         if errors:
             raise PlacementError("post-check failed: " + "; ".join(errors))
     except (Exception, KeyboardInterrupt):
-        restore(manifest, backup_root)
+        restore(shots)
         raise
-    print("place: applied; backup at %s" % backup_root)
+    print("place: applied")
     return 0
 
 
@@ -574,7 +543,6 @@ def selfcheck(_args):
         ns = argparse.Namespace(
             declaration=str(decl_path),
             rules=[str(public_rules), str(private_rules)],
-            backup_root=str(root / "backup"),
             site=None,
             workspace=None,
             scope=None,
@@ -604,67 +572,42 @@ def selfcheck(_args):
         generated.write_bytes(generated.read_bytes() + b"changed\n")
         if not check(ns):
             raise PlacementError("selfcheck accepted drift")
-        apply(argparse.Namespace(
-            declaration=str(decl_path),
-            rules=ns.rules,
-            backup_root=str(root / "backup-fix"),
-            site=None,
-            workspace=None,
-            scope=None,
-        ))
+        apply(ns)
         if check(ns):
             raise PlacementError("selfcheck apply did not repair drift")
-        try:
-            apply(argparse.Namespace(
-                declaration=str(decl_path),
-                rules=ns.rules,
-                backup_root=str(workspace / "overlap"),
-                site=None,
-                workspace=None,
-                scope=None,
-            ))
-        except PlacementError:
-            pass
-        else:
-            raise PlacementError("selfcheck accepted overlapping backup")
+        leftover = workspace / "unmanaged.md"
+        leftover.write_text("keep\n", encoding="utf-8")
         os.environ["PLACE_FORCE_POSTCHECK_FAILURE"] = "1"
         try:
             try:
-                apply(argparse.Namespace(
-                    declaration=str(decl_path),
-                    rules=ns.rules,
-                    backup_root=str(root / "rollback"),
-                    site=None,
-                    workspace=None,
-                    scope=None,
-                ))
+                apply(ns)
             except PlacementError:
                 pass
             else:
                 raise PlacementError("selfcheck forced failure did not raise")
         finally:
             os.environ.pop("PLACE_FORCE_POSTCHECK_FAILURE", None)
-        if check(ns):
+        if leftover.read_text(encoding="utf-8") != "keep\n":
             raise PlacementError("selfcheck rollback did not restore")
+        leftover.unlink()
+        if check(ns):
+            raise PlacementError("selfcheck still failing after rollback")
+        leftover.write_text("keep\n", encoding="utf-8")
         os.environ["PLACE_FORCE_POSTCHECK_FAILURE"] = "interrupt"
         try:
             try:
-                apply(argparse.Namespace(
-                    declaration=str(decl_path),
-                    rules=ns.rules,
-                    backup_root=str(root / "rollback-interrupt"),
-                    site=None,
-                    workspace=None,
-                    scope=None,
-                ))
+                apply(ns)
             except KeyboardInterrupt:
                 pass
             else:
                 raise PlacementError("selfcheck forced interrupt did not raise")
         finally:
             os.environ.pop("PLACE_FORCE_POSTCHECK_FAILURE", None)
-        if check(ns):
+        if leftover.read_text(encoding="utf-8") != "keep\n":
             raise PlacementError("selfcheck interrupt did not restore")
+        leftover.unlink()
+        if check(ns):
+            raise PlacementError("selfcheck still failing after interrupt restore")
     print("place: selfcheck OK")
     return 0
 
@@ -684,7 +627,6 @@ def main(argv):
     add_common(check_p)
     apply_p = sub.add_parser("apply")
     add_common(apply_p)
-    apply_p.add_argument("--backup-root", required=True)
     sub.add_parser("selfcheck")
     args = parser.parse_args(argv)
     try:

@@ -36,13 +36,14 @@ Project those same bytes onto a private site/workspace declaration:
 
 ```console
 python3 bin/place.py check --declaration PLACEMENT.md --rules rules
-python3 bin/place.py apply --declaration PLACEMENT.md --rules rules --backup-root <new-directory>
+python3 bin/place.py apply --declaration PLACEMENT.md --rules rules
 python3 bin/place.py selfcheck
 ```
 
 `place.py` takes no machine paths of its own. Repeat `--rules` for a second
 rule directory. `--site`, `--workspace`, and `--scope` restrict which
-declaration rows apply.
+declaration rows apply. `apply` keeps a process-memory snapshot of affected
+targets and restores it if the post-check fails.
 
 Unrelated rule files and root instructions are outside that namespace and are
 left untouched. A malformed unmatched managed marker fails closed; repair that
