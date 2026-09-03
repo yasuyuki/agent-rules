@@ -526,12 +526,15 @@ def apply(args):
     manifest = snapshot(targets, backup_root)
     try:
         apply_projection(rules, placement, selected, exceptions, sites, workspaces)
-        if os.environ.get("PLACE_FORCE_POSTCHECK_FAILURE"):
+        forced_failure = os.environ.get("PLACE_FORCE_POSTCHECK_FAILURE")
+        if forced_failure == "interrupt":
+            raise KeyboardInterrupt()
+        if forced_failure:
             raise PlacementError("forced post-check failure")
         errors, _ = check_state(rules, placement, selected, exceptions, sites, workspaces, locations)
         if errors:
             raise PlacementError("post-check failed: " + "; ".join(errors))
-    except Exception:
+    except (Exception, KeyboardInterrupt):
         restore(manifest, backup_root)
         raise
     print("place: applied; backup at %s" % backup_root)
@@ -643,6 +646,25 @@ def selfcheck(_args):
             os.environ.pop("PLACE_FORCE_POSTCHECK_FAILURE", None)
         if check(ns):
             raise PlacementError("selfcheck rollback did not restore")
+        os.environ["PLACE_FORCE_POSTCHECK_FAILURE"] = "interrupt"
+        try:
+            try:
+                apply(argparse.Namespace(
+                    declaration=str(decl_path),
+                    rules=ns.rules,
+                    backup_root=str(root / "rollback-interrupt"),
+                    site=None,
+                    workspace=None,
+                    scope=None,
+                ))
+            except KeyboardInterrupt:
+                pass
+            else:
+                raise PlacementError("selfcheck forced interrupt did not raise")
+        finally:
+            os.environ.pop("PLACE_FORCE_POSTCHECK_FAILURE", None)
+        if check(ns):
+            raise PlacementError("selfcheck interrupt did not restore")
     print("place: selfcheck OK")
     return 0
 
