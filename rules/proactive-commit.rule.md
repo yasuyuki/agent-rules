@@ -12,8 +12,9 @@ summary: 検証済みで一つの意図にまとまった変更は、保留指�
 1. 変更が機能、修正、またはリファクタなど一つの意図にまとまっている
 2. 必須のテスト、build、または指定された検証が通っている。検証不要な変更ならその理由が明確である
 3. 秘密情報、ignore 対象、または一時的なデバッグ残骸を含まない
-4. push、tag、release、履歴書き換えを含まない
+4. tag、release、履歴書き換えを含まない
 
 無関係な変更の混在、検証方法の不明、秘密情報の疑い、未完了または失敗した検証、ユーザーによる
 保留指示があるときは、勝手にまとめず判断を仰ぐ。commit の対象、stage 方法、message、docs-only の
 CI スキップ、subagent の禁止事項は `git-commit-policy` と `docs-skip-ci-commit` に従う。
+commit 後の push の要否も `git-commit-policy` に従う。

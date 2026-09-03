@@ -1,7 +1,7 @@
 ---
 id: git-commit-policy
 title: Git commit の既定
-summary: 完了して検証済みの自分の変更だけを commit し、push・履歴操作・曖昧な差分はユーザー判断へ回す。
+summary: 完了して検証済みの自分の変更だけを commit し、OSS または private repository の topic branch では原則 push する。
 ---
 
 作業が完了し、ユーザーに判断を仰ぐ理由がなければ、ターンを終える前に commit する。commit するのは
@@ -15,7 +15,12 @@ commit は次をすべて満たすときだけ行う。
 - 無関係な変更または作業前からの dirty state と混在していない
 - ユーザーが保留を指示していない
 
-push、force、rebase、reset、tag、release、または履歴の書き換えは commit と別の操作であり、明示的な
-ユーザー承認が必要である。`git add -A` と `git commit -a` で他者の変更を巻き込まない。ドキュメント
-だけの commit には `docs-skip-ci-commit` に従い `[skip ci]` を含め、コードまたは設定を含む commit には
-付けない。完了報告には commit SHA を記す。
+push は原則として、ユーザーの指示があるか作業上必要になるまで行わない。ただし、対象が OSS または
+private repository で、作業を topic branch で行った場合は、commit 後にその commit をその場で push
+する。作業上の一時的な状態記録を目的とし、後で消える可能性がある commit は push しない。push 先を
+既存設定から一意に決められない場合は、推測せずユーザーへ確認する。
+
+force push、rebase、reset、tag、release、または履歴の書き換えは commit や通常の push と別の操作で
+あり、明示的なユーザー承認が必要である。`git add -A` と `git commit -a` で他者の変更を巻き込まない。
+ドキュメントだけの commit には `docs-skip-ci-commit` に従い `[skip ci]` を含め、コードまたは設定を
+含む commit には付けない。完了報告には commit SHA と、push した場合は push 先を記す。
