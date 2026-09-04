@@ -62,7 +62,7 @@ def convention_ids_for(meta, placement):
         spec = placement["tools"].get(tool)
         if spec is None:
             raise SystemExit("placement.json has no entry for tool '%s'" % tool)
-        for conv_id in spec["reads"]:
+        for conv_id in spec["reads"]["rules"]:
             if conv_id not in placement["conventions"]:
                 raise SystemExit("placement.json has no convention '%s'" % conv_id)
             if conv_id not in seen:
@@ -73,7 +73,7 @@ def convention_ids_for(meta, placement):
 def body_for_convention(meta, common, bindings, conv_id, placement):
     out = "# %s\n\n%s\n" % (meta["title"], common.strip())
     for tool in selected_tools(meta, placement):
-        if conv_id in placement["tools"][tool]["reads"] and tool in bindings:
+        if conv_id in placement["tools"][tool]["reads"]["rules"] and tool in bindings:
             out += "\n%s\n" % bindings[tool].strip()
     return out
 
@@ -102,6 +102,85 @@ def load_rules(placement, rules_dir=None):
     if not rules:
         raise SystemExit("no rules found in %s" % directory)
     return rules
+
+
+SKILL_MARKER = ".agent-skills"
+SKILL_MANIFEST = "UPSTREAM.tsv"
+
+
+def parse_skill_frontmatter(text, path):
+    match = re.match(r"\A---\n(.*?)\n---\n", text, re.S)
+    if not match:
+        raise SystemExit("%s: missing frontmatter" % path)
+    meta = {}
+    for line in match.group(1).splitlines():
+        if not line.strip() or line.startswith((" ", "\t")):
+            continue
+        key, _, value = line.partition(":")
+        meta[key.strip()] = value.strip()
+    return meta
+
+
+def load_skills(skills_dir):
+    """{id: {relative path: bytes}} for every skill directory under `skills_dir`.
+
+    The tree is carried verbatim, so a vendored upstream skill stays diffable
+    against its source. Placement metadata lives in the declaration, never in
+    SKILL.md."""
+    skills = {}
+    if not os.path.isdir(skills_dir):
+        return skills
+    for name in sorted(os.listdir(skills_dir)):
+        directory = os.path.join(skills_dir, name)
+        if not os.path.isdir(directory):
+            continue
+        if not re.fullmatch(r"[a-z0-9-]+", name):
+            raise SystemExit("%s: skill id must contain only lowercase letters, digits, and hyphens" % directory)
+        skill_md = os.path.join(directory, "SKILL.md")
+        if not os.path.isfile(skill_md):
+            raise SystemExit("%s: skill directory has no SKILL.md" % directory)
+        tree = {}
+        for current, dirs, names in os.walk(directory):
+            dirs.sort()
+            for filename in sorted(names):
+                full = os.path.join(current, filename)
+                relative = os.path.relpath(full, directory).replace(os.sep, "/")
+                if relative == SKILL_MARKER:
+                    raise SystemExit("%s: %s is generated and must not be in the source" % (full, SKILL_MARKER))
+                with open(full, "rb") as handle:
+                    tree[relative] = handle.read()
+        meta = parse_skill_frontmatter(tree["SKILL.md"].decode("utf-8"), skill_md)
+        for required in ("name", "description"):
+            if not meta.get(required):
+                raise SystemExit("%s: frontmatter is missing '%s'" % (skill_md, required))
+        if meta["name"] != name:
+            raise SystemExit("%s: frontmatter name '%s' does not match the directory" % (skill_md, meta["name"]))
+        skills[name] = tree
+    return skills
+
+
+def load_skill_dirs(skills_dirs):
+    skills = {}
+    for skills_dir in skills_dirs or []:
+        for skill_id, tree in load_skills(skills_dir).items():
+            if skill_id in skills:
+                raise SystemExit("duplicate skill id '%s'" % skill_id)
+            skills[skill_id] = tree
+    return skills
+
+
+def vendored_ids(skills_dirs):
+    """Skill ids recorded in a UPSTREAM.tsv as coming from someone else's repository."""
+    ids = set()
+    for skills_dir in skills_dirs or []:
+        manifest = os.path.join(skills_dir, SKILL_MANIFEST)
+        if not os.path.isfile(manifest):
+            continue
+        with open(manifest, encoding="utf-8") as handle:
+            lines = [line.rstrip("\n") for line in handle if line.strip()]
+        for line in lines[1:]:
+            ids.add(line.split("\t")[0].strip())
+    return ids
 
 
 def load_rule_dirs(placement, rules_dirs):
@@ -214,7 +293,10 @@ def write(path, content):
 
 
 def convention_specs(placement):
-    return placement["conventions"].values()
+    """Rule conventions only. A `unit: dir` convention carries a skill tree, whose
+    managed names are directories; the prefix/suffix scan here would match every
+    entry in the tool's skills directory and delete unmanaged skills."""
+    return [spec for spec in placement["conventions"].values() if spec.get("unit") != "dir"]
 
 
 def main(argv):

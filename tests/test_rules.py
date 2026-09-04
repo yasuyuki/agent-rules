@@ -91,7 +91,7 @@ with tempfile.TemporaryDirectory() as directory:
         "entrypoint": "extra",
         "credential": "$HOME/.extra/auth.json",
         "configHome": {"default": "$HOME/.extra"},
-        "reads": ["agents-md-section"],
+        "reads": {"rules": ["agents-md-section"], "skills": []},
         "hooks": {"kind": "unverified"},
     }
     (dest / "placement.json").write_text(json.dumps(placement), encoding="utf-8")
@@ -139,3 +139,18 @@ if cli_status.is_file():
             f"tool ids differ: placement {sorted(placement['tools'])} "
             f"cli-status {sorted(pairs)}"
         )
+
+
+# rules.py renders rules only. A skills convention names directories, so its
+# `{id}` sits in a path component rather than in a file name and the managed
+# prefix/suffix would be empty -- matching, and deleting, every hand-placed
+# skill in the tool's skills directory.
+with tempfile.TemporaryDirectory() as directory:
+    workspace = Path(directory)
+    hand_placed = workspace / ".claude" / "skills" / "hand-placed"
+    hand_placed.mkdir(parents=True)
+    (hand_placed / "SKILL.md").write_text("---\nname: hand-placed\n---\n", encoding="utf-8")
+    run(workspace, "render")
+    if not (hand_placed / "SKILL.md").is_file():
+        raise AssertionError("render removed a skill from a skills directory")
+    run(workspace, "verify")

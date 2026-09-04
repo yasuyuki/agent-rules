@@ -18,7 +18,7 @@ W1	S1	direct	{ROOT}/ws
 
 <!-- BEGIN LOCATIONS TSV -->
 ```tsv
-id	scope	anchor	tool	requirement	reason	legacy	path
+id	scope	anchor	tool	requirement	reason	legacy	path	kind
 L-claude-home	home	S1	claude	required		
 L-claude-ws	workspace	W1	claude	required		unmanaged.md
 L-cursor-ws	workspace	W1	cursor-agent	required		
@@ -26,6 +26,8 @@ L-agy-ws	workspace	W1	agy	absent	not used here
 L-opencode-ws	workspace	W1	opencode	required		
 L-s2	home	S2	claude	absent	site is absent	
 L-hooks	hooks	S1	claude	required			{ROOT}/home/.claude/settings.json
+L-claude-skills	home	S1	claude	required				skills
+L-cursor-skills	home	S1	cursor-agent	required				skills
 ```
 <!-- END LOCATIONS TSV -->
 
@@ -33,5 +35,6 @@ L-hooks	hooks	S1	claude	required			{ROOT}/home/.claude/settings.json
 ```tsv
 rule	location_id	requirement	reason
 alpha	L-claude-home	absent	home overlay is private
+epsilon	L-cursor-skills	absent	narrowed to one tool
 ```
 <!-- END EXCEPTIONS TSV -->

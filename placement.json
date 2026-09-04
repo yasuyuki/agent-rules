@@ -1,5 +1,5 @@
 {
-  "comment": "Portable always-on rule placement. conventions are file layouts; tools name CLIs and the conventions they read.",
+  "comment": "Portable always-on rule and on-demand skill placement. conventions are file layouts; tools name CLIs and the conventions they read for each artifact kind.",
   "conventions": {
     "claude-rules-dir": {
       "path": ".claude/rules/agent-rules--{id}.md",
@@ -19,6 +19,26 @@
     },
     "agents-rules-dir": {
       "path": ".agents/rules/agent-rules--{id}.md"
+    },
+    "claude-skills-dir": {
+      "unit": "dir",
+      "path": ".claude/skills/{id}",
+      "home_path": "skills/{id}"
+    },
+    "cursor-skills-dir": {
+      "unit": "dir",
+      "path": ".cursor/skills/{id}",
+      "home_path": "skills/{id}"
+    },
+    "agy-skills-dir": {
+      "unit": "dir",
+      "path": ".agents/skills/{id}",
+      "home_path": "config/skills/{id}"
+    },
+    "codex-skills-dir": {
+      "unit": "dir",
+      "path": ".codex/skills/{id}",
+      "home_path": "skills/{id}"
     }
   },
   "tools": {
@@ -29,7 +49,10 @@
         "default": "$HOME/.claude",
         "env": "CLAUDE_CONFIG_DIR"
       },
-      "reads": ["claude-rules-dir"],
+      "reads": {
+        "rules": ["claude-rules-dir"],
+        "skills": ["claude-skills-dir"]
+      },
       "hooks": {
         "kind": "settings",
         "path": "settings.json",
@@ -43,7 +66,10 @@
         "default": "$HOME/.codex",
         "env": "CODEX_HOME"
       },
-      "reads": ["agents-md-section"],
+      "reads": {
+        "rules": ["agents-md-section"],
+        "skills": ["codex-skills-dir"]
+      },
       "hooks": {
         "kind": "none",
         "reason": "CLI admits hooks (--dangerously-bypass-hook-trust) but no hooks file or documented path was found"
@@ -55,7 +81,10 @@
       "configHome": {
         "default": "$HOME/.cursor"
       },
-      "reads": ["cursor-rules-dir"],
+      "reads": {
+        "rules": ["cursor-rules-dir"],
+        "skills": ["cursor-skills-dir"]
+      },
       "hooks": {
         "kind": "hooks.json",
         "path": "hooks.json",
@@ -68,7 +97,10 @@
       "configHome": {
         "default": "$HOME/.gemini"
       },
-      "reads": ["agents-md-section"],
+      "reads": {
+        "rules": ["agents-md-section"],
+        "skills": ["agy-skills-dir"]
+      },
       "hooks": {
         "kind": "none",
         "reason": "agy --help has no hook surface; session check is the recording gate"
@@ -80,7 +112,10 @@
       "configHome": {
         "default": "$HOME/.opencode"
       },
-      "reads": ["agents-md-section", "agents-rules-dir"],
+      "reads": {
+        "rules": ["agents-md-section", "agents-rules-dir"],
+        "skills": []
+      },
       "hooks": {
         "kind": "none",
         "reason": "opencode --help has no hook surface; session check is the recording gate"

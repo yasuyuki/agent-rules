@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Project rules onto the sites and workspaces a declaration names.
+"""Project rules and skills onto the sites and workspaces a declaration names.
 
-    place.py check  --declaration <path> --rules <dir> [--rules <dir>]
-    place.py apply  --declaration <path> --rules <dir> [--rules <dir>]
+    place.py check  --declaration <path> --rules <dir> [--skills <dir>]
+    place.py apply  --declaration <path> --rules <dir> [--skills <dir>]
+    place.py mirror --skills <dir> --dest <dir> [--check]
     place.py selfcheck
+
+Rules and skills are the two managed kinds; a LOCATIONS row says which one it
+carries in its `kind` column. Both are copied from a canonical source and
+compared byte for byte, so drift is a check failure rather than a silent
+divergence between tools.
 
 Optional --site / --workspace / --scope restrict which location rows apply.
 """
@@ -84,8 +90,13 @@ def parse_declaration(path, text=None):
             raise PlacementError("location %s: requirement must be required or absent" % row["id"])
         if row["requirement"] == "absent" and not row.get("reason", "").strip():
             raise PlacementError("location %s: absent needs a reason" % row["id"])
-        if row["scope"] not in ("home", "workspace", "skills", "hooks"):
+        if row["scope"] not in ("home", "workspace", "hooks"):
             raise PlacementError("location %s: unknown scope" % row["id"])
+        row["kind"] = row.get("kind", "").strip() or "rules"
+        if row["kind"] not in ("rules", "skills"):
+            raise PlacementError("location %s: unknown kind" % row["id"])
+        if row["kind"] == "skills" and row["scope"] == "hooks":
+            raise PlacementError("location %s: hooks scope has no skills kind" % row["id"])
         if row["scope"] == "workspace":
             if row["anchor"] not in workspaces:
                 raise PlacementError("location %s: unknown workspace %s" % (row["id"], row["anchor"]))
@@ -127,15 +138,27 @@ def filter_locations(locations, workspaces, site=None, workspace=None, scope=Non
     return out
 
 
-def rule_applies(meta, location, exceptions, placement):
-    key = (meta["id"], location["id"])
+def artifact_applies(artifact_id, location, exceptions):
+    """Shared gate for both managed kinds: an EXCEPTIONS row wins, otherwise the
+    location's own requirement decides."""
+    key = (artifact_id, location["id"])
     if key in exceptions:
         return exceptions[key]["requirement"] == "required"
     if location["requirement"] != "required":
         return False
-    if location["scope"] not in ("home", "workspace"):
+    return location["scope"] in ("home", "workspace")
+
+
+def rule_applies(meta, location, exceptions, placement):
+    if location["kind"] != "rules":
+        return False
+    if not artifact_applies(meta["id"], location, exceptions):
         return False
     return location["tool"] in agent_rules.selected_tools(meta, placement)
+
+
+def skill_applies(skill_id, location, exceptions):
+    return location["kind"] == "skills" and artifact_applies(skill_id, location, exceptions)
 
 
 def location_file(location, conv_id, rule_id, placement, sites, workspaces):
@@ -157,7 +180,11 @@ def location_file(location, conv_id, rule_id, placement, sites, workspaces):
     return None
 
 
-def expected_writes(rules, placement, locations, exceptions, sites, workspaces):
+def conventions_for(placement, tool, kind):
+    return placement["tools"].get(tool, {}).get("reads", {}).get(kind, [])
+
+
+def expected_writes(rules, placement, locations, exceptions, sites, workspaces, skills=None):
     files, sections = {}, {}
     for loc in locations:
         if loc["scope"] not in ("home", "workspace"):
@@ -165,7 +192,17 @@ def expected_writes(rules, placement, locations, exceptions, sites, workspaces):
         tool = loc["tool"]
         if tool not in placement["tools"]:
             raise PlacementError("location %s: unknown tool %s" % (loc["id"], tool))
-        for conv_id in placement["tools"][tool]["reads"]:
+        for conv_id in conventions_for(placement, tool, "skills"):
+            for skill_id, tree in sorted((skills or {}).items()):
+                if not skill_applies(skill_id, loc, exceptions):
+                    continue
+                root = location_file(loc, conv_id, skill_id, placement, sites, workspaces)
+                if root is None:
+                    continue
+                for relative, content in tree.items():
+                    files[root.joinpath(*relative.split("/"))] = content
+                files[root / agent_rules.SKILL_MARKER] = marker_bytes(skill_id)
+        for conv_id in conventions_for(placement, tool, "rules"):
             spec = placement["conventions"][conv_id]
             for meta, common, bindings in rules:
                 if not rule_applies(meta, loc, exceptions, placement):
@@ -187,6 +224,23 @@ def expected_writes(rules, placement, locations, exceptions, sites, workspaces):
                     body = "---\n%s---\n\n%s" % (header, body)
                 files[dest] = body.encode("utf-8")
     return files, sections
+
+
+def marker_bytes(skill_id):
+    """Ownership stamp. A rule is reclaimable because its file name carries the
+    `agent-rules--` prefix; a skill directory has to keep the name the agent
+    invokes, so the claim goes inside the directory instead."""
+    return ("%s\n" % skill_id).encode("utf-8")
+
+
+def managed_skill_dirs(directory):
+    """Child directories of a managed skills root that this projection owns."""
+    if not directory.is_dir():
+        return []
+    return [
+        path for path in sorted(directory.iterdir())
+        if path.is_dir() and not path.is_symlink() and (path / agent_rules.SKILL_MARKER).is_file()
+    ]
 
 
 def managed_dir(location, conv_id, placement, sites, workspaces):
@@ -214,7 +268,9 @@ def affected_targets(files, sections, locations, placement, sites, workspaces):
     for loc in locations:
         if loc["scope"] not in ("home", "workspace"):
             continue
-        for conv_id in placement["tools"].get(loc["tool"], {}).get("reads", []):
+        for conv_id in conventions_for(placement, loc["tool"], "rules") + conventions_for(
+            placement, loc["tool"], "skills"
+        ):
             directory = managed_dir(loc, conv_id, placement, sites, workspaces)
             if directory:
                 targets.append(directory)
@@ -340,10 +396,10 @@ def render_sections(path, blocks):
     return text.encode("utf-8")
 
 
-def check_state(rules, placement, locations, exceptions, sites, workspaces, all_locations):
+def check_state(rules, placement, locations, exceptions, sites, workspaces, all_locations, skills=None):
     errors = []
     reachable = [loc for loc in locations if site_reachable(sites[site_of(loc, workspaces)])]
-    files, sections = expected_writes(rules, placement, reachable, exceptions, sites, workspaces)
+    files, sections = expected_writes(rules, placement, reachable, exceptions, sites, workspaces, skills)
     printed = []
     for loc in locations:
         if loc["scope"] == "workspace":
@@ -367,7 +423,7 @@ def check_state(rules, placement, locations, exceptions, sites, workspaces, all_
             continue
         if not site_reachable(sites[site_of(loc, workspaces)]):
             continue
-        for conv_id in placement["tools"].get(loc["tool"], {}).get("reads", []):
+        for conv_id in conventions_for(placement, loc["tool"], "rules"):
             spec = placement["conventions"][conv_id]
             directory = managed_dir(loc, conv_id, placement, sites, workspaces)
             if directory is None or not directory.is_dir():
@@ -382,6 +438,17 @@ def check_state(rules, placement, locations, exceptions, sites, workspaces, all_
                     and path.resolve(strict=False) not in expected_resolved
                 ):
                     errors.append("unexpected managed rule: %s" % path)
+        for conv_id in conventions_for(placement, loc["tool"], "skills"):
+            directory = managed_dir(loc, conv_id, placement, sites, workspaces)
+            if directory is None:
+                continue
+            for path in managed_skill_dirs(directory):
+                if (path / agent_rules.SKILL_MARKER).resolve(strict=False) not in expected_resolved:
+                    errors.append("unexpected managed skill: %s" % path)
+                    continue
+                for inner in sorted(path.rglob("*")):
+                    if inner.is_file() and inner.resolve(strict=False) not in expected_resolved:
+                        errors.append("unexpected file in managed skill: %s" % inner)
     for dest, blocks in sorted(sections.items(), key=lambda item: str(item[0])):
         if not dest.exists():
             errors.append("missing: %s" % dest)
@@ -400,7 +467,7 @@ def check_state(rules, placement, locations, exceptions, sites, workspaces, all_
             elif actual[0] != blocks[rule_id]:
                 errors.append("section '%s' differs from canonical in %s" % (rule_id, dest))
     for loc in reachable:
-        if loc["scope"] not in ("skills", "hooks") or loc["requirement"] != "required":
+        if loc["scope"] != "hooks" or loc["requirement"] != "required":
             continue
         target = loc.get("path", "").strip()
         if not target:
@@ -426,8 +493,8 @@ def check_state(rules, placement, locations, exceptions, sites, workspaces, all_
     return errors, printed
 
 
-def apply_projection(rules, placement, locations, exceptions, sites, workspaces):
-    files, sections = expected_writes(rules, placement, locations, exceptions, sites, workspaces)
+def apply_projection(rules, placement, locations, exceptions, sites, workspaces, skills=None):
+    files, sections = expected_writes(rules, placement, locations, exceptions, sites, workspaces, skills)
     for loc in locations:
         if loc["scope"] not in ("home", "workspace"):
             continue
@@ -443,7 +510,8 @@ def apply_projection(rules, placement, locations, exceptions, sites, workspaces)
             path = root / rel
             if path.is_file():
                 path.unlink()
-        for conv_id in placement["tools"].get(loc["tool"], {}).get("reads", []):
+        owned = {path.resolve(strict=False) for path in files}
+        for conv_id in conventions_for(placement, loc["tool"], "rules"):
             directory = managed_dir(loc, conv_id, placement, sites, workspaces)
             spec = placement["conventions"][conv_id]
             if directory is None or not directory.is_dir():
@@ -452,14 +520,73 @@ def apply_projection(rules, placement, locations, exceptions, sites, workspaces)
             if "{id}" not in template:
                 continue
             _, prefix, suffix = agent_rules.managed_names(template)
-            owned = {path.resolve(strict=False) for path in files}
             for path in list(directory.iterdir()):
                 if path.is_file() and path.name.startswith(prefix) and path.name.endswith(suffix) and path.resolve(strict=False) not in owned:
                     path.unlink()
+        for conv_id in conventions_for(placement, loc["tool"], "skills"):
+            directory = managed_dir(loc, conv_id, placement, sites, workspaces)
+            if directory is None:
+                continue
+            for path in managed_skill_dirs(directory):
+                if (path / agent_rules.SKILL_MARKER).resolve(strict=False) not in owned:
+                    shutil.rmtree(path)
+                    continue
+                for inner in sorted(path.rglob("*")):
+                    if inner.is_file() and inner.resolve(strict=False) not in owned:
+                        inner.unlink()
     for dest, content in files.items():
         atomic_write(dest, content)
     for dest, blocks in sections.items():
         atomic_write(dest, render_sections(dest, blocks))
+
+
+def mirror(args):
+    """Publish the maintainer's own skills to a public checkout.
+
+    A skill listed in UPSTREAM.tsv belongs to someone else's repository. It is
+    managed here so every tool gets the same bytes, but republishing it under a
+    repository that names itself the maintainer's own would misstate authorship,
+    so the mirror carries only what is written here."""
+    if not args.skills:
+        raise PlacementError("--skills is required")
+    skills = agent_rules.load_skill_dirs(args.skills)
+    vendored = agent_rules.vendored_ids(args.skills)
+    own = {skill_id: tree for skill_id, tree in skills.items() if skill_id not in vendored}
+    dest = Path(args.dest) / "skills"
+    expected = {}
+    for skill_id, tree in own.items():
+        for relative, content in tree.items():
+            expected[dest / skill_id / Path(*relative.split("/"))] = content
+    errors = []
+    for path, content in sorted(expected.items(), key=lambda item: str(item[0])):
+        actual = path.read_bytes() if path.is_file() else None
+        if actual is None:
+            errors.append("missing: %s" % path)
+        elif actual != content:
+            errors.append("differs from canonical: %s" % path)
+    if dest.is_dir():
+        for path in sorted(dest.iterdir()):
+            if path.is_dir() and path.name not in own:
+                errors.append("unexpected skill in mirror: %s" % path)
+        for path in sorted(dest.rglob("*")):
+            if path.is_file() and path not in expected:
+                errors.append("unexpected file in mirror: %s" % path)
+    if args.check:
+        for error in errors:
+            print("FAIL: " + error, file=sys.stderr)
+        print("mirror: %s" % ("OK" if not errors else "FAILED (%d)" % len(errors)))
+        return 0 if not errors else 1
+    if dest.is_dir():
+        for path in sorted(dest.iterdir()):
+            if path.is_dir() and path.name not in own:
+                shutil.rmtree(path)
+        for path in sorted(dest.rglob("*")):
+            if path.is_file() and path not in expected:
+                path.unlink()
+    for path, content in sorted(expected.items(), key=lambda item: str(item[0])):
+        atomic_write(path, content)
+    print("mirror: %d skills" % len(own))
+    return 0
 
 
 def load_context(args):
@@ -469,16 +596,17 @@ def load_context(args):
         raise PlacementError("--rules is required")
     placement = load_placement()
     rules = agent_rules.load_rule_dirs(placement, args.rules)
+    skills = agent_rules.load_skill_dirs(getattr(args, "skills", None))
     sites, workspaces, locations, exceptions = parse_declaration(args.declaration)
     selected = filter_locations(
         locations, workspaces, getattr(args, "site", None), getattr(args, "workspace", None), getattr(args, "scope", None)
     )
-    return placement, rules, sites, workspaces, locations, exceptions, selected
+    return placement, rules, sites, workspaces, locations, exceptions, selected, skills
 
 
 def check(args):
-    placement, rules, sites, workspaces, locations, exceptions, selected = load_context(args)
-    errors, printed = check_state(rules, placement, selected, exceptions, sites, workspaces, locations)
+    placement, rules, sites, workspaces, locations, exceptions, selected, skills = load_context(args)
+    errors, printed = check_state(rules, placement, selected, exceptions, sites, workspaces, locations, skills)
     for path in printed:
         print(path)
     for error in errors:
@@ -488,19 +616,19 @@ def check(args):
 
 
 def apply(args):
-    placement, rules, sites, workspaces, locations, exceptions, selected = load_context(args)
-    files, sections = expected_writes(rules, placement, selected, exceptions, sites, workspaces)
+    placement, rules, sites, workspaces, locations, exceptions, selected, skills = load_context(args)
+    files, sections = expected_writes(rules, placement, selected, exceptions, sites, workspaces, skills)
     targets = affected_targets(files, sections, selected, placement, sites, workspaces)
     preflight_targets(targets)
     shots = snapshot(targets)
     try:
-        apply_projection(rules, placement, selected, exceptions, sites, workspaces)
+        apply_projection(rules, placement, selected, exceptions, sites, workspaces, skills)
         forced_failure = os.environ.get("PLACE_FORCE_POSTCHECK_FAILURE")
         if forced_failure == "interrupt":
             raise KeyboardInterrupt()
         if forced_failure:
             raise PlacementError("forced post-check failure")
-        errors, _ = check_state(rules, placement, selected, exceptions, sites, workspaces, locations)
+        errors, _ = check_state(rules, placement, selected, exceptions, sites, workspaces, locations, skills)
         if errors:
             raise PlacementError("post-check failed: " + "; ".join(errors))
     except (Exception, KeyboardInterrupt):
@@ -515,6 +643,16 @@ def write_rule(directory, rule_id, title, tools=None):
     tools_line = "tools: [%s]\n" % ", ".join(tools) if tools else ""
     (directory / ("%s.rule.md" % rule_id)).write_text(
         "---\nid: %s\ntitle: %s\nsummary: %s\n%s---\n\n%s body.\n" % (rule_id, title, title, tools_line, title),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+def write_skill(directory, skill_id, description):
+    target = directory / skill_id
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "SKILL.md").write_text(
+        "---\nname: %s\ndescription: %s\n---\n\n%s body.\n" % (skill_id, description, skill_id),
         encoding="utf-8",
         newline="\n",
     )
@@ -537,12 +675,16 @@ def selfcheck(_args):
         write_rule(public_rules, "alpha", "Alpha")
         write_rule(public_rules, "beta", "Beta", ["cursor-agent"])
         write_rule(private_rules, "gamma", "Gamma")
+        skills_dir = root / "skills"
+        write_skill(skills_dir, "delta", "Delta skill")
+        write_skill(skills_dir, "epsilon", "Epsilon skill")
         declaration = source.replace("{ROOT}", str(root).replace("\\", "/"))
         decl_path = root / "PLACEMENT.md"
         decl_path.write_text(declaration, encoding="utf-8", newline="\n")
         ns = argparse.Namespace(
             declaration=str(decl_path),
             rules=[str(public_rules), str(private_rules)],
+            skills=[str(skills_dir)],
             site=None,
             workspace=None,
             scope=None,
@@ -551,6 +693,57 @@ def selfcheck(_args):
             raise PlacementError("selfcheck apply failed")
         if check(ns):
             raise PlacementError("selfcheck check failed after apply")
+
+        claude_skills = home / ".claude" / "skills"
+        cursor_skills = home / ".cursor" / "skills"
+        if not (claude_skills / "delta" / "SKILL.md").is_file():
+            raise PlacementError("selfcheck apply did not project a skill")
+        if not (claude_skills / "delta" / agent_rules.SKILL_MARKER).is_file():
+            raise PlacementError("selfcheck apply did not stamp the ownership marker")
+        if (cursor_skills / "epsilon").exists():
+            raise PlacementError("selfcheck ignored a skill exception")
+        if not (cursor_skills / "delta" / "SKILL.md").is_file():
+            raise PlacementError("selfcheck apply did not project a skill for the second tool")
+        # An unmanaged skill has no marker, so nothing may reclaim it.
+        foreign = claude_skills / "hand-placed"
+        foreign.mkdir(parents=True)
+        (foreign / "SKILL.md").write_text("---\nname: hand-placed\n---\n", encoding="utf-8")
+        if check(ns):
+            raise PlacementError("selfcheck flagged an unmanaged skill")
+        if apply(ns):
+            raise PlacementError("selfcheck apply failed with an unmanaged skill present")
+        if not (foreign / "SKILL.md").is_file():
+            raise PlacementError("selfcheck apply removed an unmanaged skill")
+        # A marked directory the declaration no longer names is reclaimable.
+        orphan = claude_skills / "retired"
+        orphan.mkdir(parents=True)
+        (orphan / agent_rules.SKILL_MARKER).write_bytes(marker_bytes("retired"))
+        (orphan / "SKILL.md").write_text("---\nname: retired\n---\n", encoding="utf-8")
+        if not check(ns):
+            raise PlacementError("selfcheck accepted an unexpected managed skill")
+        if apply(ns):
+            raise PlacementError("selfcheck apply failed while reclaiming a skill")
+        if orphan.exists():
+            raise PlacementError("selfcheck apply did not reclaim an orphan skill")
+        # A stray file inside a managed skill is drift like any other.
+        stray = claude_skills / "delta" / "notes.md"
+        stray.write_text("stray\n", encoding="utf-8")
+        if not check(ns):
+            raise PlacementError("selfcheck accepted a stray file in a managed skill")
+        if apply(ns):
+            raise PlacementError("selfcheck apply failed while removing a stray file")
+        if stray.exists():
+            raise PlacementError("selfcheck apply did not remove a stray file")
+        (claude_skills / "delta" / "SKILL.md").write_bytes(b"drifted\n")
+        if not check(ns):
+            raise PlacementError("selfcheck accepted skill drift")
+        apply(ns)
+        if check(ns):
+            raise PlacementError("selfcheck apply did not repair skill drift")
+        shutil.rmtree(foreign)
+        if check(ns):
+            raise PlacementError("selfcheck still failing after the unmanaged skill was removed")
+
         stale = workspace / ".cursor" / "rules" / "agent-rules--legacy.mdc"
         stale.write_text("nope\n", encoding="utf-8")
         if not check(ns):
@@ -619,6 +812,7 @@ def main(argv):
     def add_common(subparser):
         subparser.add_argument("--declaration")
         subparser.add_argument("--rules", action="append")
+        subparser.add_argument("--skills", action="append")
         subparser.add_argument("--site")
         subparser.add_argument("--workspace")
         subparser.add_argument("--scope")
@@ -627,6 +821,10 @@ def main(argv):
     add_common(check_p)
     apply_p = sub.add_parser("apply")
     add_common(apply_p)
+    mirror_p = sub.add_parser("mirror")
+    mirror_p.add_argument("--skills", action="append")
+    mirror_p.add_argument("--dest", required=True)
+    mirror_p.add_argument("--check", action="store_true")
     sub.add_parser("selfcheck")
     args = parser.parse_args(argv)
     try:
@@ -634,6 +832,8 @@ def main(argv):
             return check(args)
         if args.command == "apply":
             return apply(args)
+        if args.command == "mirror":
+            return mirror(args)
         return selfcheck(args)
     except PlacementError as exc:
         print("FAIL: %s" % exc, file=sys.stderr)

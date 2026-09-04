@@ -1,7 +1,7 @@
 # Agent Rules
 
-Portable source rules and a deterministic renderer for Claude Code, Codex,
-Cursor Agent, Antigravity, and OpenCode workspaces.
+Portable source rules and skills, and a deterministic renderer for Claude Code,
+Codex, Cursor Agent, Antigravity, and OpenCode workspaces.
 
 This repository is the live portable source of truth for the maintainer's
 environments. Environment-specific topology and private bindings are managed
@@ -35,8 +35,8 @@ namespace.
 Project those same bytes onto a private site/workspace declaration:
 
 ```console
-python3 bin/place.py check --declaration PLACEMENT.md --rules rules
-python3 bin/place.py apply --declaration PLACEMENT.md --rules rules
+python3 bin/place.py check --declaration PLACEMENT.md --rules rules --skills skills
+python3 bin/place.py apply --declaration PLACEMENT.md --rules rules --skills skills
 python3 bin/place.py selfcheck
 ```
 
@@ -49,6 +49,40 @@ Unrelated rule files and root instructions are outside that namespace and are
 left untouched. A malformed unmatched managed marker fails closed; repair that
 marker before rendering so the tool never guesses how much local text to
 remove.
+
+## Skills
+
+Rules and skills are the two managed kinds. A rule is always-on text projected
+into every tool's rule convention; a skill is a directory the agent loads on
+demand. Both are copied from this repository and compared byte for byte, so a
+skill that has drifted in one tool is a check failure rather than a silent
+difference between tools.
+
+Each `skills/<id>/` directory holds a `SKILL.md` with `name` and `description`
+frontmatter, plus whatever else the skill needs. The tree is carried verbatim:
+placement metadata lives in the declaration, never in `SKILL.md`, so a skill
+vendored from another repository stays diffable against its source. Record such
+a skill in `skills/UPSTREAM.tsv` with the upstream repository, ref, path, tree
+sha, and license.
+
+A declaration row carries `skills` in its `kind` column to receive them. Adding
+a skill means adding a directory here; no declaration or code changes.
+
+Each projected skill directory gets an `.agent-skills` marker naming the skill.
+A rule file is reclaimable because its name carries the `agent-rules--` prefix,
+but a skill directory has to keep the name the agent invokes, so the ownership
+claim goes inside it. Directories without the marker were placed by hand and are
+never touched.
+
+Publish the skills written here to a separate public checkout:
+
+```console
+python3 bin/place.py mirror --skills skills --dest <checkout> [--check]
+```
+
+A skill listed in `UPSTREAM.tsv` is someone else's work; it is managed here so
+every tool gets the same bytes, but the mirror carries only what is written
+here.
 
 ## Source format
 
