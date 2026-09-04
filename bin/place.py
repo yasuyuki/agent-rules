@@ -22,6 +22,8 @@ import json
 import os
 import re
 import shutil
+import stat
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -233,13 +235,28 @@ def marker_bytes(skill_id):
     return ("%s\n" % skill_id).encode("utf-8")
 
 
+def is_link(path):
+    """True for a symlink and for a Windows junction. `Path.is_symlink()` reports
+    False for a junction, so a projection would walk through one and write into
+    the link target instead of the managed root."""
+    if path.is_symlink():
+        return True
+    if hasattr(os.path, "isjunction"):
+        return os.path.isjunction(path)
+    try:
+        attributes = path.lstat().st_file_attributes
+    except (AttributeError, OSError, ValueError):
+        return False
+    return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
 def managed_skill_dirs(directory):
     """Child directories of a managed skills root that this projection owns."""
     if not directory.is_dir():
         return []
     return [
         path for path in sorted(directory.iterdir())
-        if path.is_dir() and not path.is_symlink() and (path / agent_rules.SKILL_MARKER).is_file()
+        if path.is_dir() and not is_link(path) and (path / agent_rules.SKILL_MARKER).is_file()
     ]
 
 
@@ -296,10 +313,10 @@ def affected_targets(files, sections, locations, placement, sites, workspaces):
 
 def preflight_targets(targets):
     for target in targets:
-        if target.is_symlink():
-            raise PlacementError("affected target is a symlink: %s" % target)
-        if target.is_dir() and any(path.is_symlink() for path in target.rglob("*")):
-            raise PlacementError("affected target contains a symlink: %s" % target)
+        if is_link(target):
+            raise PlacementError("affected target is a link: %s" % target)
+        if target.is_dir() and any(is_link(path) for path in target.rglob("*")):
+            raise PlacementError("affected target contains a link: %s" % target)
 
 
 def snapshot(targets):
@@ -648,6 +665,20 @@ def write_rule(directory, rule_id, title, tools=None):
     )
 
 
+def make_link(link, target):
+    """A directory link of the shape this platform actually produces: a junction
+    on Windows, where `mklink /J` is what the skill docs told people to use, and
+    a symlink elsewhere."""
+    if os.name == "nt":
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            check=True,
+            capture_output=True,
+        )
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
 def write_skill(directory, skill_id, description):
     target = directory / skill_id
     target.mkdir(parents=True, exist_ok=True)
@@ -743,6 +774,29 @@ def selfcheck(_args):
         shutil.rmtree(foreign)
         if check(ns):
             raise PlacementError("selfcheck still failing after the unmanaged skill was removed")
+
+        # A link inside a managed root must stop apply, or the projection is
+        # written through it into whatever the link points at.
+        payload = root / "link-payload"
+        payload.mkdir()
+        (payload / "keep.md").write_text("keep\n", encoding="utf-8")
+        linked = claude_skills / "linked"
+        make_link(linked, payload)
+        try:
+            apply(ns)
+        except PlacementError as exc:
+            if "is a link" not in str(exc) and "contains a link" not in str(exc):
+                raise PlacementError("selfcheck stopped the link for another reason: %s" % exc)
+        else:
+            raise PlacementError("selfcheck accepted a link inside a managed root")
+        if [path.name for path in payload.iterdir()] != ["keep.md"]:
+            raise PlacementError("selfcheck wrote through a link into its target")
+        if linked.is_symlink():
+            linked.unlink()
+        else:
+            linked.rmdir()
+        if check(ns):
+            raise PlacementError("selfcheck still failing after the link was removed")
 
         stale = workspace / ".cursor" / "rules" / "agent-rules--legacy.mdc"
         stale.write_text("nope\n", encoding="utf-8")
