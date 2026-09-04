@@ -154,3 +154,32 @@ with tempfile.TemporaryDirectory() as directory:
     if not (hand_placed / "SKILL.md").is_file():
         raise AssertionError("render removed a skill from a skills directory")
     run(workspace, "verify")
+
+
+# A UPSTREAM.tsv that cannot be read says nothing about authorship. Reading it as
+# "nothing is vendored" would publish someone else's skill through place.py mirror,
+# so a missing file or a lost header stops the caller.
+header = "\t".join(agent_rules.SKILL_MANIFEST_HEADER)
+row = "grilling\tsomeone/skills\trefs/heads/main\tskills/grilling\tdeadbeef\tMIT"
+with tempfile.TemporaryDirectory() as directory:
+    skills_dir = Path(directory)
+    manifest = skills_dir / agent_rules.SKILL_MANIFEST
+
+    try:
+        agent_rules.vendored_ids([str(skills_dir)])
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("a missing manifest passed for an empty one")
+
+    manifest.write_text(f"{header}\n{row}\n", encoding="utf-8", newline="\n")
+    if agent_rules.vendored_ids([str(skills_dir)]) != {"grilling"}:
+        raise AssertionError("a well-formed manifest did not yield its ids")
+
+    manifest.write_text(f"{row}\n", encoding="utf-8", newline="\n")
+    try:
+        agent_rules.vendored_ids([str(skills_dir)])
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("a manifest without its header passed")

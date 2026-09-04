@@ -106,6 +106,7 @@ def load_rules(placement, rules_dir=None):
 
 SKILL_MARKER = ".agent-skills"
 SKILL_MANIFEST = "UPSTREAM.tsv"
+SKILL_MANIFEST_HEADER = ("id", "repo", "ref", "path", "tree_sha", "license")
 
 
 def parse_skill_frontmatter(text, path):
@@ -170,14 +171,24 @@ def load_skill_dirs(skills_dirs):
 
 
 def vendored_ids(skills_dirs):
-    """Skill ids recorded in a UPSTREAM.tsv as coming from someone else's repository."""
+    """Skill ids recorded in a UPSTREAM.tsv as coming from someone else's repository.
+
+    A manifest that cannot be read says nothing about authorship, which is not
+    the same as saying nothing is vendored. Reading it as the latter republishes
+    someone else's skill under this maintainer's name, so a missing file or an
+    unexpected header stops the caller instead."""
     ids = set()
     for skills_dir in skills_dirs or []:
         manifest = os.path.join(skills_dir, SKILL_MANIFEST)
         if not os.path.isfile(manifest):
-            continue
+            raise SystemExit("%s: %s is missing; authorship is unknown" % (skills_dir, SKILL_MANIFEST))
         with open(manifest, encoding="utf-8") as handle:
-            lines = [line.rstrip("\n") for line in handle if line.strip()]
+            lines = [line.rstrip("\r\n") for line in handle if line.strip()]
+        if not lines or tuple(lines[0].split("\t")) != SKILL_MANIFEST_HEADER:
+            raise SystemExit(
+                "%s: first line must be the header %s"
+                % (manifest, "\t".join(SKILL_MANIFEST_HEADER))
+            )
         for line in lines[1:]:
             ids.add(line.split("\t")[0].strip())
     return ids

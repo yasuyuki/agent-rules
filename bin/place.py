@@ -563,11 +563,18 @@ def mirror(args):
     A skill listed in UPSTREAM.tsv belongs to someone else's repository. It is
     managed here so every tool gets the same bytes, but republishing it under a
     repository that names itself the maintainer's own would misstate authorship,
-    so the mirror carries only what is written here."""
+    so the mirror carries only what is written here. A manifest that cannot be
+    read, or that names a skill this repository does not hold, stops the publish
+    rather than passing for an empty list of other people's work."""
     if not args.skills:
         raise PlacementError("--skills is required")
     skills = agent_rules.load_skill_dirs(args.skills)
     vendored = agent_rules.vendored_ids(args.skills)
+    stale = sorted(vendored - set(skills))
+    if stale:
+        raise PlacementError(
+            "%s names skills that are not here: %s" % (agent_rules.SKILL_MANIFEST, ", ".join(stale))
+        )
     own = {skill_id: tree for skill_id, tree in skills.items() if skill_id not in vendored}
     dest = Path(args.dest) / "skills"
     expected = {}
@@ -855,6 +862,40 @@ def selfcheck(_args):
         leftover.unlink()
         if check(ns):
             raise PlacementError("selfcheck still failing after interrupt restore")
+
+        # The mirror names itself the maintainer's own skills, so it publishes
+        # only what the vendored manifest accounts for. A manifest that is absent
+        # or out of date stops the publish instead of passing for an empty one.
+        manifest = Path(skills_dir) / agent_rules.SKILL_MANIFEST
+        mirror_ns = argparse.Namespace(skills=[str(skills_dir)], dest=str(root / "mirror"), check=False)
+        try:
+            mirror(mirror_ns)
+        except SystemExit:
+            pass
+        else:
+            raise PlacementError("selfcheck published without a vendored manifest")
+        header = "\t".join(agent_rules.SKILL_MANIFEST_HEADER)
+        manifest.write_text(
+            "%s\nepsilon\tsomeone/skills\trefs/heads/main\tskills/epsilon\tdeadbeef\tMIT\n" % header,
+            encoding="utf-8",
+            newline="\n",
+        )
+        if mirror(mirror_ns):
+            raise PlacementError("selfcheck mirror failed")
+        published = sorted(path.name for path in (root / "mirror" / "skills").iterdir())
+        if published != ["delta"]:
+            raise PlacementError("selfcheck mirror published a vendored skill: %s" % published)
+        manifest.write_text(
+            "%s\nzeta\tsomeone/skills\trefs/heads/main\tskills/zeta\tdeadbeef\tMIT\n" % header,
+            encoding="utf-8",
+            newline="\n",
+        )
+        try:
+            mirror(mirror_ns)
+        except PlacementError:
+            pass
+        else:
+            raise PlacementError("selfcheck published with a manifest naming an absent skill")
     print("place: selfcheck OK")
     return 0
 

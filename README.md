@@ -82,7 +82,10 @@ python3 bin/place.py mirror --skills skills --dest <checkout> [--check]
 
 A skill listed in `UPSTREAM.tsv` is someone else's work; it is managed here so
 every tool gets the same bytes, but the mirror carries only what is written
-here.
+here. The manifest is required and begins with its header row, even when it
+lists nothing: publishing stops when it is missing, has lost the header, or
+names a skill this repository no longer holds, because a manifest that cannot
+be read would otherwise pass for one that reports no vendored work.
 
 ## Source format
 
