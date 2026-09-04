@@ -68,6 +68,10 @@ sha, and license.
 A declaration row carries `skills` in its `kind` column to receive them. Adding
 a skill means adding a directory here; no declaration or code changes.
 
+Rules and skills share one id namespace. An exception row in the declaration
+names an id and a location, and the location is what says which kind it means,
+so a rule and a skill answering to the same id is a check failure.
+
 Each projected skill directory gets an `.agent-skills` marker naming the skill.
 A rule file is reclaimable because its name carries the `agent-rules--` prefix,
 but a skill directory has to keep the name the agent invokes, so the ownership

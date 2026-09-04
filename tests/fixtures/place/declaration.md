@@ -33,7 +33,7 @@ L-cursor-skills	home	S1	cursor-agent	required				skills
 
 <!-- BEGIN EXCEPTIONS TSV -->
 ```tsv
-rule	location_id	requirement	reason
+artifact	location_id	requirement	reason
 alpha	L-claude-home	absent	home overlay is private
 epsilon	L-cursor-skills	absent	narrowed to one tool
 ```

@@ -106,8 +106,10 @@ def parse_declaration(path, text=None):
             raise PlacementError("location %s: unknown site %s" % (row["id"], row["anchor"]))
         by_id[row["id"]] = row
     exception_map = {}
+    if exceptions and "artifact" not in exceptions[0]:
+        raise PlacementError("%s: EXCEPTIONS names an artifact id; the column 'rule' is now 'artifact'" % path)
     for row in exceptions:
-        key = (row["rule"], row["location_id"])
+        key = (row["artifact"], row["location_id"])
         if key in exception_map:
             raise PlacementError("duplicate exception: %s/%s" % key)
         if row["location_id"] not in by_id:
@@ -621,6 +623,11 @@ def load_context(args):
     placement = load_placement()
     rules = agent_rules.load_rule_dirs(placement, args.rules)
     skills = agent_rules.load_skill_dirs(getattr(args, "skills", None))
+    claimed = sorted({meta["id"] for meta, _, _ in rules} & set(skills))
+    if claimed:
+        raise PlacementError(
+            "id claimed by both a rule and a skill: %s" % ", ".join(claimed)
+        )
     sites, workspaces, locations, exceptions = parse_declaration(args.declaration)
     selected = filter_locations(
         locations, workspaces, getattr(args, "site", None), getattr(args, "workspace", None), getattr(args, "scope", None)
@@ -742,6 +749,20 @@ def selfcheck(_args):
             raise PlacementError("selfcheck ignored a skill exception")
         if not (cursor_skills / "delta" / "SKILL.md").is_file():
             raise PlacementError("selfcheck apply did not project a skill for the second tool")
+        # One namespace: an exception row names an id, and the location it
+        # names decides the kind, so two kinds answering to one id make the
+        # declaration unreadable.
+        write_skill(skills_dir, "alpha", "Alpha skill")
+        try:
+            check(ns)
+        except PlacementError as exc:
+            if "claimed by both a rule and a skill" not in str(exc):
+                raise PlacementError("selfcheck stopped the collision for another reason: %s" % exc)
+        else:
+            raise PlacementError("selfcheck accepted one id claimed by a rule and a skill")
+        shutil.rmtree(skills_dir / "alpha")
+        if check(ns):
+            raise PlacementError("selfcheck still failing after the colliding skill was removed")
         # An unmanaged skill has no marker, so nothing may reclaim it.
         foreign = claude_skills / "hand-placed"
         foreign.mkdir(parents=True)
