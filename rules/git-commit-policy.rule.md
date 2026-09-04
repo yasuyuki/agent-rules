@@ -19,4 +19,5 @@ commit は次をすべて満たすときだけ行う。
 push、force、rebase、reset、tag、release、または履歴の書き換えは commit と別の操作であり、明示的な
 ユーザー承認が必要である。`git add -A` と `git commit -a` で他者の変更を巻き込まない。ドキュメント
 だけの commit には `docs-skip-ci-commit` に従い `[skip ci]` を含め、コードまたは設定を含む commit には
-付けない。完了報告には commit SHA を記す。
+付けない。正本 rule と配布済みの live rule は Markdown でも設定として扱う。完了報告には commit SHA を
+記す。
