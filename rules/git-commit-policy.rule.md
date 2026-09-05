@@ -11,9 +11,13 @@ commit は次をすべて満たすときだけ行う。
 
 - 変更が完了し、必須の検証が通っている、または検証不要な変更である
 - 対象が Git repository である
-- stage 対象に秘密情報、実ユーザー情報、実絶対パス、資格情報、local-data store、ignore 対象がない
+- stage 対象に秘密情報、実ユーザーデータ、資格情報、local-data store、ignore 対象がない。
+  machine 固有の path は公開 repo へ入れず、private 環境の配置宣言や運用文書に必要な場合だけ残す
 - 無関係な変更または作業前からの dirty state と混在していない
 - ユーザーが保留を指示していない
+
+無関係な dirty state はそのまま保ち、自分の変更を分離して stage できれば進める。
+検証失敗はまず自分で解決する。分離できない変更や解消できない失敗だけを報告して判断を仰ぐ。
 
 push は原則として、ユーザーの指示があるか作業上必要になるまで行わない。ただし、対象が OSS または
 private repository で、作業を topic branch で行った場合は、commit 後にその commit をその場で push
