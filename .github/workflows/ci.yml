@@ -19,4 +19,3 @@ jobs:
         with:
           python-version: "3.12"
       - run: python tests/test_rules.py
-      - run: python bin/place.py selfcheck

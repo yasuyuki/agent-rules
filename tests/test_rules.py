@@ -11,6 +11,17 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 RULES = ROOT / "bin" / "rules.py"
 
+# Exercise native Windows junctions as well as POSIX symlinks in the existing
+# cross-platform CI entry point.
+projection = subprocess.run(
+    [sys.executable, str(ROOT / "bin" / "place.py"), "selfcheck"],
+    cwd=ROOT, text=True, capture_output=True,
+)
+if projection.returncode:
+    raise AssertionError(
+        f"place selfcheck failed\n{projection.stdout}\n{projection.stderr}"
+    )
+
 spec = importlib.util.spec_from_file_location("agent_rules", RULES)
 agent_rules = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(agent_rules)
