@@ -315,6 +315,9 @@ def affected_targets(files, sections, locations, placement, sites, workspaces):
 
 def preflight_targets(targets):
     for target in targets:
+        for parent in target.absolute().parents:
+            if is_link(parent):
+                raise PlacementError("affected target ancestor is a link: %s" % parent)
         if is_link(target):
             raise PlacementError("affected target is a link: %s" % target)
         if target.is_dir() and any(is_link(path) for path in target.rglob("*")):
@@ -579,6 +582,7 @@ def mirror(args):
         )
     own = {skill_id: tree for skill_id, tree in skills.items() if skill_id not in vendored}
     dest = Path(args.dest) / "skills"
+    preflight_targets([dest])
     expected = {}
     for skill_id, tree in own.items():
         for relative, content in tree.items():
@@ -826,6 +830,33 @@ def selfcheck(_args):
         if check(ns):
             raise PlacementError("selfcheck still failing after the link was removed")
 
+        # A config root can itself be a junction, even before its managed
+        # children exist. Reject it before creating anything in the payload.
+        config = workspace / ".cursor"
+        saved_config = workspace / ".cursor-saved"
+        config.rename(saved_config)
+        make_link(config, payload)
+        try:
+            try:
+                apply(ns)
+            except PlacementError as exc:
+                if "ancestor is a link" not in str(exc):
+                    raise PlacementError("selfcheck stopped the ancestor for another reason: %s" % exc)
+            else:
+                raise PlacementError("selfcheck accepted a linked config ancestor")
+            if sorted(path.name for path in payload.iterdir()) != ["keep.md"]:
+                raise PlacementError("selfcheck wrote through a linked ancestor")
+            if (payload / "keep.md").read_bytes() != b"keep\n":
+                raise PlacementError("selfcheck changed the link payload")
+        finally:
+            if config.is_symlink():
+                config.unlink()
+            else:
+                config.rmdir()
+            saved_config.rename(config)
+        if check(ns):
+            raise PlacementError("selfcheck still failing after the ancestor link was removed")
+
         stale = workspace / ".cursor" / "rules" / "agent-rules--legacy.mdc"
         stale.write_text("nope\n", encoding="utf-8")
         if not check(ns):
@@ -906,6 +937,25 @@ def selfcheck(_args):
         published = sorted(path.name for path in (root / "mirror" / "skills").iterdir())
         if published != ["delta"]:
             raise PlacementError("selfcheck mirror published a vendored skill: %s" % published)
+        published_skill = root / "mirror" / "skills" / "delta"
+        shutil.rmtree(published_skill)
+        make_link(published_skill, payload)
+        try:
+            try:
+                mirror(mirror_ns)
+            except PlacementError:
+                pass
+            else:
+                raise PlacementError("selfcheck mirror accepted a linked skill")
+            if sorted(path.name for path in payload.iterdir()) != ["keep.md"]:
+                raise PlacementError("selfcheck mirror wrote through a link")
+            if (payload / "keep.md").read_bytes() != b"keep\n":
+                raise PlacementError("selfcheck mirror changed the link payload")
+        finally:
+            if published_skill.is_symlink():
+                published_skill.unlink()
+            else:
+                published_skill.rmdir()
         manifest.write_text(
             "%s\nzeta\tsomeone/skills\trefs/heads/main\tskills/zeta\tdeadbeef\tMIT\n" % header,
             encoding="utf-8",
