@@ -19,10 +19,38 @@ commit は次をすべて満たすときだけ行う。
 無関係な dirty state はそのまま保ち、自分の変更を分離して stage できれば進める。
 検証失敗はまず自分で解決する。分離できない変更や解消できない失敗だけを報告して判断を仰ぐ。
 
-push は原則として、ユーザーの指示があるか作業上必要になるまで行わない。ただし、対象が OSS または
-private repository で、作業を topic branch で行った場合は、commit 後にその commit をその場で push
-する。作業上の一時的な状態記録を目的とし、後で消える可能性がある commit は push しない。push 先を
-既存設定から一意に決められない場合は、推測せずユーザーへ確認する。
+push は次の順で判定する。`push` は通常push、`hold` はpushせず理由を報告、`ask` は
+判断に必要な情報だけをユーザーへ確認することを表す。判定に必要な情報の読取は先に行ってよい。
+repository属性とdefault branchの照会には、下記のremote選択順で導出した同じpush候補remoteを
+使う。候補を確定できなければ、その照会が必要になった段階で `ask` とする。
+
+1. 明示的なユーザー指示を優先する。push保留なら `hold`。push依頼があれば以下の自動push条件
+   （一時commit、repository属性、topic判定）を要求しないが、宛先の特定と履歴保護は省略しない。
+2. 一時commitは `hold`。一時保存・後で破棄する目的がユーザー指示または今回の作業記録に
+   明記されたcommitだけを該当させる。判定はleadがその根拠を示して行い、件名のWIPや
+   将来消える可能性だけから推測しない。明記がなければ通常のcommitとして次へ進む。
+3. push候補remoteが指すrepositoryの属性をhosting serviceのmetadataで確認する。
+   privateなら対象。publicは、明示的なOSS指定、またはrepositoryのLICENSEと対応する
+   OSI承認ライセンスの識別がある場合だけ対象とする。明示的な非OSS指定があれば `hold`。
+   publicというだけではOSSとしない。属性不明、根拠の矛盾、認証失敗は `ask`。
+4. detached HEADは `ask`。push候補remoteのdefault branchはhosting serviceのmetadata、
+   それが利用できなければ `git ls-remote --symref <remote> HEAD` で取得する。
+   ローカルのorigin/HEADやmain/masterという名前だけでは決めない。取得不能・矛盾は `ask`。
+   current branchがdefault branchと同名、またはそのremoteのdefault branchを追跡するなら
+   `hold`。それ以外の名前付きbranchを、この規則のtopic branchとする。
+5. 宛先を以下で一意に確定できれば `push`、できなければ `ask`。自動pushはcommit直後に行う。
+
+push候補remoteは `branch.<current>.pushRemote` → `remote.pushDefault` →
+`branch.<current>.remote` → remoteが1つだけならそれ、の順で最初の設定を使う。
+設定先が不存在、ローカルの `.`、複数のpush URL、fetch先と異なるrepositoryへのpush URLなら
+`ask`。複数remoteで設定がない場合はoriginという名前を優先しない。forkも同じ順で扱う。
+
+宛先branchは、候補remoteとupstream remoteが同じならupstream branch、upstreamがないか
+別remoteならcurrent branchと同名とする。これによりupstreamなしでもremoteが一意なら進める。
+`remote.<remote>.push` の独自refspecやmirror設定があれば `ask` とし、複数branchを送らない。
+自動pushの宛先branchがdefault branchなら `hold`。確定後は
+`git push <remote> HEAD:refs/heads/<destination>` と宛先を明示する。
+拒否・認証失敗は結果を報告して `hold` とし、別remoteやforce pushで再試行しない。
 
 force push、rebase、reset、tag、release、または履歴の書き換えは commit や通常の push と別の操作で
 あり、明示的なユーザー承認が必要である。`git add -A` と `git commit -a` で他者の変更を巻き込まない。
