@@ -16,7 +16,17 @@ or an action the available tools cannot perform. Existing authorization remains
 valid; do not ask for it again. Continue independent work while waiting.
 
 Give the smallest remaining action, its execution context, and what success
-looks like. Commands should be directly copyable. Use a script when quoting or
+looks like. Start from the person's current host and screen, using available
+evidence and existing entry-point documentation. Do not assume a target input
+field or terminal is already open: include the steps to open the application,
+connect to the target environment, and reach the input, as needed, in execution
+order with the visible success state for each step. Reuse an already open,
+connected session instead of restarting it. If the starting state is unknown,
+make those setup steps conditional; ask only when the uncertainty prevents a
+usable handoff. Distinguish checking the written procedure from observing the
+actual screen or successfully completing the action.
+
+Commands should be directly copyable. Use a script when quoting or
 multiple dependent operations make it more reliable, not to satisfy a character
 limit. Validate syntax or use a safe dry run where available; never execute a
 destructive or externally visible action merely to test the user's command.
