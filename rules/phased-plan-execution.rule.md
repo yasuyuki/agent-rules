@@ -14,6 +14,15 @@ rule experiment の executor と証拠の境界は `rule-experiment-role-gate` �
 書く。host と cwd が自明でなければ明示する。既存の test / build を使い、1行にするためだけの
 wrapper や追加 phase は作らない。機械で判定できない事項と未検証の事項を区別する。
 
+必須受け入れ条件は、実行者、host/cwd、対象source/config、実在する入口、必要入力、
+副作用、期待する観測を対応付ける。禁止操作と接する入口は内部処理まで確認する。
+既存の前提、今回実装する成果物、未確認事項を区別し、新CLIの試験は実装後の条件とする。
+存在しない事前確認入口を既存smokeとして扱わない。
+
+source更新や範囲変更時は、影響する配布物・pin・検証・承認境界を再評価する。
+承認済みsourceを既存配布先へ同期する必要作業に同じ承認を再要求しない。
+新しい権限・配布先・未承認のpolicy変更は別に扱う。
+
 既存の `<repo>/.claude/plan-phases/<slug>/` を使う。repo 自体が `.claude` なら
 `<repo>/plan-phases/<slug>/`。短い作業に phase 文書は不要。
 受け入れ条件が通った phase 文書と index の参照を削除し、未完了だけを残す。
