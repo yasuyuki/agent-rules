@@ -1,5 +1,7 @@
 """Offline policy fixtures and real-Git collection tests."""
 import copy
+import contextlib
+import io
 import importlib.util
 import json
 from pathlib import Path
@@ -26,6 +28,96 @@ BASE = {
 
 
 class PolicyTests(unittest.TestCase):
+    def test_default_branch_allowlist(self):
+        state = copy.deepcopy(BASE)
+        state["current_branch"] = "main"
+        policy = {"default_branch_push_repositories": ["git@github.com:example/project.git"]}
+        for configured in (None, {"default_branch_push_repositories": []},
+                           {"default_branch_push_repositories": ["https://github.com/other/project"]}):
+            self.assertEqual(preflight.decide(state, policy=configured)["reason"], "DEFAULT_BRANCH_PROTECTED")
+        allowed = preflight.decide(state, policy=policy)
+        self.assertEqual(allowed["reason"], "DEFAULT_BRANCH_PUSH_ALLOWED")
+        self.assertEqual(allowed["push_argv"], ["git", "push", "origin", "HEAD:refs/heads/main"])
+        state["current_branch"] = "feature"
+        self.assertEqual(preflight.decide(state, policy=policy)["reason"], "PUSH_ALLOWED")
+        state["upstream"] = {"remote": "origin", "merge": "refs/heads/main"}
+        self.assertEqual(preflight.decide(state, policy=policy)["destination"], "main")
+        state["current_branch"] = "trunk"
+        state["repo"]["default_branch"] = "trunk"
+        state["upstream"] = {}
+        self.assertEqual(preflight.decide(state, policy=policy)["reason"], "DEFAULT_BRANCH_PUSH_ALLOWED")
+        state["remotes"]["fork"] = {"fetch_urls": ["https://github.com/fork/project.git"]}
+        state["candidates"]["branch_push_remote"] = "fork"
+        self.assertEqual(preflight.decide(state, policy=policy)["reason"], "DEFAULT_BRANCH_PROTECTED")
+
+    def test_allowlist_preserves_existing_restrictions(self):
+        policy = {"default_branch_push_repositories": ["https://github.com/example/project"]}
+        fixtures = json.loads((ROOT / "tests/fixtures/push_preflight.json").read_text())
+        for fixture in fixtures:
+            if fixture["reason"] == "DEFAULT_BRANCH_PROTECTED":
+                continue
+            with self.subTest(fixture=fixture["name"]):
+                state = copy.deepcopy(BASE)
+                for key, value in fixture.get("state", {}).items():
+                    if isinstance(value, dict):
+                        state[key].update(value)
+                    else:
+                        state[key] = value
+                actual = preflight.decide(state, policy=policy, **fixture.get("inputs", {}))
+                self.assertEqual(actual["reason"], fixture["reason"])
+                self.assertEqual(actual["decision"], fixture["decision"])
+
+    def test_allowlist_uses_existing_repository_identity(self):
+        state = copy.deepcopy(BASE)
+        state["current_branch"] = "main"
+        state["remotes"]["origin"]["fetch_urls"] = ["https://example.com/team/repo"]
+        for url, reason in (
+            ("git+https://example.com/team/repo", "DEFAULT_BRANCH_PUSH_ALLOWED"),
+            ("ssh://git@example.com/team/repo", "DEFAULT_BRANCH_PROTECTED"),
+            ("https://example.com/team/repo.git", "DEFAULT_BRANCH_PROTECTED"),
+        ):
+            with self.subTest(url=url):
+                policy = {"default_branch_push_repositories": [url]}
+                self.assertEqual(preflight.decide(state, policy=policy)["reason"], reason)
+
+    def test_invalid_policy_and_explicit_intent(self):
+        invalid = [[], {}, {"default_branch_push_repositories": None},
+                   {"default_branch_push_repositories": [], "extra": True}]
+        invalid += [{"default_branch_push_repositories": [url]} for url in
+                    (None, "origin", "/tmp/repo", "file:///tmp/repo", "../repo", "C:/repo",
+                     "https://github.com/example/*", "https://github.com/example/pro?ject",
+                     "https://[broken", "https://github.com", "git@github.com:example/[repo]",
+                     "https://github.com/example/repo#fragment")]
+        for policy in invalid:
+            with self.subTest(policy=policy):
+                self.assertEqual(preflight.decide(BASE, policy=policy)["reason"], "INVALID_PUSH_POLICY")
+                self.assertEqual(preflight.decide(BASE, policy=policy, user_intent="hold")["reason"], "USER_HOLD")
+                self.assertEqual(preflight.decide(BASE, policy=policy, temporary=True)["reason"], "TEMPORARY_COMMIT")
+                self.assertEqual(preflight.decide(BASE, policy=policy, user_intent="push")["reason"], "PUSH_ALLOWED")
+
+    def test_cli_policy_loading(self):
+        state = copy.deepcopy(BASE)
+        state["current_branch"] = "main"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "policy.json"
+            def invoke(*args):
+                output = io.StringIO()
+                with patch.object(sys, "argv", ["push_preflight.py", directory, "--policy", str(path), *args]), \
+                     patch.object(preflight, "collect_state", return_value=state), contextlib.redirect_stdout(output):
+                    self.assertEqual(preflight.main(), 0)
+                return json.loads(output.getvalue())
+            self.assertEqual(invoke()["reason"], "INVALID_PUSH_POLICY")
+            for contents in (b"{", b"null", b"\xff", b'{"default_branch_push_repositories": [false]}'):
+                path.write_bytes(contents)
+                self.assertEqual(invoke()["reason"], "INVALID_PUSH_POLICY")
+            path.write_text('{"default_branch_push_repositories": []}', encoding="utf-8")
+            self.assertEqual(invoke()["reason"], "DEFAULT_BRANCH_PROTECTED")
+            path.write_text('{"default_branch_push_repositories": ["https://github.com/example/project"]}', encoding="utf-8")
+            self.assertEqual(invoke()["reason"], "DEFAULT_BRANCH_PUSH_ALLOWED")
+            with patch.object(Path, "read_text", side_effect=PermissionError):
+                self.assertEqual(invoke()["reason"], "INVALID_PUSH_POLICY")
+                self.assertEqual(invoke("--user-intent", "push")["reason"], "PUSH_ALLOWED")
+
     def test_distinct_remote_endpoints(self):
         for fetch, push in [
             ("https://github.com/example/project.git", "ssh://git@github.com:2222/example/project.git"),

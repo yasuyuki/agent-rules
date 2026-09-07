@@ -1,7 +1,7 @@
 ---
 id: git-commit-policy
 title: Git commit の既定
-summary: 完了して検証済みの自分の変更だけを commit し、OSS または private repository の topic branch では原則 push する。
+summary: 検証済みの自分の変更を commit し、OSS または private の topic branch と明示許可された default branch は原則 push する。
 ---
 
 作業が完了し、ユーザーに判断を仰ぐ理由がなければ、ターンを終える前に commit する。commit するのは
@@ -28,6 +28,15 @@ commit は次をすべて満たすときだけ行う。
 JSON の `decision` と `reason` を読み、`push` のときだけ返された `push_argv` を
 対象 repo で通常実行する。preflight 自体は push せず、履歴保護を解除しない。
 
+環境が private の許可リストを指定している場合は `--policy <path>` を付ける。
+JSON は `{"default_branch_push_repositories": []}` の形式で、要素は push 先 repository の
+URL とする。既存の repository 識別で完全一致させ、local path、remote 名、wildcard は使わない。
+登録はユーザーが対象 repo の自動 push 許可を明示した場合だけ行い、通常の開発依頼から
+推測しない。許可は default branch を理由とする保留だけを解除し、他の条件は変えない。
+未指定・空・未登録は従来どおり。明示的な push / hold と一時commitの判定を優先し、
+その後の自動判定で指定ファイルが欠落・読取不能・形式不正なら `ask` とする。
+環境が指定したファイルを省略してこの判定を迂回しない。
+
 preflight は次の順で判定する。`push` は通常push、`hold` はpushせず理由を報告、`ask` は
 判断に必要な情報だけをユーザーへ確認することを表す。判定に必要な情報の読取は先に行ってよい。
 repository属性とdefault branchの照会には、下記のremote選択順で導出した同じpush候補remoteを
@@ -46,7 +55,8 @@ repository属性とdefault branchの照会には、下記のremote選択順で�
    それが利用できなければ `git ls-remote --symref <remote> HEAD` で取得する。
    ローカルのorigin/HEADやmain/masterという名前だけでは決めない。取得不能・矛盾は `ask`。
    current branchがdefault branchと同名、またはそのremoteのdefault branchを追跡するなら
-   `hold`。それ以外の名前付きbranchを、この規則のtopic branchとする。
+   許可リストにpush候補remoteのrepositoryが無ければ `hold`。
+   それ以外の名前付きbranchを、この規則のtopic branchとする。
 5. 宛先を以下で一意に確定できれば `push`、できなければ `ask`。自動pushはcommit直後に行う。
 
 push候補remoteは `branch.<current>.pushRemote` → `remote.pushDefault` →
@@ -57,7 +67,7 @@ push候補remoteは `branch.<current>.pushRemote` → `remote.pushDefault` →
 宛先branchは、候補remoteとupstream remoteが同じならupstream branch、upstreamがないか
 別remoteならcurrent branchと同名とする。これによりupstreamなしでもremoteが一意なら進める。
 `remote.<remote>.push` の独自refspecやmirror設定があれば `ask` とし、複数branchを送らない。
-自動pushの宛先branchがdefault branchなら `hold`。確定後は
+自動pushの宛先branchがdefault branchで、push候補remoteのrepositoryが未登録なら `hold`。確定後は
 `git push <remote> HEAD:refs/heads/<destination>` と宛先を明示する。
 拒否・認証失敗は結果を報告して `hold` とし、別remoteやforce pushで再試行しない。
 

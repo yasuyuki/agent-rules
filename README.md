@@ -72,6 +72,27 @@ WIP subject nor public visibility alone establishes these facts. Explicit push
 bypasses automatic eligibility and topic restrictions, while retaining remote
 and destination checks and normal Git history protection.
 
+An environment can supply a private allowlist with `--policy <path>`:
+
+```json
+{"default_branch_push_repositories": []}
+```
+
+Add repository URLs only when the user explicitly authorizes automatic default
+branch pushes for those repositories. The selected push remote must match an
+entry using the helper's existing repository identity rules: the optional
+`git+` prefix is removed, then GitHub SSH/HTTPS URLs normalize to one repository
+identity; other hosts retain their transport and path spelling. Local paths, remote names,
+and wildcard patterns are invalid. A match removes only the default-branch
+restriction and returns `DEFAULT_BRANCH_PUSH_ALLOWED`; temporary commits,
+repository eligibility, and destination checks still apply. No policy, an empty
+list, or an unmatched repository retains the existing behavior. Invalid or
+unreadable configured policy returns `ask` / `INVALID_PUSH_POLICY` for automatic
+decisions after explicit intent and temporary-commit handling. Explicit push
+and hold do not depend on this file. Never omit a configured policy to bypass
+an error. The private environment binding supplies its path; rule projection
+does not copy the JSON into product repositories.
+
 Git configuration selects the candidate remote before any hosting lookup.
 GitHub metadata is read using authenticated `gh`; unsupported hosts, missing
 metadata, ambiguous destinations, and unrecognized licenses return `ask`.

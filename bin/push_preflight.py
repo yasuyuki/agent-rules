@@ -61,7 +61,7 @@ def valid_name(value: Any) -> bool:
 
 
 def decide(state: dict[str, Any], user_intent: str = "auto", temporary: bool = False,
-           oss: str = "auto") -> dict[str, Any]:
+           oss: str = "auto", policy: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return a deterministic ``push``, ``hold``, or ``ask`` policy decision.
 
     ``user_intent`` is ``auto``, ``push``, or ``hold``; ``oss`` is ``auto``,
@@ -73,6 +73,12 @@ def decide(state: dict[str, Any], user_intent: str = "auto", temporary: bool = F
         return result("hold", "USER_HOLD")
     if temporary and user_intent != "push":
         return result("hold", "TEMPORARY_COMMIT")
+    allowed_repositories: set[tuple[str, str]] = set()
+    if user_intent == "auto" and policy is not None:
+        try:
+            allowed_repositories = policy_repositories(policy)
+        except (TypeError, ValueError):
+            return result("ask", "INVALID_PUSH_POLICY")
     if state.get("collection_error"):
         return result("ask", "COLLECTION_ERROR")
 
@@ -131,6 +137,8 @@ def decide(state: dict[str, Any], user_intent: str = "auto", temporary: bool = F
     if not valid_name(default_branch):
         return result("ask", "DEFAULT_BRANCH_UNAVAILABLE", remote, destination)
     if branch == default_branch or destination == default_branch:
+        if push_identity in allowed_repositories:
+            return result("push", "DEFAULT_BRANCH_PUSH_ALLOWED", remote, destination)
         return result("hold", "DEFAULT_BRANCH_PROTECTED", remote, destination)
     return result("push", "PUSH_ALLOWED", remote, destination)
 
@@ -172,6 +180,39 @@ def repo_identity(url: str) -> tuple[str, str] | None:
     if not host or not path:
         return None
     return host.lower(), path
+
+
+def policy_repositories(policy: dict[str, Any]) -> set[tuple[str, str]]:
+    """Validate an exact repository URL allowlist, never local paths or patterns."""
+    key = "default_branch_push_repositories"
+    if not isinstance(policy, dict) or set(policy) != {key} or not isinstance(policy[key], list):
+        raise ValueError("invalid push policy")
+    identities = set()
+    for url in policy[key]:
+        if not isinstance(url, str) or not url or any(c.isspace() or c in "*?[]" for c in url):
+            raise ValueError("invalid repository URL")
+        value = url.removeprefix("git+")
+        if "://" in value:
+            parsed = urlsplit(value)
+            if parsed.scheme not in {"http", "https", "ssh", "git"} or not parsed.hostname or not parsed.path.strip("/"):
+                raise ValueError("invalid repository URL")
+        elif not re.fullmatch(r"[^@/:]+@[^/:]+:.+", value):
+            raise ValueError("invalid repository URL")
+        identity = repo_identity(url)
+        if identity is None:
+            raise ValueError("invalid repository URL")
+        identities.add(identity)
+    return identities
+
+
+def load_policy(path: Path) -> dict[str, Any]:
+    """Return invalid policy state on read/parse failure without exposing contents."""
+    try:
+        policy = json.loads(path.read_text(encoding="utf-8"))
+        policy_repositories(policy)
+        return policy
+    except (OSError, UnicodeError, TypeError, ValueError):
+        return {}
 
 
 def run_git(repo: Path, *args: str, required: bool = True) -> str | None:
@@ -276,9 +317,11 @@ def main() -> int:
     parser.add_argument("--user-intent", choices=("auto", "push", "hold"), default="auto")
     parser.add_argument("--temporary", action="store_true")
     parser.add_argument("--oss", choices=("auto", "yes", "no"), default="auto")
+    parser.add_argument("--policy", type=Path, help="private repository push allowlist JSON")
     args = parser.parse_args()
     need_metadata = args.user_intent == "auto" and not args.temporary
-    output = decide(collect_state(Path(args.repo).resolve(), need_metadata), args.user_intent, args.temporary, args.oss)
+    policy = load_policy(args.policy) if need_metadata and args.policy is not None else None
+    output = decide(collect_state(Path(args.repo).resolve(), need_metadata), args.user_intent, args.temporary, args.oss, policy)
     print(json.dumps(output, sort_keys=True, separators=(",", ":")))
     return 0
 
