@@ -811,7 +811,7 @@ def selfcheck(_args):
         # written through it into whatever the link points at.
         payload = root / "link-payload"
         payload.mkdir()
-        (payload / "keep.md").write_text("keep\n", encoding="utf-8")
+        (payload / "keep.md").write_bytes(b"keep\n")
         linked = claude_skills / "linked"
         make_link(linked, payload)
         try:
