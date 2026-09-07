@@ -19,7 +19,16 @@ commit は次をすべて満たすときだけ行う。
 無関係な dirty state はそのまま保ち、自分の変更を分離して stage できれば進める。
 検証失敗はまず自分で解決する。分離できない変更や解消できない失敗だけを報告して判断を仰ぐ。
 
-push は次の順で判定する。`push` は通常push、`hold` はpushせず理由を報告、`ask` は
+全 agent は commit 後、push の前に正本 checkout の共通 preflight を必ず実行する。
+`python3 <agent-rules>/bin/push_preflight.py <repo>` を使い、明示された指示は
+`--user-intent push` / `--user-intent hold`、一時保存の根拠がある場合は `--temporary`、
+明示された OSS / 非 OSS 属性は `--oss yes` / `--oss no` で渡す。省略時は自動判定する。
+`<agent-rules>` は環境の正本 checkout へ解決し、見つからない・実行できない場合は
+`ask` として不足を報告する。自然言語による独自判定で代用しない。
+JSON の `decision` と `reason` を読み、`push` のときだけ返された `push_argv` を
+対象 repo で通常実行する。preflight 自体は push せず、履歴保護を解除しない。
+
+preflight は次の順で判定する。`push` は通常push、`hold` はpushせず理由を報告、`ask` は
 判断に必要な情報だけをユーザーへ確認することを表す。判定に必要な情報の読取は先に行ってよい。
 repository属性とdefault branchの照会には、下記のremote選択順で導出した同じpush候補remoteを
 使う。候補を確定できなければ、その照会が必要になった段階で `ask` とする。

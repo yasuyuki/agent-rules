@@ -50,6 +50,48 @@ left untouched. A malformed unmatched managed marker fails closed; repair that
 marker before rendering so the tool never guesses how much local text to
 remove.
 
+## Push preflight
+
+Every agent must run the shared, read-only decision command after committing,
+using the source checkout path supplied by its environment:
+
+```console
+python3 <agent-rules>/bin/push_preflight.py <repository>
+```
+
+It emits one JSON object with `decision` (`push`, `hold`, or `ask`), a stable
+`reason` code, `remote`, and `destination`. Only `push` includes `push_argv`,
+which the caller may execute in the target repository. The command never pushes
+or changes Git state. A successful decision, including `hold` or `ask`, exits 0;
+callers must inspect `decision`, not treat the exit status as push approval.
+
+Pass explicit user instructions as `--user-intent push` or `--user-intent hold`,
+documented temporary-save intent as `--temporary`, and explicit repository
+classification as `--oss yes` or `--oss no`. Defaults are automatic; neither a
+WIP subject nor public visibility alone establishes these facts. Explicit push
+bypasses automatic eligibility and topic restrictions, while retaining remote
+and destination checks and normal Git history protection.
+
+Git configuration selects the candidate remote before any hosting lookup.
+GitHub metadata is read using authenticated `gh`; unsupported hosts, missing
+metadata, ambiguous destinations, and unrecognized licenses return `ask`.
+Automatic license recognition currently covers OSI-approved
+[MIT](https://opensource.org/license/mit),
+[Apache-2.0](https://opensource.org/license/apache-2.0),
+[BSD-3-Clause](https://opensource.org/license/bsd-3-clause), and
+[ISC](https://opensource.org/license/isc). Other licenses require explicit OSS
+classification; the helper does not infer approval from an arbitrary SPDX ID.
+The helper must be available from the source checkout; rule projection does not
+install executables. Do not replace an unavailable helper with an improvised
+push decision. See `rules/git-commit-policy.rule.md` for the policy order.
+
+Offline fixtures exercise default and topic branches, upstream selection, forks,
+visibility, detached HEAD, and unsafe remote configuration:
+
+```console
+python3 tests/test_push_preflight.py
+```
+
 ## Skills
 
 Rules and skills are the two managed kinds. A rule is always-on text projected
