@@ -78,15 +78,26 @@ An environment can supply a private allowlist with `--policy <path>`:
 {"default_branch_push_repositories": []}
 ```
 
+Optional booleans `default_branch_push_private` and `default_branch_push_oss`
+authorize all private or all eligible public OSS repositories, respectively;
+both default to false. The optional URL array
+`default_branch_push_excluded_repositories` defaults to empty and overrides
+both individual and category grants, returning `hold` /
+`DEFAULT_BRANCH_PUSH_EXCLUDED` for default-branch automatic pushes. Explicit
+push still takes precedence. Category grants require explicit user authorization
+and preserve the existing visibility/license checks. PR activity is not polled
+or interpreted by this helper; any decision to exclude a repository belongs to
+the environment's operating policy.
+
 Add repository URLs only when the user explicitly authorizes automatic default
-branch pushes for those repositories. The selected push remote must match an
+branch pushes for those repositories. For an individual grant, the selected push remote must match an
 entry using the helper's existing repository identity rules: the optional
 `git+` prefix is removed, then GitHub SSH/HTTPS URLs normalize to one repository
 identity; other hosts retain their transport and path spelling. Local paths, remote names,
 and wildcard patterns are invalid. A match removes only the default-branch
 restriction and returns `DEFAULT_BRANCH_PUSH_ALLOWED`; temporary commits,
-repository eligibility, and destination checks still apply. No policy, an empty
-list, or an unmatched repository retains the existing behavior. Invalid or
+repository eligibility, and destination checks still apply. Without category
+grants, no policy, an empty list, or an unmatched repository retains the existing behavior. Invalid or
 unreadable configured policy returns `ask` / `INVALID_PUSH_POLICY` for automatic
 decisions after explicit intent and temporary-commit handling. Explicit push
 and hold do not depend on this file. Never omit a configured policy to bypass

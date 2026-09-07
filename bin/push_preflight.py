@@ -137,7 +137,12 @@ def decide(state: dict[str, Any], user_intent: str = "auto", temporary: bool = F
     if not valid_name(default_branch):
         return result("ask", "DEFAULT_BRANCH_UNAVAILABLE", remote, destination)
     if branch == default_branch or destination == default_branch:
-        if push_identity in allowed_repositories:
+        configured = policy or {}
+        excluded = {repo_identity(url) for url in configured.get("default_branch_push_excluded_repositories", [])}
+        if push_identity in excluded:
+            return result("hold", "DEFAULT_BRANCH_PUSH_EXCLUDED", remote, destination)
+        category = "private" if repo.get("visibility") == "private" else "oss"
+        if push_identity in allowed_repositories or configured.get("default_branch_push_" + category, False):
             return result("push", "DEFAULT_BRANCH_PUSH_ALLOWED", remote, destination)
         return result("hold", "DEFAULT_BRANCH_PROTECTED", remote, destination)
     return result("push", "PUSH_ALLOWED", remote, destination)
@@ -185,10 +190,15 @@ def repo_identity(url: str) -> tuple[str, str] | None:
 def policy_repositories(policy: dict[str, Any]) -> set[tuple[str, str]]:
     """Validate an exact repository URL allowlist, never local paths or patterns."""
     key = "default_branch_push_repositories"
-    if not isinstance(policy, dict) or set(policy) != {key} or not isinstance(policy[key], list):
+    excluded_key = "default_branch_push_excluded_repositories"
+    flags = {"default_branch_push_private", "default_branch_push_oss"}
+    if (not isinstance(policy, dict) or key not in policy or
+            set(policy) - {key, excluded_key} - flags or not isinstance(policy[key], list) or
+            not isinstance(policy.get(excluded_key, []), list) or
+            any(type(policy.get(flag, False)) is not bool for flag in flags)):
         raise ValueError("invalid push policy")
     identities = set()
-    for url in policy[key]:
+    for url in policy[key] + policy.get(excluded_key, []):
         if not isinstance(url, str) or not url or any(c.isspace() or c in "*?[]" for c in url):
             raise ValueError("invalid repository URL")
         value = url.removeprefix("git+")
@@ -201,7 +211,8 @@ def policy_repositories(policy: dict[str, Any]) -> set[tuple[str, str]]:
         identity = repo_identity(url)
         if identity is None:
             raise ValueError("invalid repository URL")
-        identities.add(identity)
+        if url in policy[key]:
+            identities.add(identity)
     return identities
 
 

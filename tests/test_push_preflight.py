@@ -80,6 +80,54 @@ class PolicyTests(unittest.TestCase):
                 policy = {"default_branch_push_repositories": [url]}
                 self.assertEqual(preflight.decide(state, policy=policy)["reason"], reason)
 
+    def test_category_grants_and_exclusions(self):
+        state = copy.deepcopy(BASE)
+        state["current_branch"] = "main"
+        policy = {"default_branch_push_repositories": [],
+                  "default_branch_push_private": True, "default_branch_push_oss": True}
+        self.assertEqual(preflight.decide(state, policy=policy)["reason"], "DEFAULT_BRANCH_PUSH_ALLOWED")
+        state["repo"].update(visibility="public", license_spdx_id="MIT")
+        self.assertEqual(preflight.decide(state, policy=policy)["reason"], "DEFAULT_BRANCH_PUSH_ALLOWED")
+        policy["default_branch_push_oss"] = False
+        self.assertEqual(preflight.decide(state, policy=policy)["reason"], "DEFAULT_BRANCH_PROTECTED")
+        policy["default_branch_push_oss"] = True
+        state["repo"]["license_spdx_id"] = None
+        self.assertEqual(preflight.decide(state, policy=policy)["reason"], "UNKNOWN_OSS_LICENSE")
+        self.assertEqual(preflight.decide(state, policy=policy, oss="yes")["reason"], "DEFAULT_BRANCH_PUSH_ALLOWED")
+        self.assertEqual(preflight.decide(state, policy=policy, oss="no")["reason"], "NON_OSS_PUBLIC_REPOSITORY")
+        state["repo"]["visibility"] = "private"
+        policy["default_branch_push_private"] = False
+        self.assertEqual(preflight.decide(state, policy=policy)["reason"], "DEFAULT_BRANCH_PROTECTED")
+        policy["default_branch_push_private"] = True
+        policy["default_branch_push_repositories"] = ["https://github.com/example/project"]
+        policy["default_branch_push_excluded_repositories"] = ["git@github.com:example/project.git"]
+        self.assertEqual(preflight.decide(state, policy=policy)["reason"], "DEFAULT_BRANCH_PUSH_EXCLUDED")
+        self.assertEqual(preflight.decide(state, policy=policy, user_intent="push")["reason"], "PUSH_ALLOWED")
+        state["current_branch"] = "feature"
+        self.assertEqual(preflight.decide(state, policy=policy)["reason"], "PUSH_ALLOWED")
+        state["upstream"] = {"remote": "origin", "merge": "refs/heads/main"}
+        self.assertEqual(preflight.decide(state, policy=policy)["reason"], "DEFAULT_BRANCH_PUSH_EXCLUDED")
+        policy["default_branch_push_excluded_repositories"] = ["https://github.com/other/project"]
+        self.assertEqual(preflight.decide(state, policy=policy)["reason"], "DEFAULT_BRANCH_PUSH_ALLOWED")
+
+    def test_category_grants_preserve_existing_restrictions(self):
+        policy = {"default_branch_push_repositories": [],
+                  "default_branch_push_private": True, "default_branch_push_oss": True}
+        fixtures = json.loads((ROOT / "tests/fixtures/push_preflight.json").read_text())
+        for fixture in fixtures:
+            if fixture["reason"] == "DEFAULT_BRANCH_PROTECTED":
+                continue
+            with self.subTest(fixture=fixture["name"]):
+                state = copy.deepcopy(BASE)
+                for key, value in fixture.get("state", {}).items():
+                    if isinstance(value, dict):
+                        state[key].update(value)
+                    else:
+                        state[key] = value
+                actual = preflight.decide(state, policy=policy, **fixture.get("inputs", {}))
+                self.assertEqual(actual["reason"], fixture["reason"])
+                self.assertEqual(actual["decision"], fixture["decision"])
+
     def test_invalid_policy_and_explicit_intent(self):
         invalid = [[], {}, {"default_branch_push_repositories": None},
                    {"default_branch_push_repositories": [], "extra": True}]
@@ -88,6 +136,10 @@ class PolicyTests(unittest.TestCase):
                      "https://github.com/example/*", "https://github.com/example/pro?ject",
                      "https://[broken", "https://github.com", "git@github.com:example/[repo]",
                      "https://github.com/example/repo#fragment")]
+        invalid += [{"default_branch_push_repositories": [], key: value} for key, value in
+                    (("default_branch_push_private", "true"), ("default_branch_push_oss", 1),
+                     ("default_branch_push_oss", None), ("default_branch_push_excluded_repositories", "origin"),
+                     ("default_branch_push_excluded_repositories", ["*"]))]
         for policy in invalid:
             with self.subTest(policy=policy):
                 self.assertEqual(preflight.decide(BASE, policy=policy)["reason"], "INVALID_PUSH_POLICY")

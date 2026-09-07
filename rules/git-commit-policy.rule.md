@@ -31,9 +31,12 @@ JSON の `decision` と `reason` を読み、`push` のときだけ返された 
 環境が private の許可リストを指定している場合は `--policy <path>` を付ける。
 JSON は `{"default_branch_push_repositories": []}` の形式で、要素は push 先 repository の
 URL とする。既存の repository 識別で完全一致させ、local path、remote 名、wildcard は使わない。
-登録はユーザーが対象 repo の自動 push 許可を明示した場合だけ行い、通常の開発依頼から
-推測しない。許可は default branch を理由とする保留だけを解除し、他の条件は変えない。
-未指定・空・未登録は従来どおり。明示的な push / hold と一時commitの判定を優先し、
+追加の boolean `default_branch_push_private` / `default_branch_push_oss` は、private 全体 /
+OSS 全体を許可する。省略時は false。`default_branch_push_excluded_repositories` は同形式の
+URL 配列（省略時は空）で、個別許可・属性別許可より優先して default branch の自動 push を保留する。
+許可の追加・属性別の有効化はユーザーの明示指示に基づき、通常の開発依頼から推測しない。
+許可は default branch を理由とする保留だけを解除し、他の条件は変えない。
+未指定・許可なしは従来どおり。明示的な push / hold と一時commitの判定を優先し、
 その後の自動判定で指定ファイルが欠落・読取不能・形式不正なら `ask` とする。
 環境が指定したファイルを省略してこの判定を迂回しない。
 
@@ -55,7 +58,7 @@ repository属性とdefault branchの照会には、下記のremote選択順で�
    それが利用できなければ `git ls-remote --symref <remote> HEAD` で取得する。
    ローカルのorigin/HEADやmain/masterという名前だけでは決めない。取得不能・矛盾は `ask`。
    current branchがdefault branchと同名、またはそのremoteのdefault branchを追跡するなら
-   許可リストにpush候補remoteのrepositoryが無ければ `hold`。
+   push候補remoteのrepositoryが除外対象、または個別・属性別のいずれでも許可されなければ `hold`。
    それ以外の名前付きbranchを、この規則のtopic branchとする。
 5. 宛先を以下で一意に確定できれば `push`、できなければ `ask`。自動pushはcommit直後に行う。
 
@@ -67,7 +70,7 @@ push候補remoteは `branch.<current>.pushRemote` → `remote.pushDefault` →
 宛先branchは、候補remoteとupstream remoteが同じならupstream branch、upstreamがないか
 別remoteならcurrent branchと同名とする。これによりupstreamなしでもremoteが一意なら進める。
 `remote.<remote>.push` の独自refspecやmirror設定があれば `ask` とし、複数branchを送らない。
-自動pushの宛先branchがdefault branchで、push候補remoteのrepositoryが未登録なら `hold`。確定後は
+自動pushの宛先branchがdefault branchなら、同じ個別・属性別許可と除外判定を行う。確定後は
 `git push <remote> HEAD:refs/heads/<destination>` と宛先を明示する。
 拒否・認証失敗は結果を報告して `hold` とし、別remoteやforce pushで再試行しない。
 
