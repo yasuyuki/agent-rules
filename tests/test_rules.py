@@ -10,6 +10,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 RULES = ROOT / "bin" / "rules.py"
+PLACE = ROOT / "bin" / "place.py"
 
 # Exercise native Windows junctions as well as POSIX symlinks in the existing
 # cross-platform CI entry point.
@@ -25,6 +26,10 @@ if projection.returncode:
 spec = importlib.util.spec_from_file_location("agent_rules", RULES)
 agent_rules = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(agent_rules)
+
+place_spec = importlib.util.spec_from_file_location("agent_rules_place", PLACE)
+place = importlib.util.module_from_spec(place_spec)
+place_spec.loader.exec_module(place)
 
 
 def run(workspace: Path, command: str, expected: int = 0) -> None:
@@ -194,3 +199,92 @@ with tempfile.TemporaryDirectory() as directory:
         pass
     else:
         raise AssertionError("a manifest without its header passed")
+
+
+# A portable checkout can validate policy and launch a declared local CLI
+# without work-records, bin/dev.py, or a maintainer-specific configuration.
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    home = root / "home"
+    workspace = root / "workspace"
+    home.mkdir()
+    workspace.mkdir()
+    declaration = root / "declaration.md"
+    declaration.write_text(
+        """<!-- BEGIN SITES TSV -->
+```tsv
+id\thost\tuser\thome\treach\tlaunch
+local\tlocal\ttester\t{home}\tlocal\t
+```
+<!-- END SITES TSV -->
+<!-- BEGIN WORKSPACES TSV -->
+```tsv
+id\tsite\tkind\tpath\textra
+work\tlocal\tdirect\t{workspace}\t
+```
+<!-- END WORKSPACES TSV -->
+<!-- BEGIN LOCATIONS TSV -->
+```tsv
+id\tscope\tanchor\ttool\trequirement\treason\tlegacy\tpath\tkind
+home-codex\thome\tlocal\tcodex\trequired\t\t\t\t
+home-claude\thome\tlocal\tclaude\trequired\t\t\t\t
+work-codex\tworkspace\twork\tcodex\trequired\t\t\t\t
+```
+<!-- END LOCATIONS TSV -->
+<!-- BEGIN EXCEPTIONS TSV -->
+```tsv
+artifact\tlocation_id\trequirement\treason
+```
+<!-- END EXCEPTIONS TSV -->
+""".format(home=home, workspace=workspace),
+        encoding="utf-8",
+    )
+    common = dict(
+        declaration=str(declaration), rules=None, skills=None,
+        site=None, workspace=None, scope=None,
+    )
+    listed = subprocess.run(
+        [sys.executable, str(PLACE), "list", "--declaration", str(declaration)],
+        text=True, capture_output=True,
+    )
+    assert listed.returncode == 0, listed.stderr
+    assert listed.stdout.splitlines() == [
+        "workspace\tpath\ttools",
+        "work\t%s\tclaude,codex" % workspace,
+    ]
+    assert place.apply(type("Args", (), common)()) == 0
+    args = type("Args", (), dict(
+        common, workspace_id="work", tool="codex", tool_args=["--version"],
+    ))()
+    agents = workspace / "AGENTS.md"
+    agents.write_text(
+        agents.read_text(encoding="utf-8").replace("-->\n", "-->\ndrift\n", 1),
+        encoding="utf-8",
+    )
+    refused = []
+    try:
+        place.start(
+            args,
+            resolver=lambda name: "/usr/bin/" + name,
+            runner=lambda argv, **kwargs: refused.append((argv, kwargs)),
+        )
+    except place.PlacementError:
+        pass
+    else:
+        raise AssertionError("start accepted drifted policy")
+    assert refused == []
+    assert place.apply(type("Args", (), common)()) == 0
+
+    calls = []
+    result = place.start(
+        args,
+        resolver=lambda name: "/usr/bin/" + name,
+        runner=lambda argv, **kwargs: (
+            calls.append((argv, kwargs))
+            or subprocess.CompletedProcess(argv, 7)
+        ),
+    )
+    assert result == 7
+    assert calls == [
+        (["/usr/bin/codex", "--version"], {"cwd": str(workspace)})
+    ]

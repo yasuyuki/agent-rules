@@ -32,18 +32,34 @@ sections in `AGENTS.md`. `verify` returns a nonzero status when generated conten
 is missing, changed, duplicated, or mixed with stale content in the managed
 namespace.
 
-Project those same bytes onto a private site/workspace declaration:
+Project those same bytes onto a site/workspace declaration. The checkout's
+`rules/` and `skills/` are always included; repeat `--rules` or `--skills` only
+for additional private sources:
 
 ```console
-python3 bin/place.py check --declaration PLACEMENT.md --rules rules --skills skills
-python3 bin/place.py apply --declaration PLACEMENT.md --rules rules --skills skills
+python3 bin/place.py check --declaration PLACEMENT.md
+python3 bin/place.py apply --declaration PLACEMENT.md
 python3 bin/place.py selfcheck
 ```
 
-`place.py` takes no machine paths of its own. Repeat `--rules` for a second
-rule directory. `--site`, `--workspace`, and `--scope` restrict which
+`place.py` takes no machine paths of its own. `--site`, `--workspace`, and `--scope` restrict which
 declaration rows apply. `apply` keeps a process-memory snapshot of affected
 targets and restores it if the post-check fails.
+
+Discover and start a CLI from the same declaration without an environment-private
+launcher:
+
+```console
+python3 bin/place.py list --declaration PLACEMENT.md
+python3 bin/place.py start --declaration PLACEMENT.md <workspace> <tool> -- <tool arguments>
+```
+
+`start` accepts only a local `kind=direct` workspace. It verifies every managed
+location on that site before resolving the declared tool entry point, then
+preserves the child process's standard streams and exit status. For a remote
+workspace, run this same public command on the target host. Transport, GUI,
+authentication probes, generated wrappers, and environment-specific session
+bookkeeping are not launcher functions.
 
 Unrelated rule files and root instructions are outside that namespace and are
 left untouched. A malformed unmatched managed marker fails closed; repair that
