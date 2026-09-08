@@ -21,7 +21,10 @@ def config_path(value=None):
     path = path.absolute()
     if path.parent.name != ".agent-rules":
         raise place.PlacementError("config must be inside the project's .agent-rules directory")
-    return path
+    # Reject links before resolving; then use one spelling for both the root
+    # and its sources, including Windows short-name aliases such as RUNNER~1.
+    place.preflight_targets([path])
+    return path.resolve()
 
 
 def validate(config, path, *, creating=False):
@@ -71,7 +74,6 @@ def validate(config, path, *, creating=False):
 
 
 def load_project(path):
-    place.preflight_targets([path])
     try:
         config = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -105,7 +107,6 @@ def load_project(path):
 
 def initialize(args):
     path = config_path(args.config)
-    place.preflight_targets([path])
     if path.exists():
         raise place.PlacementError("config already exists; edit it explicitly: %s" % path)
     tools = args.tools
