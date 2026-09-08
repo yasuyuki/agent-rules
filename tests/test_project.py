@@ -175,6 +175,16 @@ class ProjectCliTests(unittest.TestCase):
         self.assertIn("refusing to overwrite unmanaged skill", result.stderr)
         self.assertEqual((target / "SKILL.md").read_text(encoding="utf-8"), "someone else's skill")
 
+    def test_windows_skill_newlines_are_preserved(self):
+        self.write_config(rules=())
+        source = self.skill()
+        content = source.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+        source.write_bytes(content)
+        self.assert_ok(self.run_cli("apply"))
+        target = self.root / ".codex" / "skills" / "project-skill" / "SKILL.md"
+        self.assertEqual(target.read_bytes(), content)
+        self.assert_ok(self.run_cli("check"))
+
     def test_invalid_config_sources_and_duplicate_ids_fail(self):
         cases = []
         config = self.root / ".agent-rules" / "config.json"
