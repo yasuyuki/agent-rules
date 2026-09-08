@@ -31,7 +31,7 @@ args = sys.argv[3:]
 if args == ['--version']:
     print(marker + ' 1.2.3')
     sys.exit()
-if os.getcwd() != expected_cwd:
+if not os.path.samefile(os.getcwd(), expected_cwd):
     print('wrong cwd', file=sys.stderr); sys.exit(11)
 if marker == 'codex':
     expected = ['exec', '--json', '--ephemeral', '--sandbox', 'read-only', '--skip-git-repo-check', '--color', 'never']
@@ -81,7 +81,7 @@ else:
                                           for name in ("codex", "claude", "cursor")}), encoding="utf-8")
             output = directory / "report.html"
             result = self.invoke(standalone, target, output, config)
-            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
             self.assertEqual({"codex: collected", "claude: collected", "cursor: collected"}, set(result.stdout.splitlines()))
             page = output.read_text(encoding="utf-8")
             self.assertIn("&lt;unsafe&gt;", page)
@@ -113,7 +113,7 @@ def get_platforms(): return [Adapter()]
             config.write_text(json.dumps({"external": [sys.executable, str(runner), "external", str(target)]}), encoding="utf-8")
             output = directory / "report.html"
             result = self.invoke(standalone, target, output, config, "--plugin-dir", str(plugin_dir), "--platform", "external")
-            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
             page = output.read_text(encoding="utf-8")
             self.assertIn("External", page)
             self.assertIn("trusted test adapter", page)
