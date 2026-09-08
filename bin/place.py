@@ -28,6 +28,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 
@@ -287,14 +288,25 @@ def managed_dir(location, conv_id, placement, sites, workspaces):
 
 def atomic_write(path, content):
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".place.tmp")
     if isinstance(content, str):
         content = content.encode("utf-8")
-    temporary.write_bytes(content)
-    executable = getattr(content, "executable", None)
-    if os.name == "posix" and executable is not None:
-        temporary.chmod((temporary.stat().st_mode & 0o666) | executable)
-    os.replace(temporary, path)
+    while True:
+        temporary = path.with_name(path.name + ".place." + uuid.uuid4().hex + ".tmp")
+        try:
+            stream = temporary.open("xb")
+            break
+        except FileExistsError:
+            continue
+    try:
+        with stream:
+            stream.write(content)
+        executable = getattr(content, "executable", None)
+        if os.name == "posix" and executable is not None:
+            temporary.chmod((temporary.stat().st_mode & 0o666) | executable)
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def executable_differs(path, content):

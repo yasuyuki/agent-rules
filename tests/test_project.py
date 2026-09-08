@@ -278,6 +278,44 @@ class ProjectCliTests(unittest.TestCase):
         self.assertEqual(agents.read_bytes(), malformed)
         self.assertEqual(claude.read_bytes(), claude_malformed)
 
+    def check_adjacent_temporary_collision(self, *, symlink):
+        self.write_config()
+        rule = self.rule()
+        agents = self.root / "AGENTS.md"
+        agents.write_text("User instructions.\n", encoding="utf-8")
+        outside = Path(self.temp.name) / "outside.txt"
+        outside.write_bytes(b"must remain unchanged")
+        collision = self.root / "AGENTS.md.place.tmp"
+        if symlink:
+            collision.symlink_to(outside)
+        else:
+            collision.write_bytes(b"unmanaged temporary name")
+        collision_before = collision.read_bytes()
+        self.assert_ok(self.run_cli("apply"))
+        self.assertFalse(agents.is_symlink())
+        self.assertIn("User instructions.", agents.read_text(encoding="utf-8"))
+        self.assertEqual(collision.read_bytes(), collision_before)
+        self.assertEqual(collision.is_symlink(), symlink)
+        self.assertEqual(outside.read_bytes(), b"must remain unchanged")
+        before = agents.read_bytes()
+        rule.write_text(rule.read_text(encoding="utf-8") + "Changed rule.\n", encoding="utf-8")
+        failed = self.run_cli("apply", env={"PLACE_FORCE_POSTCHECK_FAILURE": "1"})
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("forced post-check failure", failed.stderr)
+        self.assertEqual(agents.read_bytes(), before)
+        self.assertFalse(agents.is_symlink())
+        self.assertEqual(collision.read_bytes(), collision_before)
+        self.assertEqual(collision.is_symlink(), symlink)
+        self.assertEqual(outside.read_bytes(), b"must remain unchanged")
+        self.assertEqual(list(self.root.glob("AGENTS.md.place.*.tmp")), [])
+
+    def test_adjacent_temporary_file_is_preserved(self):
+        self.check_adjacent_temporary_collision(symlink=False)
+
+    @unittest.skipIf(os.name == "nt", "symlink creation may require Windows privileges")
+    def test_adjacent_temporary_symlink_is_preserved(self):
+        self.check_adjacent_temporary_collision(symlink=True)
+
     @unittest.skipIf(os.name == "nt", "symlink creation may require Windows privileges")
     def test_symlink_source_boundary_is_rejected(self):
         config = self.write_config()
