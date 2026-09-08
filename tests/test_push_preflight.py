@@ -208,6 +208,31 @@ class PolicyTests(unittest.TestCase):
                 result = preflight.decide(preflight.collect_state(Path(directory)))
             self.assertEqual(result["decision"], "ask", result)
 
+    def test_github_metadata_utf8_under_cp932_locale(self):
+        with tempfile.TemporaryDirectory() as directory:
+            subprocess.run(["git", "init", "-q", directory], check=True)
+            subprocess.run(["git", "-C", directory, "remote", "add", "origin",
+                            "https://github.com/example/project.git"], check=True)
+            native_run = subprocess.run
+            metadata = json.dumps({"private": True, "default_branch": "main",
+                                   "description": "日本語の説明", "license": None},
+                                  ensure_ascii=False).encode("utf-8")
+
+            def read_only_run(argv, **kwargs):
+                if argv[0] == "gh":
+                    argv = [sys.executable, "-c",
+                            f"import sys; sys.stdout.buffer.write({metadata!r})"]
+                return native_run(argv, **kwargs)
+
+            with patch.object(preflight.subprocess, "run", side_effect=read_only_run), \
+                 patch.object(preflight.subprocess, "_text_encoding", return_value="cp932"):
+                state = preflight.collect_state(Path(directory))
+                self.assertNotIn("collection_error", state)
+                self.assertEqual(state["repo"]["visibility"], "private")
+                self.assertEqual(state["repo"]["default_branch"], "main")
+                metadata = b"\xff"
+                self.assertEqual(preflight.collect_state(Path(directory)), {"collection_error": True})
+
     def test_policy_fixtures(self):
         fixtures = json.loads((ROOT / "tests/fixtures/push_preflight.json").read_text())
         for fixture in fixtures:

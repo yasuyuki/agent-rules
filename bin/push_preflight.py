@@ -300,7 +300,7 @@ def collect_state(repo: Path, need_metadata: bool = True) -> dict[str, Any]:
             state["repo"]["default_branch"] = default_from_ls_remote(root, remote)
             return state
         state["repo"]["host"] = "github.com"
-        completed = subprocess.run(["gh", "api", "--hostname", "github.com", f"repos/{target[0]}/{target[1]}"], text=True,
+        completed = subprocess.run(["gh", "api", "--hostname", "github.com", f"repos/{target[0]}/{target[1]}"], text=True, encoding="utf-8",
                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
         if completed.returncode:
             state["repo"]["metadata_error"] = True

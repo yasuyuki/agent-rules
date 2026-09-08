@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Project rules and skills onto the sites and workspaces a declaration names.
 
-    place.py check  --declaration <path> --rules <dir> [--skills <dir>]
-    place.py apply  --declaration <path> --rules <dir> [--skills <dir>]
+    place.py check  --declaration <path> [--rules <dir>] [--skills <dir>]
+    place.py apply  --declaration <path> [--rules <dir>] [--skills <dir>]
+    place.py list   --declaration <path>
+    place.py start  --declaration <path> [--rules <dir>] [--skills <dir>] <workspace> <tool> [-- <tool-argv>...]
     place.py mirror --skills <dir> --dest <dir> [--check]
     place.py selfcheck
 
@@ -619,14 +621,27 @@ def mirror(args):
     return 0
 
 
+def source_dirs(primary, additional):
+    out = []
+    seen = set()
+    for value in [primary, *(additional or [])]:
+        resolved = str(Path(value).resolve())
+        if resolved not in seen:
+            seen.add(resolved)
+            out.append(resolved)
+    return out
+
+
 def load_context(args):
     if not args.declaration:
         raise PlacementError("--declaration is required")
-    if not args.rules:
-        raise PlacementError("--rules is required")
     placement = load_placement()
-    rules = agent_rules.load_rule_dirs(placement, args.rules)
-    skills = agent_rules.load_skill_dirs(getattr(args, "skills", None))
+    rules = agent_rules.load_rule_dirs(
+        placement, source_dirs(ROOT / "rules", args.rules)
+    )
+    skills = agent_rules.load_skill_dirs(
+        source_dirs(ROOT / "skills", getattr(args, "skills", None))
+    )
     claimed = sorted({meta["id"] for meta, _, _ in rules} & set(skills))
     if claimed:
         raise PlacementError(
@@ -671,6 +686,60 @@ def apply(args):
         raise
     print("place: applied")
     return 0
+
+
+def list_workspaces(args):
+    _sites, workspaces, locations, _exceptions = parse_declaration(args.declaration)
+    print("workspace\tpath\ttools")
+    for workspace_id, workspace in sorted(workspaces.items()):
+        tools = sorted(declared_tools(locations, workspaces, workspace["site"]))
+        print("%s\t%s\t%s" % (workspace_id, workspace["path"], ",".join(tools)))
+    return 0
+
+
+def start(args, runner=subprocess.run, resolver=shutil.which):
+    """Run one declared CLI in one local direct workspace.
+
+    Remote transport and GUI orchestration are deliberately outside this portable
+    command. Invoke this same entry point on the target host instead of depending
+    on an environment-private launcher.
+    """
+    placement, rules, sites, workspaces, locations, exceptions, _selected, skills = load_context(args)
+    workspace = workspaces.get(args.workspace_id)
+    if workspace is None:
+        raise PlacementError("unknown workspace: %s" % args.workspace_id)
+    if workspace.get("kind") != "direct":
+        raise PlacementError("workspace %s is not a local direct workspace" % args.workspace_id)
+    site_id = workspace["site"]
+    site = sites[site_id]
+    if site.get("launch", "").strip():
+        raise PlacementError(
+            "workspace %s is remote; run place.py on site %s" % (args.workspace_id, site_id)
+        )
+    if not site_reachable(site):
+        raise PlacementError("workspace %s site is not reachable" % args.workspace_id)
+    if not Path(workspace["path"]).is_dir():
+        raise PlacementError("workspace path does not exist: %s" % workspace["path"])
+    if args.tool not in declared_tools(locations, workspaces, site_id):
+        raise PlacementError("tool %s is not declared for site %s" % (args.tool, site_id))
+    tool = placement["tools"].get(args.tool)
+    if tool is None:
+        raise PlacementError("unknown tool: %s" % args.tool)
+
+    selected = filter_locations(locations, workspaces, site=site_id)
+    errors, _printed = check_state(
+        rules, placement, selected, exceptions, sites, workspaces, locations, skills
+    )
+    if errors:
+        raise PlacementError("placement check failed: " + "; ".join(errors))
+
+    entrypoint = resolver(tool["entrypoint"])
+    if entrypoint is None:
+        raise PlacementError("tool does not resolve: %s" % tool["entrypoint"])
+    return runner(
+        [entrypoint, *args.tool_args],
+        cwd=workspace["path"],
+    ).returncode
 
 
 def write_rule(directory, rule_id, title, tools=None):
@@ -987,6 +1056,15 @@ def main(argv):
     add_common(check_p)
     apply_p = sub.add_parser("apply")
     add_common(apply_p)
+    list_p = sub.add_parser("list")
+    list_p.add_argument("--declaration", required=True)
+    start_p = sub.add_parser("start")
+    start_p.add_argument("--declaration", required=True)
+    start_p.add_argument("--rules", action="append")
+    start_p.add_argument("--skills", action="append")
+    start_p.add_argument("workspace_id")
+    start_p.add_argument("tool")
+    start_p.add_argument("tool_args", nargs=argparse.REMAINDER)
     mirror_p = sub.add_parser("mirror")
     mirror_p.add_argument("--skills", action="append")
     mirror_p.add_argument("--dest", required=True)
@@ -998,6 +1076,12 @@ def main(argv):
             return check(args)
         if args.command == "apply":
             return apply(args)
+        if args.command == "list":
+            return list_workspaces(args)
+        if args.command == "start":
+            if args.tool_args[:1] == ["--"]:
+                args.tool_args = args.tool_args[1:]
+            return start(args)
         if args.command == "mirror":
             return mirror(args)
         return selfcheck(args)
