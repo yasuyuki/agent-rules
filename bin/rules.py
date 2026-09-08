@@ -110,7 +110,7 @@ SKILL_MANIFEST_HEADER = ("id", "repo", "ref", "path", "tree_sha", "license")
 
 
 def parse_skill_frontmatter(text, path):
-    match = re.match(r"\A---\n(.*?)\n---\n", text, re.S)
+    match = re.match(r"\A---\r?\n(.*?)\r?\n---\r?\n", text, re.S)
     if not match:
         raise SystemExit("%s: missing frontmatter" % path)
     meta = {}

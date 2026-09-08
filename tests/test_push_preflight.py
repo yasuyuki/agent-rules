@@ -224,8 +224,14 @@ class PolicyTests(unittest.TestCase):
                             f"import sys; sys.stdout.buffer.write({metadata!r})"]
                 return native_run(argv, **kwargs)
 
-            with patch.object(preflight.subprocess, "run", side_effect=read_only_run), \
-                 patch.object(preflight.subprocess, "_text_encoding", return_value="cp932"):
+            # Python 3.11 moved subprocess's locale lookup into _text_encoding;
+            # 3.10 still asks locale directly.  The production gh call passes
+            # encoding="utf-8", so either hostile locale must leave it readable.
+            if hasattr(preflight.subprocess, "_text_encoding"):
+                locale_patch = patch.object(preflight.subprocess, "_text_encoding", return_value="cp932")
+            else:
+                locale_patch = patch("locale.getpreferredencoding", return_value="cp932")
+            with patch.object(preflight.subprocess, "run", side_effect=read_only_run), locale_patch:
                 state = preflight.collect_state(Path(directory))
                 self.assertNotIn("collection_error", state)
                 self.assertEqual(state["repo"]["visibility"], "private")

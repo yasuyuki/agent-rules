@@ -172,6 +172,18 @@ with tempfile.TemporaryDirectory() as directory:
     run(workspace, "verify")
 
 
+# Windows checkouts may use CRLF. Parse metadata without changing copied bytes.
+with tempfile.TemporaryDirectory() as directory:
+    skill_dir = Path(directory) / "example"
+    skill_dir.mkdir()
+    for newline in (b"\n", b"\r\n"):
+        payload = newline.join([
+            b"---", b"name: example", b"description: Example skill", b"---", b"Body", b"",
+        ])
+        (skill_dir / "SKILL.md").write_bytes(payload)
+        assert agent_rules.load_skills(directory)["example"]["SKILL.md"] == payload
+
+
 # A UPSTREAM.tsv that cannot be read says nothing about authorship. Reading it as
 # "nothing is vendored" would publish someone else's skill through place.py mirror,
 # so a missing file or a lost header stops the caller.
