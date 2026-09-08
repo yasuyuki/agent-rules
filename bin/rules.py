@@ -124,6 +124,15 @@ def parse_skill_frontmatter(text, path):
     return meta
 
 
+class SkillContent(bytes):
+    """Verbatim payload plus POSIX execute bits; other permissions are not copied."""
+
+    def __new__(cls, data, executable):
+        value = super().__new__(cls, data)
+        value.executable = executable
+        return value
+
+
 def load_skills(skills_dir):
     """{id: {relative path: bytes}} for every skill directory under `skills_dir`.
 
@@ -151,7 +160,9 @@ def load_skills(skills_dir):
                 if relative == SKILL_MARKER:
                     raise SystemExit("%s: %s is generated and must not be in the source" % (full, SKILL_MARKER))
                 with open(full, "rb") as handle:
-                    tree[relative] = handle.read()
+                    tree[relative] = SkillContent(
+                        handle.read(), os.fstat(handle.fileno()).st_mode & 0o111 if os.name == "posix" else None
+                    )
         meta = parse_skill_frontmatter(tree["SKILL.md"].decode("utf-8"), skill_md)
         for required in ("name", "description"):
             if not meta.get(required):

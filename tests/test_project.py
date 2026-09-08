@@ -175,6 +175,32 @@ class ProjectCliTests(unittest.TestCase):
         self.assertIn("refusing to overwrite unmanaged skill", result.stderr)
         self.assertEqual((target / "SKILL.md").read_text(encoding="utf-8"), "someone else's skill")
 
+    @unittest.skipUnless(os.name == "posix", "POSIX executable permissions")
+    def test_skill_executable_permissions(self):
+        self.write_config()
+        source = self.skill().parent / "scripts" / "check.sh"
+        source.parent.mkdir()
+        source.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        source.chmod(0o4755)
+        target = self.root / ".codex/skills/project-skill/scripts/check.sh"
+        for _ in range(2):
+            self.assert_ok(self.run_cli("apply"))
+            self.assert_ok(self.run_cli("check"))
+            self.assertEqual(target.stat().st_mode & 0o7111, 0o111)
+            self.assertEqual(subprocess.run([str(target)]).returncode, 0)
+        target.chmod(0o644)
+        self.assertIn("executable bits differ", self.run_cli("check").stderr)
+        self.assert_ok(self.run_cli("apply"))
+        self.assertEqual(subprocess.run([str(target)]).returncode, 0)
+        for mode in (0o644, 0o744, 0o755):
+            source.chmod(mode)
+            check = self.run_cli("check")
+            self.assertNotEqual(check.returncode, 0)
+            self.assertIn("executable bits differ", check.stderr)
+            self.assert_ok(self.run_cli("apply"))
+            self.assert_ok(self.run_cli("check"))
+            self.assertEqual(target.stat().st_mode & 0o111, mode & 0o111)
+
     def test_windows_skill_newlines_are_preserved(self):
         self.write_config(rules=())
         source = self.skill()

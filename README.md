@@ -302,6 +302,11 @@ The catalog was derived from an evaluated private candidate, then reconciled
 and sanitized for portable use. Private experiment history and environment
 topology are not part of this repository.
 
+On POSIX, skill placement and mirroring preserve each file's execute bits and
+check reports execute-bit drift, even when its bytes match. Other source mode
+bits (including setuid, setgid and sticky bits) are not copied. On Windows,
+only file contents are compared; POSIX execute bits are not managed.
+
 ## Package development and publication
 
 In a development Python environment, from this checkout root:

@@ -291,7 +291,16 @@ def atomic_write(path, content):
     if isinstance(content, str):
         content = content.encode("utf-8")
     temporary.write_bytes(content)
+    executable = getattr(content, "executable", None)
+    if os.name == "posix" and executable is not None:
+        temporary.chmod((temporary.stat().st_mode & 0o666) | executable)
     os.replace(temporary, path)
+
+
+def executable_differs(path, content):
+    executable = getattr(content, "executable", None)
+    return (os.name == "posix" and executable is not None
+            and path.stat().st_mode & 0o111 != executable)
 
 
 def affected_targets(files, sections, locations, placement, sites, workspaces):
@@ -451,6 +460,8 @@ def check_state(rules, placement, locations, exceptions, sites, workspaces, all_
             errors.append("missing: %s" % dest)
         elif actual != content:
             errors.append("differs from canonical: %s" % dest)
+        elif executable_differs(dest, content):
+            errors.append("executable bits differ from canonical: %s" % dest)
     expected_resolved = {path.resolve(strict=False) for path in files}
     for loc in locations:
         if loc["scope"] not in ("home", "workspace"):
@@ -613,6 +624,8 @@ def mirror(args):
             errors.append("missing: %s" % path)
         elif actual != content:
             errors.append("differs from canonical: %s" % path)
+        elif executable_differs(path, content):
+            errors.append("executable bits differ from canonical: %s" % path)
     if dest.is_dir():
         for path in sorted(dest.iterdir()):
             if path.is_dir() and path.name not in own:
@@ -1027,6 +1040,30 @@ def selfcheck(_args):
         published = sorted(path.name for path in (root / "mirror" / "skills").iterdir())
         if published != ["delta"]:
             raise PlacementError("selfcheck mirror published a vendored skill: %s" % published)
+        if os.name == "posix":
+            script = Path(skills_dir) / "delta" / "check.sh"
+            script.write_bytes(b"#!/bin/sh\nexit 0\n")
+            script.chmod(0o4755)
+            published_script = root / "mirror" / "skills" / "delta" / "check.sh"
+            mirror(mirror_ns)
+            if published_script.stat().st_mode & 0o7111 != 0o111:
+                raise PlacementError("selfcheck mirror lost execute bits or copied special bits")
+            subprocess.run([str(published_script)], check=True)
+            published_script.chmod(0o644)
+            mirror_ns.check = True
+            if mirror(mirror_ns) == 0:
+                raise PlacementError("selfcheck mirror missed executable drift")
+            mirror_ns.check = False
+            mirror(mirror_ns)
+            subprocess.run([str(published_script)], check=True)
+            script.chmod(0o644)
+            mirror_ns.check = True
+            if mirror(mirror_ns) == 0:
+                raise PlacementError("selfcheck mirror missed source executable change")
+            mirror_ns.check = False
+            mirror(mirror_ns)
+            if published_script.stat().st_mode & 0o111:
+                raise PlacementError("selfcheck mirror retained removed execute bits")
         published_skill = root / "mirror" / "skills" / "delta"
         shutil.rmtree(published_skill)
         make_link(published_skill, payload)
