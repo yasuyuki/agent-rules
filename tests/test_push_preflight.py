@@ -222,10 +222,13 @@ class PolicyTests(unittest.TestCase):
                 if argv[0] == "gh":
                     argv = [sys.executable, "-c",
                             f"import sys; sys.stdout.buffer.write({metadata!r})"]
+                # Simulate a non-UTF-8 default without depending on private
+                # subprocess helpers, which differ across supported Pythons.
+                if kwargs.get("text") and kwargs.get("encoding") is None:
+                    kwargs["encoding"] = "cp932"
                 return native_run(argv, **kwargs)
 
-            with patch.object(preflight.subprocess, "run", side_effect=read_only_run), \
-                 patch.object(preflight.subprocess, "_text_encoding", return_value="cp932"):
+            with patch.object(preflight.subprocess, "run", side_effect=read_only_run):
                 state = preflight.collect_state(Path(directory))
                 self.assertNotIn("collection_error", state)
                 self.assertEqual(state["repo"]["visibility"], "private")

@@ -190,6 +190,12 @@ def conventions_for(placement, tool, kind):
     return placement["tools"].get(tool, {}).get("reads", {}).get(kind, [])
 
 
+def location_conventions(placement, location, kind):
+    if location.get("kind", "rules") != kind:
+        return []
+    return conventions_for(placement, location["tool"], kind)
+
+
 def expected_writes(rules, placement, locations, exceptions, sites, workspaces, skills=None):
     files, sections = {}, {}
     for loc in locations:
@@ -198,7 +204,7 @@ def expected_writes(rules, placement, locations, exceptions, sites, workspaces, 
         tool = loc["tool"]
         if tool not in placement["tools"]:
             raise PlacementError("location %s: unknown tool %s" % (loc["id"], tool))
-        for conv_id in conventions_for(placement, tool, "skills"):
+        for conv_id in location_conventions(placement, loc, "skills"):
             for skill_id, tree in sorted((skills or {}).items()):
                 if not skill_applies(skill_id, loc, exceptions):
                     continue
@@ -208,8 +214,12 @@ def expected_writes(rules, placement, locations, exceptions, sites, workspaces, 
                 for relative, content in tree.items():
                     files[root.joinpath(*relative.split("/"))] = content
                 files[root / agent_rules.SKILL_MARKER] = marker_bytes(skill_id)
-        for conv_id in conventions_for(placement, tool, "rules"):
+        for conv_id in location_conventions(placement, loc, "rules"):
             spec = placement["conventions"][conv_id]
+            if spec.get("mode") == "section":
+                dest = location_file(loc, conv_id, "", placement, sites, workspaces)
+                if dest is not None:
+                    sections.setdefault(dest, {})
             for meta, common, bindings in rules:
                 if not rule_applies(meta, loc, exceptions, placement):
                     continue
@@ -289,8 +299,8 @@ def affected_targets(files, sections, locations, placement, sites, workspaces):
     for loc in locations:
         if loc["scope"] not in ("home", "workspace"):
             continue
-        for conv_id in conventions_for(placement, loc["tool"], "rules") + conventions_for(
-            placement, loc["tool"], "skills"
+        for conv_id in location_conventions(placement, loc, "rules") + location_conventions(
+            placement, loc, "skills"
         ):
             directory = managed_dir(loc, conv_id, placement, sites, workspaces)
             if directory:
@@ -420,7 +430,7 @@ def render_sections(path, blocks):
     return text.encode("utf-8")
 
 
-def check_state(rules, placement, locations, exceptions, sites, workspaces, all_locations, skills=None):
+def check_state(rules, placement, locations, exceptions, sites, workspaces, all_locations, skills=None, *, check_installed=True):
     errors = []
     reachable = [loc for loc in locations if site_reachable(sites[site_of(loc, workspaces)])]
     files, sections = expected_writes(rules, placement, reachable, exceptions, sites, workspaces, skills)
@@ -447,7 +457,7 @@ def check_state(rules, placement, locations, exceptions, sites, workspaces, all_
             continue
         if not site_reachable(sites[site_of(loc, workspaces)]):
             continue
-        for conv_id in conventions_for(placement, loc["tool"], "rules"):
+        for conv_id in location_conventions(placement, loc, "rules"):
             spec = placement["conventions"][conv_id]
             directory = managed_dir(loc, conv_id, placement, sites, workspaces)
             if directory is None or not directory.is_dir():
@@ -462,7 +472,7 @@ def check_state(rules, placement, locations, exceptions, sites, workspaces, all_
                     and path.resolve(strict=False) not in expected_resolved
                 ):
                     errors.append("unexpected managed rule: %s" % path)
-        for conv_id in conventions_for(placement, loc["tool"], "skills"):
+        for conv_id in location_conventions(placement, loc, "skills"):
             directory = managed_dir(loc, conv_id, placement, sites, workspaces)
             if directory is None:
                 continue
@@ -475,9 +485,15 @@ def check_state(rules, placement, locations, exceptions, sites, workspaces, all_
                         errors.append("unexpected file in managed skill: %s" % inner)
     for dest, blocks in sorted(sections.items(), key=lambda item: str(item[0])):
         if not dest.exists():
-            errors.append("missing: %s" % dest)
+            if blocks:
+                errors.append("missing: %s" % dest)
             continue
         text = dest.read_text(encoding="utf-8")
+        try:
+            agent_rules.require_balanced_markers(text, str(dest))
+        except SystemExit as exc:
+            errors.append(str(exc))
+            continue
         markers = list(agent_rules.MARKER.findall(text))
         begins = [rule_id for kind, rule_id in markers if kind == "begin"]
         for rule_id in sorted((set(begins) | {rule_id for kind, rule_id in markers if kind == "end"}) - set(blocks)):
@@ -507,7 +523,7 @@ def check_state(rules, placement, locations, exceptions, sites, workspaces, all_
             continue
         if loc["scope"] == "hooks":
             errors.extend(hooks_errors(loc, target, placement))
-    for site_id, site in sites.items():
+    for site_id, site in (sites.items() if check_installed else []):
         if not site_reachable(site):
             continue
         declared = declared_tools(all_locations, workspaces, site_id)
@@ -535,7 +551,7 @@ def apply_projection(rules, placement, locations, exceptions, sites, workspaces,
             if path.is_file():
                 path.unlink()
         owned = {path.resolve(strict=False) for path in files}
-        for conv_id in conventions_for(placement, loc["tool"], "rules"):
+        for conv_id in location_conventions(placement, loc, "rules"):
             directory = managed_dir(loc, conv_id, placement, sites, workspaces)
             spec = placement["conventions"][conv_id]
             if directory is None or not directory.is_dir():
@@ -547,7 +563,7 @@ def apply_projection(rules, placement, locations, exceptions, sites, workspaces,
             for path in list(directory.iterdir()):
                 if path.is_file() and path.name.startswith(prefix) and path.name.endswith(suffix) and path.resolve(strict=False) not in owned:
                     path.unlink()
-        for conv_id in conventions_for(placement, loc["tool"], "skills"):
+        for conv_id in location_conventions(placement, loc, "skills"):
             directory = managed_dir(loc, conv_id, placement, sites, workspaces)
             if directory is None:
                 continue
@@ -561,7 +577,8 @@ def apply_projection(rules, placement, locations, exceptions, sites, workspaces,
     for dest, content in files.items():
         atomic_write(dest, content)
     for dest, blocks in sections.items():
-        atomic_write(dest, render_sections(dest, blocks))
+        if blocks or dest.exists():
+            atomic_write(dest, render_sections(dest, blocks))
 
 
 def mirror(args):
@@ -654,9 +671,9 @@ def load_context(args):
     return placement, rules, sites, workspaces, locations, exceptions, selected, skills
 
 
-def check(args):
-    placement, rules, sites, workspaces, locations, exceptions, selected, skills = load_context(args)
-    errors, printed = check_state(rules, placement, selected, exceptions, sites, workspaces, locations, skills)
+def check(args, *, context=None):
+    placement, rules, sites, workspaces, locations, exceptions, selected, skills = context if context is not None else load_context(args)
+    errors, printed = check_state(rules, placement, selected, exceptions, sites, workspaces, locations, skills, check_installed=context is None)
     for path in printed:
         print(path)
     for error in errors:
@@ -665,11 +682,15 @@ def check(args):
     return 0 if not errors else 1
 
 
-def apply(args):
-    placement, rules, sites, workspaces, locations, exceptions, selected, skills = load_context(args)
+def apply(args, *, context=None):
+    placement, rules, sites, workspaces, locations, exceptions, selected, skills = context if context is not None else load_context(args)
     files, sections = expected_writes(rules, placement, selected, exceptions, sites, workspaces, skills)
     targets = affected_targets(files, sections, selected, placement, sites, workspaces)
     preflight_targets(targets)
+    for dest in files:
+        if dest.name == agent_rules.SKILL_MARKER and dest.parent.exists():
+            if not dest.is_file() or dest.read_bytes() != marker_bytes(dest.parent.name):
+                raise PlacementError("refusing to overwrite unmanaged skill: %s" % dest.parent)
     shots = snapshot(targets)
     try:
         apply_projection(rules, placement, selected, exceptions, sites, workspaces, skills)
@@ -678,10 +699,10 @@ def apply(args):
             raise KeyboardInterrupt()
         if forced_failure:
             raise PlacementError("forced post-check failure")
-        errors, _ = check_state(rules, placement, selected, exceptions, sites, workspaces, locations, skills)
+        errors, _ = check_state(rules, placement, selected, exceptions, sites, workspaces, locations, skills, check_installed=context is None)
         if errors:
             raise PlacementError("post-check failed: " + "; ".join(errors))
-    except (Exception, KeyboardInterrupt):
+    except (Exception, KeyboardInterrupt, SystemExit):
         restore(shots)
         raise
     print("place: applied")

@@ -78,7 +78,7 @@ def body_for_convention(meta, common, bindings, conv_id, placement):
     return out
 
 
-def load_rules(placement, rules_dir=None):
+def load_rules(placement, rules_dir=None, *, allow_empty=False):
     directory = RULES_DIR if rules_dir is None else rules_dir
     rules = []
     known = set(placement["tools"])
@@ -99,7 +99,7 @@ def load_rules(placement, rules_dir=None):
         if unknown:
             raise SystemExit("%s: binding for a tool not in tools: %s" % (path, sorted(unknown)))
         rules.append((meta, common, bindings))
-    if not rules:
+    if not rules and not allow_empty:
         raise SystemExit("no rules found in %s" % directory)
     return rules
 
@@ -194,16 +194,16 @@ def vendored_ids(skills_dirs):
     return ids
 
 
-def load_rule_dirs(placement, rules_dirs):
+def load_rule_dirs(placement, rules_dirs, *, allow_empty=False):
     rules, seen = [], set()
     for rules_dir in rules_dirs:
-        for item in load_rules(placement, rules_dir):
+        for item in load_rules(placement, rules_dir, allow_empty=allow_empty):
             rule_id = item[0]["id"]
             if rule_id in seen:
                 raise SystemExit("duplicate rule id '%s'" % rule_id)
             seen.add(rule_id)
             rules.append(item)
-    if not rules:
+    if not rules and not allow_empty:
         raise SystemExit("no rules found in %s" % rules_dirs)
     return rules
 
