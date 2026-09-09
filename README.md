@@ -222,6 +222,11 @@ that source observation. WSL connections may use
 `{"transport":"wsl","distro":{"source":"source-id","field":"distro"}}`
 to reference a declared JSON field. Installed/running WSL observations do not
 claim runtime reachability; stopped installations remain candidates.
+When an SSH runtime is contained by a WSL distro whose name has no existing
+placement or JSON source, its SSH connection may carry an optional
+`"wslDistro":"Ubuntu-26.04"` string. This catalog-owned outer connection name
+is excluded from the full Windows `unregisteredDistros` diagnostic; it does not
+replace the SSH target, inner runtime principal, or config root.
 
 `start` accepts only a local `kind=direct` workspace. It verifies every managed
 location on that site before resolving the declared tool entry point, then
