@@ -39,6 +39,11 @@
       "unit": "dir",
       "path": ".codex/skills/{id}",
       "home_path": "skills/{id}"
+    },
+    "opencode-skills-dir": {
+      "unit": "dir",
+      "path": ".opencode/skills/{id}",
+      "home_path": "skills/{id}"
     }
   },
   "tools": {
@@ -110,11 +115,11 @@
       "entrypoint": "opencode",
       "credential": "$data/opencode/auth.json",
       "configHome": {
-        "default": "$HOME/.opencode"
+        "default": "$HOME/.config/opencode"
       },
       "reads": {
         "rules": ["agents-md-section", "agents-rules-dir"],
-        "skills": []
+        "skills": ["opencode-skills-dir"]
       },
       "hooks": {
         "kind": "none",

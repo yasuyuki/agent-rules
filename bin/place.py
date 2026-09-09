@@ -41,6 +41,10 @@ spec = importlib.util.spec_from_file_location("agent_rules", HERE / "rules.py")
 agent_rules = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(agent_rules)
 
+inventory_spec = importlib.util.spec_from_file_location("environment_inventory", HERE / "environment_inventory.py")
+environment_inventory = importlib.util.module_from_spec(inventory_spec)
+inventory_spec.loader.exec_module(environment_inventory)
+
 
 class PlacementError(RuntimeError):
     pass
@@ -743,6 +747,118 @@ def list_workspaces(args):
     return 0
 
 
+def list_catalog(args):
+    try:
+        _catalog, _sources, records = environment_inventory.load_catalog(args.catalog, args.purpose, probe=args.probe)
+        if args.probe:
+            environment_inventory.probe_records(records)
+    except environment_inventory.CatalogError as exc:
+        raise PlacementError(str(exc)) from None
+    if args.json:
+        print(json.dumps(records, ensure_ascii=False, sort_keys=True))
+        return 0
+    print("id\tpurposes\tstate\tcandidate\treason\tconnection\tprincipal\tworkspaces\tentrypoint\tresolution\tobservation")
+    for record in records:
+        principals = "; ".join(
+            "%s/%s:%s@%s HOME=%s" % (ref["source"], ref["site"]["id"],
+                                    ref["site"].get("user", "?"), ref["site"].get("host", "?"),
+                                    ref["site"].get("home", "?"))
+            for ref in record["refs"] if ref.get("site")
+        ) or "unverified"
+        workspaces = ",".join(
+            "%s/%s=%s" % (ref["source"], workspace["id"], workspace["path"])
+            for ref in record["refs"] for workspace in ref.get("siteWorkspaces", [])
+        )
+        roots = ["%s:runsRoot=%s" % (ref["source"], ref["values"]["runsRoot"])
+                 for ref in record["refs"] if "runsRoot" in ref.get("values", {})]
+        workspaces = "; ".join([value for value in [workspaces, *roots] if value]) or "-"
+        resolution = "; ".join("%s:%s" % (ref["source"], ref["resolution"]) for ref in record["refs"])
+        print("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s" % (record["id"], ",".join(record["purposes"]) or "unclassified", record["state"], "yes" if record["candidate"] else "no", record["candidateReason"], json.dumps(record["connection"], ensure_ascii=False, separators=(",", ":")), principals, workspaces, json.dumps(record["entrypoint"], ensure_ascii=False, separators=(",", ":")), resolution, json.dumps(record["observation"], ensure_ascii=False, separators=(",", ":"))))
+    return 0
+
+
+def check_catalog(args):
+    errors, records = environment_inventory.check_catalog(args.catalog, args.environment, args.probe)
+    for error in errors:
+        print("FAIL: " + error, file=sys.stderr)
+    print("catalog: %s" % ("OK" if not errors else "FAILED (%d)" % len(errors)))
+    return 0 if not errors else 1
+
+
+def inventory_preflight(args, context, site_id, *, resolver=shutil.which):
+    """Check an explicitly bound local inventory before launching a CLI.
+
+    The optional table keeps independent public projects independent. Once a
+    site is bound, a missing catalog/evidence file is a failure, never a bypass.
+    Setup callers use inventory_lifecycle.validate_lifecycle in construction
+    mode; normal start deliberately exposes no construction-mode switch.
+    """
+    from types import SimpleNamespace
+    import getpass
+    import platform
+
+    declaration = Path(args.declaration).resolve()
+    text = declaration.read_text(encoding="utf-8")
+    if "<!-- BEGIN INVENTORY TSV -->" not in text:
+        return
+    rows = markdown_tsv(declaration, "INVENTORY", text)
+    required = {"site", "catalog", "environment", "evidence"}
+    if any(not required.issubset(row) for row in rows):
+        raise PlacementError("INVENTORY needs site, catalog, environment, evidence columns")
+    if len({row["site"] for row in rows}) != len(rows):
+        raise PlacementError("duplicate INVENTORY site")
+    if any(row["site"] not in context[2] for row in rows):
+        raise PlacementError("unknown INVENTORY site")
+    binding = next((row for row in rows if row["site"] == site_id), None)
+    if binding is None:
+        raise PlacementError("INVENTORY has no binding for selected site: " + site_id)
+    if any(not binding[key].strip() for key in required):
+        raise PlacementError("INVENTORY binding has an empty required value")
+    def relative(value):
+        path = Path(value)
+        return path if path.is_absolute() else declaration.parent / path
+    evidence_path = relative(binding["evidence"])
+    try:
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        if not isinstance(evidence, list):
+            raise ValueError("evidence must be an array")
+        for entry in evidence:
+            if not isinstance(entry, dict):
+                raise ValueError("evidence entry must be an object")
+            record = entry.get("record")
+            if not isinstance(record, str) or not record:
+                raise ValueError("evidence entry needs a record path")
+            path = Path(record)
+            entry["record"] = str(path if path.is_absolute() else evidence_path.parent / path)
+    except (OSError, ValueError) as exc:
+        raise PlacementError("inventory evidence is unverified: " + str(exc)) from None
+    lifecycle_spec = importlib.util.spec_from_file_location("inventory_lifecycle", HERE / "inventory_lifecycle.py")
+    lifecycle = importlib.util.module_from_spec(lifecycle_spec)
+    lifecycle_spec.loader.exec_module(lifecycle)
+    if os.name == "posix":
+        import pwd
+        user = pwd.getpwuid(os.getuid()).pw_name
+    else:
+        user = getpass.getuser()
+    home = str(Path.home())
+    config_roots = {}
+    for name, tool in context[0]["tools"].items():
+        spec = tool["configHome"]
+        config_roots[name] = os.environ.get(spec.get("env", "")) or spec["default"].replace("$HOME", home)
+    principal = {"user": user, "home": home,
+                 "host": os.environ.get("WSL_DISTRO_NAME") or platform.system(),
+                 "platform": platform.system(),
+                 "configRoots": config_roots}
+    errors, _record = lifecycle.validate_lifecycle(
+        relative(binding["catalog"]), context, binding["environment"],
+        place_module=SimpleNamespace(**globals()), resolver=resolver,
+        current_principal=principal, session_evidence=evidence,
+        declaration_path=declaration,
+    )
+    if errors:
+        raise PlacementError("inventory lifecycle check failed: " + "; ".join(errors))
+
+
 def start(args, runner=subprocess.run, resolver=shutil.which):
     """Run one declared CLI in one local direct workspace.
 
@@ -750,7 +866,8 @@ def start(args, runner=subprocess.run, resolver=shutil.which):
     command. Invoke this same entry point on the target host instead of depending
     on an environment-private launcher.
     """
-    placement, rules, sites, workspaces, locations, exceptions, _selected, skills = load_context(args)
+    context = load_context(args)
+    placement, rules, sites, workspaces, locations, exceptions, _selected, skills = context
     workspace = workspaces.get(args.workspace_id)
     if workspace is None:
         raise PlacementError("unknown workspace: %s" % args.workspace_id)
@@ -771,6 +888,8 @@ def start(args, runner=subprocess.run, resolver=shutil.which):
     tool = placement["tools"].get(args.tool)
     if tool is None:
         raise PlacementError("unknown tool: %s" % args.tool)
+
+    inventory_preflight(args, context, site_id, resolver=resolver)
 
     selected = filter_locations(locations, workspaces, site=site_id)
     errors, _printed = check_state(
@@ -1123,11 +1242,25 @@ def main(argv):
         subparser.add_argument("--scope")
 
     check_p = sub.add_parser("check")
-    add_common(check_p)
+    check_inputs = check_p.add_mutually_exclusive_group(required=True)
+    check_inputs.add_argument("--declaration")
+    check_inputs.add_argument("--catalog")
+    check_p.add_argument("--rules", action="append")
+    check_p.add_argument("--skills", action="append")
+    check_p.add_argument("--site")
+    check_p.add_argument("--workspace")
+    check_p.add_argument("--scope")
+    check_p.add_argument("--environment")
+    check_p.add_argument("--probe", action="store_true")
     apply_p = sub.add_parser("apply")
     add_common(apply_p)
     list_p = sub.add_parser("list")
-    list_p.add_argument("--declaration", required=True)
+    list_inputs = list_p.add_mutually_exclusive_group(required=True)
+    list_inputs.add_argument("--declaration")
+    list_inputs.add_argument("--catalog")
+    list_p.add_argument("--purpose")
+    list_p.add_argument("--json", action="store_true")
+    list_p.add_argument("--probe", action="store_true")
     start_p = sub.add_parser("start")
     start_p.add_argument("--declaration", required=True)
     start_p.add_argument("--rules", action="append")
@@ -1143,10 +1276,14 @@ def main(argv):
     args = parser.parse_args(argv)
     try:
         if args.command == "check":
+            if args.catalog:
+                return check_catalog(args)
             return check(args)
         if args.command == "apply":
             return apply(args)
         if args.command == "list":
+            if args.catalog:
+                return list_catalog(args)
             return list_workspaces(args)
         if args.command == "start":
             if args.tool_args[:1] == ["--"]:

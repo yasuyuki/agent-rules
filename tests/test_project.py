@@ -232,16 +232,18 @@ class ProjectCliTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(message, result.stderr)
 
-    def test_opencode_notes_unsupported_skills(self):
+    def test_opencode_places_native_skills(self):
         self.write_config(tools=("opencode",))
         self.rule()
         self.skill()
         result = self.run_cli("apply")
         self.assert_ok(result)
-        self.assertIn("opencode does not support skills placement", result.stdout)
         self.assertTrue((self.root / "AGENTS.md").is_file())
         self.assertTrue((self.root / ".agents" / "rules" / "agent-rules--project-rule.md").is_file())
-        self.assertFalse((self.root / ".agents" / "skills").exists())
+        target = self.root / ".opencode" / "skills" / "project-skill" / "SKILL.md"
+        source = self.root / ".agent-rules" / "skills" / "project-skill" / "SKILL.md"
+        self.assertEqual(target.read_bytes(), source.read_bytes())
+        self.assert_ok(self.run_cli("check"))
 
     def test_external_config_with_spaces_and_japanese_path(self):
         external = Path(self.temp.name) / "外部 project space"

@@ -161,6 +161,64 @@ python3 bin/place.py list --declaration PLACEMENT.md
 python3 bin/place.py start --declaration PLACEMENT.md <workspace> <tool> -- <tool arguments>
 ```
 
+## Environment catalog
+
+OpenCode skill placement uses `.opencode/skills` in a project and
+`~/.config/opencode/skills` globally, following its
+[native skill discovery](https://opencode.ai/docs/skills). Placement checks prove
+bytes and configuration, not that an agent session has read a skill.
+
+A controller may keep a private environment catalog and pass its explicit path
+to the same public entry point:
+
+```console
+python3 bin/place.py list --catalog rules/environments.json --purpose rule-experiment --json
+python3 bin/place.py check --catalog rules/environments.json --environment ubuntu-24 --probe
+```
+
+`--catalog` and `--declaration` are separate modes. A catalog has
+`schemaVersion: 1`, stable-ID `sources`, and `environments`. Sources name their
+origin host and a `paths` map of explicit per-observer readable paths; select an
+alias with `ENVIRONMENT_INVENTORY_HOST`, with `windows`, `linux`, and `default`
+as conventional keys. An empty `paths` map is intentional for a remote source:
+list retains it as `unverified`, while catalog check fails only when that source
+belongs to its selected environment. A source is either `placement-tsv` or `json-pointer`.
+The latter must declare scalar JSON Pointers in `pointers`; the catalog prints
+only those values, never a source document or authentication profile.
+
+An environment names one or more `refs`, allowing several placement sites and
+an apparatus JSON source to describe the same environment. It declares
+`purposes` (`normal-development`, `rule-experiment`, `product-development`,
+`operator`, or `recovery`) and a state (`pending`, `active`, `retained`,
+`retired`, or `unclassified`). Active purpose matches are candidates; pending,
+retained, retired, and unclassified entries remain visible with their reason.
+No fallback selection is made. An `apparatus` entrypoint uses only
+`{"kind":"apparatus","paths":{"windows":"...","linux":"..."}}`;
+the selected path is read-only checked and reported as unverified when this
+observer has no readable path. `agents` may refer to a JSON scalar field or a
+placement site field for their runtime principal and config root. Entrypoints
+are descriptive existing public paths (including an apparatus path), never
+shell commands.
+
+Plain `list` only reads local source paths. `--probe` is observational: it may
+list WSL distros on Windows or make a batch-only SSH reachability attempt. It
+does not start a runtime, request interactive authentication, apply placement,
+or alter permissions. `check --catalog` validates schema, references and that
+every site in every readable placement source is represented; `--environment`
+limits the reported target while still rejecting an unknown ID.
+
+A remote source can declare `probe: {"transport":"ssh","target":"alias",
+"configPaths":{"windows":"C:/config/alias.conf"}}` and its absolute remote
+`path`. The explicit config file is parsed as data: an exact `Host` block with
+hostname, user, port, identity, known-hosts file and connection timeout. Executable
+SSH directives and includes are rejected; the probe passes explicit options to
+SSH with user/system config disabled and reads only the declared file. An
+environment's `connection: {"transport":"ssh","source":"source-id"}` reuses
+that source observation. WSL connections may use
+`{"transport":"wsl","distro":{"source":"source-id","field":"distro"}}`
+to reference a declared JSON field. Installed/running WSL observations do not
+claim runtime reachability; stopped installations remain candidates.
+
 `start` accepts only a local `kind=direct` workspace. It verifies every managed
 location on that site before resolving the declared tool entry point, then
 preserves the child process's standard streams and exit status. For a remote
@@ -287,6 +345,45 @@ here. The manifest is required and begins with its header row, even when it
 lists nothing: publishing stops when it is missing, has lost the header, or
 names a skill this repository no longer holds, because a manifest that cannot
 be read would otherwise pass for one that reports no vendored work.
+
+## Inventory checks at normal start
+
+An environment owner can bind a declaration's sites to inventory validation.
+Add an `INVENTORY` TSV section with `site`, `catalog`, `environment`, and
+`evidence` columns. Paths are relative to the declaration, unless absolute.
+For example, a row `local`, `environments.json`, `development`,
+`session-evidence.json` binds the `local` site to that catalog environment.
+Every site started from a declaration containing this table needs a binding.
+
+`place.py start` checks the binding before invoking the CLI. It requires an
+active environment, registered installed tools, the management skill and reading
+binding, unchanged managed placement, matching runtime identity/config roots,
+and external initial-reading evidence. Missing evidence and pending state reject
+normal start. There is no normal-start bypass option. Existing check/apply remain
+available for repair.
+
+Setup integrations call the same public
+`inventory_lifecycle.validate_lifecycle` function in construction mode, passing
+the constructing agent, explicit declaration, placement context, and actual
+runtime identity. Pending construction may lack initial-reading evidence but
+must have the constructing agent's skill and binding. This helper does not
+perform a state transition or launch anything.
+
+Evidence is an external JSON array. Each entry identifies the descriptor,
+`session` (`continuing` or `startup`), ISO `observedAt`, `skillId`, observed
+`condition`, `applied: true`, `environmentId`, `declarationSha256`, runtime
+`principal` and `configRoot`, and the
+SHA-256 values `skillSha256`, `bindingSha256`, and `recordSha256`. `record` points
+to an actual session observation record; relative paths resolve against the
+evidence file. The skill hash covers SKILL.md source bytes; the binding hash
+covers the parsed rule body. Keep real session records outside version control.
+These references make stale or missing evidence detectable; they do not prove
+the truth of an observation or enforce subsequent model behavior.
+
+Deploy a binding only through the environment's existing setup and reviewed
+adoption flow. An unbound declaration retains the independent project's normal
+placement behavior; adding this public capability does not enroll a project in
+the maintainer's inventory policy.
 
 ## Source format
 

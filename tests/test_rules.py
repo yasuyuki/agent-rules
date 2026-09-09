@@ -1,6 +1,7 @@
 from pathlib import Path
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -11,6 +12,14 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 RULES = ROOT / "bin" / "rules.py"
 PLACE = ROOT / "bin" / "place.py"
+
+# Keep lifecycle regressions on the existing Windows/Linux CI test entry point.
+lifecycle_result = subprocess.run(
+    [sys.executable, str(ROOT / "tests" / "test_inventory_lifecycle.py")],
+    cwd=ROOT, text=True, capture_output=True,
+)
+if lifecycle_result.returncode:
+    raise AssertionError("inventory lifecycle failed\n" + lifecycle_result.stdout + lifecycle_result.stderr)
 
 # Exercise native Windows junctions as well as POSIX symlinks in the existing
 # cross-platform CI entry point.
@@ -220,6 +229,7 @@ local\tlocal\ttester\t{home}\tlocal\t
 <!-- BEGIN WORKSPACES TSV -->
 ```tsv
 id\tsite\tkind\tpath\textra
+work\ts4\tdirect\t/tmp\t
 work\tlocal\tdirect\t{workspace}\t
 ```
 <!-- END WORKSPACES TSV -->
@@ -288,3 +298,147 @@ artifact\tlocation_id\trequirement\treason
     assert calls == [
         (["/usr/bin/codex", "--version"], {"cwd": str(workspace)})
     ]
+
+
+# The private inventory is data-only: resolve its declared sources, retain a
+# placement-only site, and prove that an ordinary list never probes transport.
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    declaration = root / "placement.md"
+    declaration.write_text("""<!-- BEGIN SITES TSV -->
+```tsv
+id\thost\tuser\thome\treach\tlaunch
+s4\tubuntu\tagent\t/home/agent\tremote\tssh
+```
+<!-- END SITES TSV -->
+<!-- BEGIN WORKSPACES TSV -->
+```tsv
+id\tsite\tkind\tpath\textra
+work\ts4\tdirect\t/tmp\t
+```
+<!-- END WORKSPACES TSV -->
+<!-- BEGIN LOCATIONS TSV -->
+```tsv
+id\tscope\tanchor\ttool\trequirement\treason\tlegacy\tpath\tkind
+```
+<!-- END LOCATIONS TSV -->
+<!-- BEGIN EXCEPTIONS TSV -->
+```tsv
+artifact\tlocation_id\trequirement\treason
+```
+<!-- END EXCEPTIONS TSV -->
+""", encoding="utf-8")
+    apparatus = root / "apparatus.json"
+    apparatus.write_text(json.dumps({"executor": "ubuntu", "runsRoot": "/work/runs"}), encoding="utf-8")
+    catalog = root / "catalog.json"
+    catalog.write_text(json.dumps({"schemaVersion": 1, "sources": {
+        "root": {"type": "placement-tsv", "host": "controller", "paths": {"default": str(declaration)}},
+        "apparatus": {"type": "json-pointer", "host": "controller", "paths": {"default": str(apparatus)}, "pointers": {"executor": "/executor", "runsRoot": "/runsRoot"}},
+    }, "environments": [{"id": "ubuntu-24", "purposes": ["rule-experiment"], "state": "active", "refs": [
+        {"source": "root", "site": "s4"}, {"source": "apparatus", "fields": {"executor": "executor", "runsRoot": "runsRoot"}}],
+        "entrypoint": {"kind": "apparatus", "paths": {"default": str(apparatus)}},
+        "connection": {"transport": "ssh", "target": "example"},
+        "agents": [{"descriptor": "codex", "principal": {"source": "root", "site": "s4", "field": "user"}, "configRoot": {"source": "root", "site": "s4", "field": "home"}}]
+    }]}), encoding="utf-8")
+    listed = subprocess.run([sys.executable, str(PLACE), "list", "--catalog", str(catalog), "--purpose", "rule-experiment", "--json"], text=True, capture_output=True)
+    assert listed.returncode == 0, listed.stderr
+    assert json.loads(listed.stdout)[0]["id"] == "ubuntu-24"
+    errors, records = place.environment_inventory.check_catalog(catalog, runner=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected probe")))
+    assert not errors and records
+    calls = []
+    errors, _records = place.environment_inventory.check_catalog(catalog, probe=True, runner=lambda argv, **kwargs: (calls.append(argv) or subprocess.CompletedProcess(argv, 1, "", "")))
+    assert errors == ["probe unresolved for ubuntu-24: SSH observation requires a successful referenced source probe"] and calls == []
+
+    wsl_calls = []
+    def wsl_runner(argv, **kwargs):
+        wsl_calls.append(argv)
+        output = "Ubuntu-24.04\nUbuntu\n" if "--running" not in argv else "Ubuntu-24.04\n"
+        return subprocess.CompletedProcess(argv, 0, output, "")
+    probe_target = [{"connection": {"transport": "wsl", "distro": "Ubuntu-24.04"}}]
+    place.environment_inventory.probe_records(probe_target, runner=wsl_runner, platform_name="nt")
+    assert probe_target[0]["observation"].get("installed") is True
+    assert probe_target[0]["observation"].get("running") is True
+    assert wsl_calls == [["wsl.exe", "--list", "--quiet"], ["wsl.exe", "--list", "--running", "--quiet"]]
+
+    ssh_config = root / "probe.conf"
+    ssh_config.write_text("Host remote\n  HostName example.test\n  User agent\n  IdentityFile /tmp/id\n  UserKnownHostsFile /tmp/known\n", encoding="utf-8")
+    remote_catalog = root / "remote-catalog.json"
+    remote_catalog.write_text(json.dumps({"schemaVersion": 1, "sources": {"remote": {
+        "type": "placement-tsv", "host": "remote", "path": "/policy/PLACEMENT.md", "paths": {},
+        "probe": {"transport": "ssh", "target": "remote", "configPaths": {"default": str(ssh_config)}}}},
+        "environments": [{"id": "remote", "purposes": ["normal-development"], "state": "active", "refs": [{"source": "remote", "site": "s4"}], "entrypoint": {"kind": "placement-start", "source": "remote", "workspace": "work"}, "agents": []}]}), encoding="utf-8")
+    remote_calls = []
+    def remote_runner(argv, **kwargs):
+        remote_calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, declaration.read_text(encoding="utf-8"), "")
+    errors, remote_records = place.environment_inventory.check_catalog(remote_catalog, probe=True, runner=remote_runner)
+    assert not errors and remote_records[0]["refs"][0]["resolution"] == "resolved"
+    assert remote_calls[0][-1] == "cat -- /policy/PLACEMENT.md"
+    assert remote_calls[0][:3] == ["ssh", "-F", os.devnull]
+
+    broken = json.loads(catalog.read_text(encoding="utf-8"))
+    broken["environments"][0]["entrypoint"] = {"kind": "apparatus", "paths": {"windows": "C:/not-present"}}
+    broken_path = root / "broken-entrypoint.json"
+    broken_path.write_text(json.dumps(broken), encoding="utf-8")
+    _catalog, _sources, broken_records = place.environment_inventory.load_catalog(broken_path)
+    assert broken_records[0]["entrypoint"]["resolution"].startswith("unverified: no path")
+    broken_errors, _records = place.environment_inventory.check_catalog(broken_path, environment_id="ubuntu-24")
+    assert any("unverified entrypoint" in error for error in broken_errors)
+
+    invalid = json.loads(catalog.read_text(encoding="utf-8"))
+    invalid["schemaVersion"] = True
+    broken_path.write_text(json.dumps(invalid), encoding="utf-8")
+    invalid_errors, _ = place.environment_inventory.check_catalog(broken_path)
+    assert invalid_errors and "schemaVersion" in invalid_errors[0]
+    broken_path.write_text('{"schemaVersion":1,"schemaVersion":1}', encoding="utf-8")
+    invalid_errors, _ = place.environment_inventory.check_catalog(broken_path)
+    assert invalid_errors and "duplicate JSON key" in invalid_errors[0]
+
+    # Windows writes UTF-16LE WSL names to pipes. A stopped installed distro
+    # remains a selection candidate, while reachability is deliberately unknown.
+    utf16_calls = []
+    def utf16_wsl_runner(argv, **kwargs):
+        utf16_calls.append(argv)
+        names = "Ubuntu-24.04\n開発環境\n" if "--running" not in argv else "開発環境\n"
+        return subprocess.CompletedProcess(argv, 0, names.encode("utf-16-le"), b"")
+    stopped = [{"connection": {"transport": "wsl", "distro": "Ubuntu-24.04"}}]
+    place.environment_inventory.probe_records(stopped, runner=utf16_wsl_runner, platform_name="nt")
+    assert stopped[0]["observation"].get("installed") is True
+    assert stopped[0]["observation"].get("running") is False
+    assert stopped[0]["observation"].get("reachable") is None
+    assert stopped[0]["observation"].get("unregisteredDistros") == ["開発環境"]
+    assert utf16_calls == [["wsl.exe", "--list", "--quiet"], ["wsl.exe", "--list", "--running", "--quiet"]]
+
+    def failed_running_runner(argv, **kwargs):
+        code = 1 if "--running" in argv else 0
+        return subprocess.CompletedProcess(argv, code, "Ubuntu-24.04\n".encode("utf-16-le"), b"")
+    unknown_running = [{"connection": {"transport": "wsl", "distro": "Ubuntu-24.04"}}]
+    place.environment_inventory.probe_records(unknown_running, runner=failed_running_runner, platform_name="nt")
+    assert unknown_running[0]["observation"].get("installed") is True
+    assert unknown_running[0]["observation"].get("running") is None
+
+    bad_workspace = json.loads(catalog.read_text(encoding="utf-8"))
+    bad_workspace["environments"][0]["entrypoint"] = {"kind": "placement-start", "source": "root", "workspace": "missing"}
+    bad_workspace_path = root / "bad-workspace.json"
+    bad_workspace_path.write_text(json.dumps(bad_workspace), encoding="utf-8")
+    try:
+        place.environment_inventory.load_catalog(bad_workspace_path)
+    except place.environment_inventory.CatalogError as exc:
+        assert "entrypoint workspace" in str(exc)
+    else:
+        raise AssertionError("placement entrypoint accepted an unknown workspace")
+
+    null_entrypoint = json.loads(catalog.read_text(encoding="utf-8"))
+    null_entrypoint["environments"][0]["entrypoint"] = None
+    null_path = root / "null-entrypoint.json"
+    null_path.write_text(json.dumps(null_entrypoint), encoding="utf-8")
+    null_errors, null_records = place.environment_inventory.check_catalog(null_path, environment_id="ubuntu-24")
+    assert not null_errors and null_records[0]["entrypoint"] is None
+
+    scoped = json.loads(catalog.read_text(encoding="utf-8"))
+    scoped["sources"]["unrelated"] = {"type": "placement-tsv", "host": "other", "paths": "malformed"}
+    scoped["environments"].append({"id": "other", "purposes": ["operator"], "state": "active", "refs": [{"source": "unrelated", "site": "s4"}], "entrypoint": None, "agents": []})
+    scoped_path = root / "scoped.json"
+    scoped_path.write_text(json.dumps(scoped), encoding="utf-8")
+    scoped_errors, scoped_records = place.environment_inventory.check_catalog(scoped_path, environment_id="ubuntu-24")
+    assert not scoped_errors and [record["id"] for record in scoped_records] == ["ubuntu-24"]
