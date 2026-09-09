@@ -365,13 +365,9 @@ def snapshot(targets):
     shots = {}
     for target in targets:
         if target.is_file():
-            shots[target] = target.read_bytes()
+            shots[target] = (target.stat(), target.read_bytes())
         elif target.is_dir():
-            shots[target] = {
-                path.relative_to(target).as_posix(): path.read_bytes()
-                for path in target.rglob("*")
-                if path.is_file()
-            }
+            shots[target] = (target.stat(), snapshot(target.iterdir()))
         else:
             shots[target] = None
     return shots
@@ -379,22 +375,31 @@ def snapshot(targets):
 
 def restore(shots):
     for target, data in shots.items():
-        if target.exists() or target.is_symlink():
+        if data is None or is_link(target) or (
+            target.exists() and target.is_dir() != isinstance(data[1], dict)
+        ):
             if target.is_dir() and not target.is_symlink():
                 shutil.rmtree(target)
-            else:
+            elif target.exists() or target.is_symlink():
                 target.unlink()
         if data is None:
             continue
-        if isinstance(data, bytes):
+        metadata, content = data
+        if isinstance(content, bytes):
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
-            continue
-        target.mkdir(parents=True, exist_ok=True)
-        for rel, content in data.items():
-            dest = target.joinpath(*rel.split("/"))
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(content)
+            # Leave unchanged files in place: rewriting them loses identity,
+            # Windows ACLs/attributes and other metadata outside our ownership.
+            if not target.is_file() or target.read_bytes() != content:
+                target.write_bytes(content)
+        else:
+            target.mkdir(parents=True, exist_ok=True)
+            restore({path: None for path in target.iterdir() if path not in content})
+            restore(content)
+        if stat.S_IMODE(target.stat().st_mode) != stat.S_IMODE(metadata.st_mode):
+            target.chmod(stat.S_IMODE(metadata.st_mode))
+        current = target.stat()
+        if current.st_mtime_ns != metadata.st_mtime_ns:
+            os.utime(target, ns=(current.st_atime_ns, metadata.st_mtime_ns))
 
 
 def site_reachable(site):

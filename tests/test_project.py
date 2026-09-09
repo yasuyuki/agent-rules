@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -279,6 +280,48 @@ class ProjectCliTests(unittest.TestCase):
         self.assertIn("malformed agent-rules markers", result.stderr)
         self.assertEqual(agents.read_bytes(), malformed)
         self.assertEqual(claude.read_bytes(), claude_malformed)
+
+    def test_rollback_preserves_unmanaged_directories_and_permissions(self):
+        self.write_config(tools=("cursor-agent",))
+        rule = self.rule()
+        self.assert_ok(self.run_cli("apply"))
+        output = self.root / ".cursor" / "rules"
+        empty = output / "keep-empty" / "nested"
+        empty.mkdir(parents=True)
+        if os.name != "nt":
+            empty.chmod(0o700)
+        keep = output / "keep.txt"
+        keep.write_bytes(b"private executable\n")
+        keep.chmod(stat.S_IREAD if os.name == "nt" else 0o700)
+        before = keep.stat()
+        directory_before = empty.stat()
+        if os.name == "nt":
+            acl_before = subprocess.check_output(["icacls", str(keep)])
+        generated = output / "agent-rules--project-rule.mdc"
+        generated_before = generated.read_bytes()
+        rule.write_text(rule.read_text(encoding="utf-8") + "Changed source.\n", encoding="utf-8")
+        self.rule("new-rule")
+        try:
+            for failure in ("1", "interrupt"):
+                with self.subTest(failure=failure):
+                    result = self.run_cli("apply", env={"PLACE_FORCE_POSTCHECK_FAILURE": failure})
+                    self.assertNotEqual(result.returncode, 0)
+                    if failure == "1":
+                        self.assertIn("forced post-check failure", result.stderr)
+                    self.assertEqual(keep.read_bytes(), b"private executable\n")
+                    self.assertEqual(keep.stat().st_mode, before.st_mode)
+                    self.assertEqual(keep.stat().st_ino, before.st_ino)
+                    self.assertTrue(empty.is_dir())
+                    self.assertEqual(empty.stat().st_ino, directory_before.st_ino)
+                    self.assertEqual(empty.stat().st_mode, directory_before.st_mode)
+                    self.assertEqual(list(empty.iterdir()), [])
+                    self.assertEqual(generated.read_bytes(), generated_before)
+                    self.assertFalse((output / "agent-rules--new-rule.mdc").exists())
+                    if os.name == "nt":
+                        self.assertEqual(keep.stat().st_file_attributes, before.st_file_attributes)
+                        self.assertEqual(subprocess.check_output(["icacls", str(keep)]), acl_before)
+        finally:
+            keep.chmod(stat.S_IREAD | stat.S_IWRITE)
 
     def check_adjacent_temporary_collision(self, *, symlink):
         self.write_config()
