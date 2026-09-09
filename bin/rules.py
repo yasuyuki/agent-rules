@@ -78,7 +78,7 @@ def body_for_convention(meta, common, bindings, conv_id, placement):
     return out
 
 
-def load_rules(placement, rules_dir=None):
+def load_rules(placement, rules_dir=None, *, allow_empty=False):
     directory = RULES_DIR if rules_dir is None else rules_dir
     rules = []
     known = set(placement["tools"])
@@ -99,7 +99,7 @@ def load_rules(placement, rules_dir=None):
         if unknown:
             raise SystemExit("%s: binding for a tool not in tools: %s" % (path, sorted(unknown)))
         rules.append((meta, common, bindings))
-    if not rules:
+    if not rules and not allow_empty:
         raise SystemExit("no rules found in %s" % directory)
     return rules
 
@@ -110,7 +110,9 @@ SKILL_MANIFEST_HEADER = ("id", "repo", "ref", "path", "tree_sha", "license")
 
 
 def parse_skill_frontmatter(text, path):
-    match = re.match(r"\A---\r?\n(.*?)\r?\n---\r?\n", text, re.S)
+    # Parse native Windows text without changing the verbatim skill payload.
+    text = text.replace("\r\n", "\n")
+    match = re.match(r"\A---\n(.*?)\n---\n", text, re.S)
     if not match:
         raise SystemExit("%s: missing frontmatter" % path)
     meta = {}
@@ -120,6 +122,15 @@ def parse_skill_frontmatter(text, path):
         key, _, value = line.partition(":")
         meta[key.strip()] = value.strip()
     return meta
+
+
+class SkillContent(bytes):
+    """Verbatim payload plus POSIX execute bits; other permissions are not copied."""
+
+    def __new__(cls, data, executable):
+        value = super().__new__(cls, data)
+        value.executable = executable
+        return value
 
 
 def load_skills(skills_dir):
@@ -149,7 +160,9 @@ def load_skills(skills_dir):
                 if relative == SKILL_MARKER:
                     raise SystemExit("%s: %s is generated and must not be in the source" % (full, SKILL_MARKER))
                 with open(full, "rb") as handle:
-                    tree[relative] = handle.read()
+                    tree[relative] = SkillContent(
+                        handle.read(), os.fstat(handle.fileno()).st_mode & 0o111 if os.name == "posix" else None
+                    )
         meta = parse_skill_frontmatter(tree["SKILL.md"].decode("utf-8"), skill_md)
         for required in ("name", "description"):
             if not meta.get(required):
@@ -194,16 +207,16 @@ def vendored_ids(skills_dirs):
     return ids
 
 
-def load_rule_dirs(placement, rules_dirs):
+def load_rule_dirs(placement, rules_dirs, *, allow_empty=False):
     rules, seen = [], set()
     for rules_dir in rules_dirs:
-        for item in load_rules(placement, rules_dir):
+        for item in load_rules(placement, rules_dir, allow_empty=allow_empty):
             rule_id = item[0]["id"]
             if rule_id in seen:
                 raise SystemExit("duplicate rule id '%s'" % rule_id)
             seen.add(rule_id)
             rules.append(item)
-    if not rules:
+    if not rules and not allow_empty:
         raise SystemExit("no rules found in %s" % rules_dirs)
     return rules
 

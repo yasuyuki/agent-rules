@@ -28,6 +28,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 
@@ -39,6 +40,10 @@ FIXTURE_DECL = ROOT / "tests" / "fixtures" / "place" / "declaration.md"
 spec = importlib.util.spec_from_file_location("agent_rules", HERE / "rules.py")
 agent_rules = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(agent_rules)
+
+inventory_spec = importlib.util.spec_from_file_location("environment_inventory", HERE / "environment_inventory.py")
+environment_inventory = importlib.util.module_from_spec(inventory_spec)
+inventory_spec.loader.exec_module(environment_inventory)
 
 
 class PlacementError(RuntimeError):
@@ -190,6 +195,12 @@ def conventions_for(placement, tool, kind):
     return placement["tools"].get(tool, {}).get("reads", {}).get(kind, [])
 
 
+def location_conventions(placement, location, kind):
+    if location.get("kind", "rules") != kind:
+        return []
+    return conventions_for(placement, location["tool"], kind)
+
+
 def expected_writes(rules, placement, locations, exceptions, sites, workspaces, skills=None):
     files, sections = {}, {}
     for loc in locations:
@@ -198,7 +209,7 @@ def expected_writes(rules, placement, locations, exceptions, sites, workspaces, 
         tool = loc["tool"]
         if tool not in placement["tools"]:
             raise PlacementError("location %s: unknown tool %s" % (loc["id"], tool))
-        for conv_id in conventions_for(placement, tool, "skills"):
+        for conv_id in location_conventions(placement, loc, "skills"):
             for skill_id, tree in sorted((skills or {}).items()):
                 if not skill_applies(skill_id, loc, exceptions):
                     continue
@@ -208,8 +219,12 @@ def expected_writes(rules, placement, locations, exceptions, sites, workspaces, 
                 for relative, content in tree.items():
                     files[root.joinpath(*relative.split("/"))] = content
                 files[root / agent_rules.SKILL_MARKER] = marker_bytes(skill_id)
-        for conv_id in conventions_for(placement, tool, "rules"):
+        for conv_id in location_conventions(placement, loc, "rules"):
             spec = placement["conventions"][conv_id]
+            if spec.get("mode") == "section":
+                dest = location_file(loc, conv_id, "", placement, sites, workspaces)
+                if dest is not None:
+                    sections.setdefault(dest, {})
             for meta, common, bindings in rules:
                 if not rule_applies(meta, loc, exceptions, placement):
                     continue
@@ -277,11 +292,31 @@ def managed_dir(location, conv_id, placement, sites, workspaces):
 
 def atomic_write(path, content):
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".place.tmp")
     if isinstance(content, str):
         content = content.encode("utf-8")
-    temporary.write_bytes(content)
-    os.replace(temporary, path)
+    while True:
+        temporary = path.with_name(path.name + ".place." + uuid.uuid4().hex + ".tmp")
+        try:
+            stream = temporary.open("xb")
+            break
+        except FileExistsError:
+            continue
+    try:
+        with stream:
+            stream.write(content)
+        executable = getattr(content, "executable", None)
+        if os.name == "posix" and executable is not None:
+            temporary.chmod((temporary.stat().st_mode & 0o666) | executable)
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def executable_differs(path, content):
+    executable = getattr(content, "executable", None)
+    return (os.name == "posix" and executable is not None
+            and path.stat().st_mode & 0o111 != executable)
 
 
 def affected_targets(files, sections, locations, placement, sites, workspaces):
@@ -289,8 +324,8 @@ def affected_targets(files, sections, locations, placement, sites, workspaces):
     for loc in locations:
         if loc["scope"] not in ("home", "workspace"):
             continue
-        for conv_id in conventions_for(placement, loc["tool"], "rules") + conventions_for(
-            placement, loc["tool"], "skills"
+        for conv_id in location_conventions(placement, loc, "rules") + location_conventions(
+            placement, loc, "skills"
         ):
             directory = managed_dir(loc, conv_id, placement, sites, workspaces)
             if directory:
@@ -330,13 +365,9 @@ def snapshot(targets):
     shots = {}
     for target in targets:
         if target.is_file():
-            shots[target] = target.read_bytes()
+            shots[target] = (target.stat(), target.read_bytes())
         elif target.is_dir():
-            shots[target] = {
-                path.relative_to(target).as_posix(): path.read_bytes()
-                for path in target.rglob("*")
-                if path.is_file()
-            }
+            shots[target] = (target.stat(), snapshot(target.iterdir()))
         else:
             shots[target] = None
     return shots
@@ -344,22 +375,31 @@ def snapshot(targets):
 
 def restore(shots):
     for target, data in shots.items():
-        if target.exists() or target.is_symlink():
+        if data is None or is_link(target) or (
+            target.exists() and target.is_dir() != isinstance(data[1], dict)
+        ):
             if target.is_dir() and not target.is_symlink():
                 shutil.rmtree(target)
-            else:
+            elif target.exists() or target.is_symlink():
                 target.unlink()
         if data is None:
             continue
-        if isinstance(data, bytes):
+        metadata, content = data
+        if isinstance(content, bytes):
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
-            continue
-        target.mkdir(parents=True, exist_ok=True)
-        for rel, content in data.items():
-            dest = target.joinpath(*rel.split("/"))
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(content)
+            # Leave unchanged files in place: rewriting them loses identity,
+            # Windows ACLs/attributes and other metadata outside our ownership.
+            if not target.is_file() or target.read_bytes() != content:
+                target.write_bytes(content)
+        else:
+            target.mkdir(parents=True, exist_ok=True)
+            restore({path: None for path in target.iterdir() if path not in content})
+            restore(content)
+        if stat.S_IMODE(target.stat().st_mode) != stat.S_IMODE(metadata.st_mode):
+            target.chmod(stat.S_IMODE(metadata.st_mode))
+        current = target.stat()
+        if current.st_mtime_ns != metadata.st_mtime_ns:
+            os.utime(target, ns=(current.st_atime_ns, metadata.st_mtime_ns))
 
 
 def site_reachable(site):
@@ -420,7 +460,7 @@ def render_sections(path, blocks):
     return text.encode("utf-8")
 
 
-def check_state(rules, placement, locations, exceptions, sites, workspaces, all_locations, skills=None):
+def check_state(rules, placement, locations, exceptions, sites, workspaces, all_locations, skills=None, *, check_installed=True):
     errors = []
     reachable = [loc for loc in locations if site_reachable(sites[site_of(loc, workspaces)])]
     files, sections = expected_writes(rules, placement, reachable, exceptions, sites, workspaces, skills)
@@ -441,13 +481,15 @@ def check_state(rules, placement, locations, exceptions, sites, workspaces, all_
             errors.append("missing: %s" % dest)
         elif actual != content:
             errors.append("differs from canonical: %s" % dest)
+        elif executable_differs(dest, content):
+            errors.append("executable bits differ from canonical: %s" % dest)
     expected_resolved = {path.resolve(strict=False) for path in files}
     for loc in locations:
         if loc["scope"] not in ("home", "workspace"):
             continue
         if not site_reachable(sites[site_of(loc, workspaces)]):
             continue
-        for conv_id in conventions_for(placement, loc["tool"], "rules"):
+        for conv_id in location_conventions(placement, loc, "rules"):
             spec = placement["conventions"][conv_id]
             directory = managed_dir(loc, conv_id, placement, sites, workspaces)
             if directory is None or not directory.is_dir():
@@ -462,7 +504,7 @@ def check_state(rules, placement, locations, exceptions, sites, workspaces, all_
                     and path.resolve(strict=False) not in expected_resolved
                 ):
                     errors.append("unexpected managed rule: %s" % path)
-        for conv_id in conventions_for(placement, loc["tool"], "skills"):
+        for conv_id in location_conventions(placement, loc, "skills"):
             directory = managed_dir(loc, conv_id, placement, sites, workspaces)
             if directory is None:
                 continue
@@ -475,9 +517,15 @@ def check_state(rules, placement, locations, exceptions, sites, workspaces, all_
                         errors.append("unexpected file in managed skill: %s" % inner)
     for dest, blocks in sorted(sections.items(), key=lambda item: str(item[0])):
         if not dest.exists():
-            errors.append("missing: %s" % dest)
+            if blocks:
+                errors.append("missing: %s" % dest)
             continue
         text = dest.read_text(encoding="utf-8")
+        try:
+            agent_rules.require_balanced_markers(text, str(dest))
+        except SystemExit as exc:
+            errors.append(str(exc))
+            continue
         markers = list(agent_rules.MARKER.findall(text))
         begins = [rule_id for kind, rule_id in markers if kind == "begin"]
         for rule_id in sorted((set(begins) | {rule_id for kind, rule_id in markers if kind == "end"}) - set(blocks)):
@@ -507,7 +555,7 @@ def check_state(rules, placement, locations, exceptions, sites, workspaces, all_
             continue
         if loc["scope"] == "hooks":
             errors.extend(hooks_errors(loc, target, placement))
-    for site_id, site in sites.items():
+    for site_id, site in (sites.items() if check_installed else []):
         if not site_reachable(site):
             continue
         declared = declared_tools(all_locations, workspaces, site_id)
@@ -535,7 +583,7 @@ def apply_projection(rules, placement, locations, exceptions, sites, workspaces,
             if path.is_file():
                 path.unlink()
         owned = {path.resolve(strict=False) for path in files}
-        for conv_id in conventions_for(placement, loc["tool"], "rules"):
+        for conv_id in location_conventions(placement, loc, "rules"):
             directory = managed_dir(loc, conv_id, placement, sites, workspaces)
             spec = placement["conventions"][conv_id]
             if directory is None or not directory.is_dir():
@@ -547,7 +595,7 @@ def apply_projection(rules, placement, locations, exceptions, sites, workspaces,
             for path in list(directory.iterdir()):
                 if path.is_file() and path.name.startswith(prefix) and path.name.endswith(suffix) and path.resolve(strict=False) not in owned:
                     path.unlink()
-        for conv_id in conventions_for(placement, loc["tool"], "skills"):
+        for conv_id in location_conventions(placement, loc, "skills"):
             directory = managed_dir(loc, conv_id, placement, sites, workspaces)
             if directory is None:
                 continue
@@ -561,7 +609,8 @@ def apply_projection(rules, placement, locations, exceptions, sites, workspaces,
     for dest, content in files.items():
         atomic_write(dest, content)
     for dest, blocks in sections.items():
-        atomic_write(dest, render_sections(dest, blocks))
+        if blocks or dest.exists():
+            atomic_write(dest, render_sections(dest, blocks))
 
 
 def mirror(args):
@@ -596,6 +645,8 @@ def mirror(args):
             errors.append("missing: %s" % path)
         elif actual != content:
             errors.append("differs from canonical: %s" % path)
+        elif executable_differs(path, content):
+            errors.append("executable bits differ from canonical: %s" % path)
     if dest.is_dir():
         for path in sorted(dest.iterdir()):
             if path.is_dir() and path.name not in own:
@@ -654,9 +705,9 @@ def load_context(args):
     return placement, rules, sites, workspaces, locations, exceptions, selected, skills
 
 
-def check(args):
-    placement, rules, sites, workspaces, locations, exceptions, selected, skills = load_context(args)
-    errors, printed = check_state(rules, placement, selected, exceptions, sites, workspaces, locations, skills)
+def check(args, *, context=None):
+    placement, rules, sites, workspaces, locations, exceptions, selected, skills = context if context is not None else load_context(args)
+    errors, printed = check_state(rules, placement, selected, exceptions, sites, workspaces, locations, skills, check_installed=context is None)
     for path in printed:
         print(path)
     for error in errors:
@@ -665,11 +716,15 @@ def check(args):
     return 0 if not errors else 1
 
 
-def apply(args):
-    placement, rules, sites, workspaces, locations, exceptions, selected, skills = load_context(args)
+def apply(args, *, context=None):
+    placement, rules, sites, workspaces, locations, exceptions, selected, skills = context if context is not None else load_context(args)
     files, sections = expected_writes(rules, placement, selected, exceptions, sites, workspaces, skills)
     targets = affected_targets(files, sections, selected, placement, sites, workspaces)
     preflight_targets(targets)
+    for dest in files:
+        if dest.name == agent_rules.SKILL_MARKER and dest.parent.exists():
+            if not dest.is_file() or dest.read_bytes() != marker_bytes(dest.parent.name):
+                raise PlacementError("refusing to overwrite unmanaged skill: %s" % dest.parent)
     shots = snapshot(targets)
     try:
         apply_projection(rules, placement, selected, exceptions, sites, workspaces, skills)
@@ -678,10 +733,10 @@ def apply(args):
             raise KeyboardInterrupt()
         if forced_failure:
             raise PlacementError("forced post-check failure")
-        errors, _ = check_state(rules, placement, selected, exceptions, sites, workspaces, locations, skills)
+        errors, _ = check_state(rules, placement, selected, exceptions, sites, workspaces, locations, skills, check_installed=context is None)
         if errors:
             raise PlacementError("post-check failed: " + "; ".join(errors))
-    except (Exception, KeyboardInterrupt):
+    except (Exception, KeyboardInterrupt, SystemExit):
         restore(shots)
         raise
     print("place: applied")
@@ -697,6 +752,124 @@ def list_workspaces(args):
     return 0
 
 
+def list_catalog(args):
+    try:
+        _catalog, _sources, records = environment_inventory.load_catalog(args.catalog, args.purpose, probe=args.probe)
+        if args.probe:
+            environment_inventory.probe_records(records)
+    except environment_inventory.CatalogError as exc:
+        raise PlacementError(str(exc)) from None
+    if args.json:
+        print(json.dumps(records, ensure_ascii=False, sort_keys=True))
+        return 0
+    print("id\tpurposes\tstate\tcandidate\treason\tconnection\tprincipal\tworkspaces\tentrypoint\tresolution\tobservation")
+    for record in records:
+        principals = "; ".join(
+            "%s/%s:%s@%s HOME=%s" % (ref["source"], ref["site"]["id"],
+                                    ref["site"].get("user", "?"), ref["site"].get("host", "?"),
+                                    ref["site"].get("home", "?"))
+            for ref in record["refs"] if ref.get("site")
+        ) or "unverified"
+        workspaces = ",".join(
+            "%s/%s=%s" % (ref["source"], workspace["id"], workspace["path"])
+            for ref in record["refs"] for workspace in ref.get("siteWorkspaces", [])
+        )
+        roots = ["%s:runsRoot=%s" % (ref["source"], ref["values"]["runsRoot"])
+                 for ref in record["refs"] if "runsRoot" in ref.get("values", {})]
+        workspaces = "; ".join([value for value in [workspaces, *roots] if value]) or "-"
+        resolution = "; ".join("%s:%s" % (ref["source"], ref["resolution"]) for ref in record["refs"])
+        print("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s" % (record["id"], ",".join(record["purposes"]) or "unclassified", record["state"], "yes" if record["candidate"] else "no", record["candidateReason"], json.dumps(record["connection"], ensure_ascii=False, separators=(",", ":")), principals, workspaces, json.dumps(record["entrypoint"], ensure_ascii=False, separators=(",", ":")), resolution, json.dumps(record["observation"], ensure_ascii=False, separators=(",", ":"))))
+    return 0
+
+
+def check_catalog(args):
+    errors, records = environment_inventory.check_catalog(args.catalog, args.environment, args.probe)
+    for error in errors:
+        print("FAIL: " + error, file=sys.stderr)
+    print("catalog: %s" % ("OK" if not errors else "FAILED (%d)" % len(errors)))
+    return 0 if not errors else 1
+
+
+def inventory_preflight(args, context, site_id, *, resolver=shutil.which,
+                        mode="normal", constructing_agent=None):
+    """Check an explicitly bound local inventory before launching a CLI.
+
+    The optional table keeps independent public projects independent. Once a
+    site is bound, a missing catalog/evidence file is a failure, never a bypass.
+    Setup callers may request construction mode; normal start deliberately
+    exposes no construction-mode switch.
+    """
+    from types import SimpleNamespace
+    import getpass
+    import platform
+
+    declaration = Path(args.declaration).resolve()
+    text = declaration.read_text(encoding="utf-8")
+    if "<!-- BEGIN INVENTORY TSV -->" not in text:
+        return
+    rows = markdown_tsv(declaration, "INVENTORY", text)
+    required = {"site", "catalog", "environment", "evidence"}
+    if any(not required.issubset(row) for row in rows):
+        raise PlacementError("INVENTORY needs site, catalog, environment, evidence columns")
+    if len({row["site"] for row in rows}) != len(rows):
+        raise PlacementError("duplicate INVENTORY site")
+    if any(row["site"] not in context[2] for row in rows):
+        raise PlacementError("unknown INVENTORY site")
+    binding = next((row for row in rows if row["site"] == site_id), None)
+    if binding is None:
+        raise PlacementError("INVENTORY has no binding for selected site: " + site_id)
+    if any(not binding[key].strip() for key in required):
+        raise PlacementError("INVENTORY binding has an empty required value")
+    def relative(value):
+        path = Path(value)
+        return path if path.is_absolute() else declaration.parent / path
+    evidence_path = relative(binding["evidence"])
+    try:
+        try:
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            if mode != "construction":
+                raise
+            evidence = []
+        if not isinstance(evidence, list):
+            raise ValueError("evidence must be an array")
+        for entry in evidence:
+            if not isinstance(entry, dict):
+                raise ValueError("evidence entry must be an object")
+            record = entry.get("record")
+            if not isinstance(record, str) or not record:
+                raise ValueError("evidence entry needs a record path")
+            path = Path(record)
+            entry["record"] = str(path if path.is_absolute() else evidence_path.parent / path)
+    except (OSError, ValueError) as exc:
+        raise PlacementError("inventory evidence is unverified: " + str(exc)) from None
+    lifecycle_spec = importlib.util.spec_from_file_location("inventory_lifecycle", HERE / "inventory_lifecycle.py")
+    lifecycle = importlib.util.module_from_spec(lifecycle_spec)
+    lifecycle_spec.loader.exec_module(lifecycle)
+    if os.name == "posix":
+        import pwd
+        user = pwd.getpwuid(os.getuid()).pw_name
+    else:
+        user = getpass.getuser()
+    home = str(Path.home())
+    config_roots = {}
+    for name, tool in context[0]["tools"].items():
+        spec = tool["configHome"]
+        config_roots[name] = os.environ.get(spec.get("env", "")) or spec["default"].replace("$HOME", home)
+    principal = {"user": user, "home": home,
+                 "host": os.environ.get("WSL_DISTRO_NAME") or platform.system(),
+                 "platform": platform.system(),
+                 "configRoots": config_roots}
+    errors, _record = lifecycle.validate_lifecycle(
+        relative(binding["catalog"]), context, binding["environment"],
+        place_module=SimpleNamespace(**globals()), resolver=resolver,
+        current_principal=principal, session_evidence=evidence,
+        declaration_path=declaration, mode=mode, constructing_agent=constructing_agent,
+    )
+    if errors:
+        raise PlacementError("inventory lifecycle check failed: " + "; ".join(errors))
+
+
 def start(args, runner=subprocess.run, resolver=shutil.which):
     """Run one declared CLI in one local direct workspace.
 
@@ -704,7 +877,8 @@ def start(args, runner=subprocess.run, resolver=shutil.which):
     command. Invoke this same entry point on the target host instead of depending
     on an environment-private launcher.
     """
-    placement, rules, sites, workspaces, locations, exceptions, _selected, skills = load_context(args)
+    context = load_context(args)
+    placement, rules, sites, workspaces, locations, exceptions, _selected, skills = context
     workspace = workspaces.get(args.workspace_id)
     if workspace is None:
         raise PlacementError("unknown workspace: %s" % args.workspace_id)
@@ -725,6 +899,8 @@ def start(args, runner=subprocess.run, resolver=shutil.which):
     tool = placement["tools"].get(args.tool)
     if tool is None:
         raise PlacementError("unknown tool: %s" % args.tool)
+
+    inventory_preflight(args, context, site_id, resolver=resolver)
 
     selected = filter_locations(locations, workspaces, site=site_id)
     errors, _printed = check_state(
@@ -1006,6 +1182,30 @@ def selfcheck(_args):
         published = sorted(path.name for path in (root / "mirror" / "skills").iterdir())
         if published != ["delta"]:
             raise PlacementError("selfcheck mirror published a vendored skill: %s" % published)
+        if os.name == "posix":
+            script = Path(skills_dir) / "delta" / "check.sh"
+            script.write_bytes(b"#!/bin/sh\nexit 0\n")
+            script.chmod(0o4755)
+            published_script = root / "mirror" / "skills" / "delta" / "check.sh"
+            mirror(mirror_ns)
+            if published_script.stat().st_mode & 0o7111 != 0o111:
+                raise PlacementError("selfcheck mirror lost execute bits or copied special bits")
+            subprocess.run([str(published_script)], check=True)
+            published_script.chmod(0o644)
+            mirror_ns.check = True
+            if mirror(mirror_ns) == 0:
+                raise PlacementError("selfcheck mirror missed executable drift")
+            mirror_ns.check = False
+            mirror(mirror_ns)
+            subprocess.run([str(published_script)], check=True)
+            script.chmod(0o644)
+            mirror_ns.check = True
+            if mirror(mirror_ns) == 0:
+                raise PlacementError("selfcheck mirror missed source executable change")
+            mirror_ns.check = False
+            mirror(mirror_ns)
+            if published_script.stat().st_mode & 0o111:
+                raise PlacementError("selfcheck mirror retained removed execute bits")
         published_skill = root / "mirror" / "skills" / "delta"
         shutil.rmtree(published_skill)
         make_link(published_skill, payload)
@@ -1053,11 +1253,25 @@ def main(argv):
         subparser.add_argument("--scope")
 
     check_p = sub.add_parser("check")
-    add_common(check_p)
+    check_inputs = check_p.add_mutually_exclusive_group(required=True)
+    check_inputs.add_argument("--declaration")
+    check_inputs.add_argument("--catalog")
+    check_p.add_argument("--rules", action="append")
+    check_p.add_argument("--skills", action="append")
+    check_p.add_argument("--site")
+    check_p.add_argument("--workspace")
+    check_p.add_argument("--scope")
+    check_p.add_argument("--environment")
+    check_p.add_argument("--probe", action="store_true")
     apply_p = sub.add_parser("apply")
     add_common(apply_p)
     list_p = sub.add_parser("list")
-    list_p.add_argument("--declaration", required=True)
+    list_inputs = list_p.add_mutually_exclusive_group(required=True)
+    list_inputs.add_argument("--declaration")
+    list_inputs.add_argument("--catalog")
+    list_p.add_argument("--purpose")
+    list_p.add_argument("--json", action="store_true")
+    list_p.add_argument("--probe", action="store_true")
     start_p = sub.add_parser("start")
     start_p.add_argument("--declaration", required=True)
     start_p.add_argument("--rules", action="append")
@@ -1073,10 +1287,14 @@ def main(argv):
     args = parser.parse_args(argv)
     try:
         if args.command == "check":
+            if args.catalog:
+                return check_catalog(args)
             return check(args)
         if args.command == "apply":
             return apply(args)
         if args.command == "list":
+            if args.catalog:
+                return list_catalog(args)
             return list_workspaces(args)
         if args.command == "start":
             if args.tool_args[:1] == ["--"]:
