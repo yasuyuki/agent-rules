@@ -376,6 +376,8 @@ def load_catalog(path, purpose=None, *, probe=False, runner=subprocess.run, envi
                     entrypoint = {"kind": "apparatus", "path": selected_path, "resolution": "resolved"}
         connection = item.get("connection", {})
         if not isinstance(connection, dict): raise CatalogError("environment %s connection must be an object" % env_id)
+        if "wslDistro" in connection and (connection.get("transport") != "ssh" or not isinstance(connection["wslDistro"], str) or not connection["wslDistro"]):
+            raise CatalogError("environment %s has invalid outer WSL distro" % env_id)
         if connection.get("transport") == "ssh" and "source" in connection:
             connection_source = sources.get(connection["source"])
             source_probe = connection_source["definition"].get("probe") if connection_source else None
@@ -415,6 +417,7 @@ def probe_records(records, runner=subprocess.run, platform_name=None, report_unr
     """Attach observational state. No service/distro is started and SSH is batch-only."""
     now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
     platform_name = platform_name or os.name
+    outer_distros = {record["connection"]["wslDistro"] for record in records if record.get("connection", {}).get("wslDistro")}
     declared_wsl = {
         ref["site"].get("host")
         for record in records
@@ -444,7 +447,7 @@ def probe_records(records, runner=subprocess.run, platform_name=None, report_unr
             if installed.returncode == 0 and isinstance(distro, str):
                 observation.update({"installed": distro in installed_names, "running": (distro in running_names) if running.returncode == 0 else None, "reachable": None if distro in installed_names else False, "reason": "WSL distro unregistered" if distro not in installed_names else ("WSL running list failed" if running.returncode else "WSL state observed; runtime reachability not probed")})
                 if report_unregistered:
-                    observation["unregisteredDistros"] = sorted(installed_names - declared_wsl)
+                    observation["unregisteredDistros"] = sorted(installed_names - declared_wsl - outer_distros)
             record["observation"].update(observation)
         elif transport == "ssh" and connection.get("sourceObserved"):
             record["observation"].update({"reachable": True, "reason": "reachable through successful source probe"})

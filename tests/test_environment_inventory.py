@@ -104,17 +104,33 @@ with tempfile.TemporaryDirectory() as directory:
     path = root / "placement-wsl.json"
     registered = environment(id="ubuntu", refs=[{"source": "placement", "site": "s2"}])
     target = environment(connection={"transport": "wsl", "distro": "Ubuntu-24.04"})
-    write_catalog(path, {"placement": local_source}, [registered, target])
+    ssh_source = dict(local_source, probe={"transport": "ssh", "target": "outer", "configPaths": {}})
+    outer_wsl = environment(
+        id="ubuntu-26", purposes=["normal-development"],
+        connection={"transport": "ssh", "source": "ssh-runtime", "wslDistro": "Ubuntu-26.04"},
+    )
+    write_catalog(path, {"placement": local_source, "ssh-runtime": ssh_source}, [registered, target, outer_wsl])
     _catalog, _sources, records = inventory.load_catalog(path)
 
     def wsl_runner(argv, **_kwargs):
-        names = "Ubuntu-24.04\nUbuntu\n" if "--running" not in argv else "Ubuntu-24.04\n"
+        names = "Ubuntu-24.04\nUbuntu\nUbuntu-26.04\nUnknown\n" if "--running" not in argv else "Ubuntu-24.04\n"
         return subprocess.CompletedProcess(argv, 0, names, "")
 
     inventory.probe_records(records, runner=wsl_runner, platform_name="nt")
     observation = records[1]["observation"]
     assert observation["installed"] is True
-    assert observation["unregisteredDistros"] == []
+    assert observation["unregisteredDistros"] == ["Unknown"]
+
+    invalid_outer = environment(connection={"transport": "ssh", "source": "ssh-runtime", "wslDistro": ["Ubuntu-26.04"]})
+    write_catalog(path, {"placement": local_source, "ssh-runtime": ssh_source}, invalid_outer)
+    try:
+        inventory.load_catalog(path)
+    except inventory.CatalogError as exc:
+        assert "outer WSL distro" in str(exc)
+    else:
+        raise AssertionError("invalid outer WSL distro was accepted")
+
+    write_catalog(path, {"placement": local_source, "ssh-runtime": ssh_source}, [registered, target, outer_wsl])
     # A targeted preflight reads only its selected environment, so it cannot
     # make a complete unregistered-distro claim about omitted environments.
     probe_records = inventory.probe_records
