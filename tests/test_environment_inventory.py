@@ -103,7 +103,9 @@ with tempfile.TemporaryDirectory() as directory:
     # environment's normal WSL probe must not report it as unregistered.
     path = root / "placement-wsl.json"
     registered = environment(id="ubuntu", refs=[{"source": "placement", "site": "s2"}])
-    target = environment(connection={"transport": "wsl", "distro": "Ubuntu-24.04"})
+    target = environment(connection={"transport": "wsl", "distro": {
+        "source": "placement", "site": "s4", "field": "host",
+    }})
     ssh_source = dict(local_source, probe={"transport": "ssh", "target": "outer", "configPaths": {}})
     outer_wsl = environment(
         id="ubuntu-26", purposes=["normal-development"],
@@ -129,6 +131,34 @@ with tempfile.TemporaryDirectory() as directory:
         assert "outer WSL distro" in str(exc)
     else:
         raise AssertionError("invalid outer WSL distro was accepted")
+
+    invalid_placement_distro = environment(connection={"transport": "wsl", "distro": {
+        "source": "placement", "site": "missing", "field": "host",
+    }})
+    write_catalog(path, {"placement": local_source}, invalid_placement_distro)
+    try:
+        inventory.load_catalog(path)
+    except inventory.CatalogError as exc:
+        assert "invalid WSL distro reference" in str(exc)
+    else:
+        raise AssertionError("invalid placement WSL distro reference was accepted")
+
+    numeric_distro = root / "numeric-distro.json"
+    numeric_distro.write_text(json.dumps({"distro": 24}), encoding="utf-8")
+    numeric_source = {
+        "type": "json-pointer", "host": "controller", "paths": {"default": str(numeric_distro)},
+        "pointers": {"distro": "/distro"},
+    }
+    nonstring_distro = environment(connection={"transport": "wsl", "distro": {
+        "source": "numeric", "field": "distro",
+    }})
+    write_catalog(path, {"placement": local_source, "numeric": numeric_source}, nonstring_distro)
+    try:
+        inventory.load_catalog(path)
+    except inventory.CatalogError as exc:
+        assert "non-empty string" in str(exc)
+    else:
+        raise AssertionError("non-string WSL distro reference was accepted")
 
     write_catalog(path, {"placement": local_source, "ssh-runtime": ssh_source}, [registered, target, outer_wsl])
     # A targeted preflight reads only its selected environment, so it cannot

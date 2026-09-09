@@ -220,8 +220,10 @@ SSH with user/system config disabled and reads only the declared file. An
 environment's `connection: {"transport":"ssh","source":"source-id"}` reuses
 that source observation. WSL connections may use
 `{"transport":"wsl","distro":{"source":"source-id","field":"distro"}}`
-to reference a declared JSON field. Installed/running WSL observations do not
-claim runtime reachability; stopped installations remain candidates.
+to reference a declared JSON field, or
+`{"transport":"wsl","distro":{"source":"source-id","site":"S2","field":"host"}}`
+to reference a placement site's non-empty string field. Installed/running WSL
+observations do not claim runtime reachability; stopped installations remain candidates.
 When an SSH runtime is contained by a WSL distro whose name has no existing
 placement or JSON source, its SSH connection may carry an optional
 `"wslDistro":"Ubuntu-26.04"` string. This catalog-owned outer connection name

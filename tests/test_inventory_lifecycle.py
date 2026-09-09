@@ -230,6 +230,37 @@ with tempfile.TemporaryDirectory() as directory:
     assert any("share catalog source and site" in error for error in errors), errors
 
 
+# A construction preflight for OpenCode recognizes the canonical Codex-only
+# section in their shared AGENTS.md, without accepting an unrelated OpenCode
+# file or using Codex's required artifacts on OpenCode's behalf.
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory); home = root / "home"; (home / "work").mkdir(parents=True)
+    decl = root / "placement.md"; decl.write_text(declaration(home), encoding="utf-8")
+    ctx = context(decl)
+    ctx["rules"][-1][0]["tools"].append("opencode")
+    for ident, tool, kind in (("c3", "codex", "rules"), ("c4", "codex", "skills"),
+                              ("o1", "opencode", "rules"), ("o2", "opencode", "skills")):
+        ctx["locations"][ident] = {"id": ident, "scope": "workspace", "anchor": "w1", "tool": tool, "requirement": "required", "reason": "", "legacy": "", "path": "", "kind": kind}
+    place.apply_projection(ctx["rules"], ctx["placement"], list(ctx["locations"].values()), ctx["exceptions"], ctx["sites"], ctx["workspaces"], ctx["skills"])
+    data = root / "catalog.json"; catalog(data, decl, state="pending", descriptor="opencode")
+    managed_root = ctx["placement"]["tools"]["opencode"]["configHome"]["default"].replace("$HOME", str(home))
+    runtime = {"user": "agent", "home": str(home), "host": "linux", "platform": "Linux", "configRoots": {"opencode": managed_root}}
+    resolve = lambda name: "/bin/opencode" if name == "opencode" else None
+    errors, _ = lifecycle.validate_lifecycle(data, ctx, "env", mode="construction", constructing_agent="opencode", place_module=place, declaration_path=decl, current_principal=runtime, session_evidence=[], resolver=resolve)
+    assert not errors, errors
+    (home / "work" / ".codex" / "skills" / "maintain-environment-inventory" / place.agent_rules.SKILL_MARKER).unlink()
+    errors, _ = lifecycle.validate_lifecycle(data, ctx, "env", mode="construction", constructing_agent="opencode", place_module=place, declaration_path=decl, current_principal=runtime, session_evidence=[], resolver=resolve)
+    assert not errors, errors
+    agents = home / "work" / "AGENTS.md"
+    agents.write_text(place.agent_rules.splice(agents.read_text(encoding="utf-8"), "codex-subagent-routing", "drift\n"), encoding="utf-8")
+    errors, _ = lifecycle.validate_lifecycle(data, ctx, "env", mode="construction", constructing_agent="opencode", place_module=place, declaration_path=decl, current_principal=runtime, session_evidence=[], resolver=resolve)
+    assert any("codex-subagent-routing' differs" in error for error in errors), errors
+    place.apply_projection(ctx["rules"], ctx["placement"], list(ctx["locations"].values()), ctx["exceptions"], ctx["sites"], ctx["workspaces"], ctx["skills"])
+    (home / "work" / ".opencode" / "skills" / "maintain-environment-inventory" / place.agent_rules.SKILL_MARKER).unlink()
+    errors, _ = lifecycle.validate_lifecycle(data, ctx, "env", mode="construction", constructing_agent="opencode", place_module=place, declaration_path=decl, current_principal=runtime, session_evidence=[], resolver=resolve)
+    assert any("missing:" in error for error in errors), errors
+
+
 # The normal public start path has no construction bypass: an explicit INVENTORY
 # binding stops before its runner until lifecycle bytes and external evidence are valid.
 with tempfile.TemporaryDirectory() as directory:
