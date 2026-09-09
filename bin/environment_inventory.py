@@ -97,21 +97,32 @@ def _ssh_probe_config(probe, observer):
     if not isinstance(path, str) or not Path(path).is_file():
         return None
     allowed = {"hostname", "port", "user", "identityfile", "userknownhostsfile", "identitiesonly", "stricthostkeychecking", "forwardagent", "batchmode", "connecttimeout"}
-    values, active, matched = {}, False, False
+    values, matched = {}, False
     for raw in Path(path).read_text(encoding="utf-8").splitlines():
         line = raw.split("#", 1)[0].strip()
         if not line: continue
         key, _, value = line.partition(" ")
         key = key.lower()
+        value = value.strip()
+        if any(character in value for character in ("%", "'", '"', "\\")):
+            raise CatalogError("SSH probe config contains unsupported value syntax")
         if key in {"match", "include", "proxycommand", "proxyjump", "localcommand", "remotecommand"}:
             raise CatalogError("SSH probe config contains unsupported %s" % key)
         if key == "host":
-            active = value.strip() == probe.get("target")
-            matched = matched or active
+            # The probe is deliberately not a general-purpose OpenSSH config
+            # interpreter.  Accept only exact repeated blocks for this alias,
+            # then apply OpenSSH's first-value-wins rule.  A wildcard, a
+            # second alias, or a global directive could select values that our
+            # explicit ``ssh -F /dev/null`` invocation would not reproduce.
+            target = probe.get("target")
+            if not isinstance(target, str) or value.casefold() != target.casefold():
+                raise CatalogError("SSH probe config contains unsupported Host pattern")
+            matched = True
             continue
-        if active:
-            if key not in allowed: raise CatalogError("SSH probe config contains unsupported %s" % key)
-            values[key] = value.strip()
+        if not matched:
+            raise CatalogError("SSH probe config contains unsupported global directive %s" % key)
+        if key not in allowed: raise CatalogError("SSH probe config contains unsupported %s" % key)
+        values.setdefault(key, value)
     if not matched:
         return None
     result = dict(probe)
@@ -218,6 +229,45 @@ def _agent_value(reference, sources):
     return site[reference["field"]], "resolved"
 
 
+def _environment_refs(item):
+    refs = item.get("refs")
+    if refs is None:
+        return [{"source": item.get("source"), "site": item.get("site"), "workspace": item.get("workspace"), "fields": item.get("references", {})}]
+    return refs
+
+
+def _referenced_source_ids(environments):
+    """Return every source that influences selected catalog environments."""
+    source_ids = set()
+    for item in environments:
+        if not isinstance(item, dict):
+            continue
+        refs = _environment_refs(item)
+        if not isinstance(refs, list):
+            continue
+        for ref in refs:
+            if isinstance(ref, dict) and isinstance(ref.get("source"), str):
+                source_ids.add(ref["source"])
+        for agent in item.get("agents", []):
+            if not isinstance(agent, dict):
+                continue
+            for key in ("principal", "configRoot"):
+                reference = agent.get(key)
+                if isinstance(reference, dict) and isinstance(reference.get("source"), str):
+                    source_ids.add(reference["source"])
+        entrypoint = item.get("entrypoint")
+        if isinstance(entrypoint, dict) and isinstance(entrypoint.get("source"), str):
+            source_ids.add(entrypoint["source"])
+        connection = item.get("connection")
+        if isinstance(connection, dict):
+            if isinstance(connection.get("source"), str):
+                source_ids.add(connection["source"])
+            distro = connection.get("distro")
+            if isinstance(distro, dict) and isinstance(distro.get("source"), str):
+                source_ids.add(distro["source"])
+    return source_ids
+
+
 def load_catalog(path, purpose=None, *, probe=False, runner=subprocess.run, environment_id=None):
     catalog_path = Path(path)
     try:
@@ -237,22 +287,10 @@ def load_catalog(path, purpose=None, *, probe=False, runner=subprocess.run, envi
         environments = [item for item in environments if isinstance(item, dict) and item.get("id") == environment_id]
         if not environments:
             raise CatalogError("unknown environment: %s" % environment_id)
-        needed = set()
-        for item in environments:
-            for ref in item.get("refs", []):
-                if isinstance(ref, dict): needed.add(ref.get("source"))
-            for agent in item.get("agents", []):
-                if isinstance(agent, dict):
-                    for key in ("principal", "configRoot"):
-                        if isinstance(agent.get(key), dict): needed.add(agent[key].get("source"))
-            entry = item.get("entrypoint")
-            if isinstance(entry, dict): needed.add(entry.get("source"))
-            connection = item.get("connection")
-            if isinstance(connection, dict):
-                needed.add(connection.get("source"))
-                if isinstance(connection.get("distro"), dict): needed.add(connection["distro"].get("source"))
+        needed = _referenced_source_ids(environments)
         catalog = dict(catalog)
         catalog["sources"] = {key: value for key, value in catalog["sources"].items() if key in needed}
+        catalog["environments"] = environments
     sources = _sources(catalog_path, catalog, probe=probe, runner=runner)
     ids, resolved = set(), []
     for item in environments:
@@ -263,8 +301,7 @@ def load_catalog(path, purpose=None, *, probe=False, runner=subprocess.run, envi
         if state not in STATES: raise CatalogError("environment %s has invalid state" % env_id)
         if not isinstance(purposes, list) or any(x not in PURPOSES for x in purposes) or (not purposes and state != "unclassified"):
             raise CatalogError("environment %s has invalid purposes" % env_id)
-        refs = item.get("refs")
-        if refs is None: refs = [{"source": item.get("source"), "site": item.get("site"), "workspace": item.get("workspace"), "fields": item.get("references", {})}]
+        refs = _environment_refs(item)
         if not isinstance(refs, list) or not refs: raise CatalogError("environment %s needs non-empty refs" % env_id)
         resolved_refs = []
         for ref in refs:
@@ -297,6 +334,8 @@ def load_catalog(path, purpose=None, *, probe=False, runner=subprocess.run, envi
                 value = agent.get(key)
                 if not isinstance(value, dict) or value.get("source") not in sources: raise CatalogError("environment %s has invalid agent %s reference" % (env_id, key))
                 agent_source = sources[value["source"]]
+                if "tool" in value and (key != "configRoot" or "field" in value or value["tool"] not in TOOL_CONFIG_HOMES):
+                    raise CatalogError("environment %s has invalid derived config root reference" % env_id)
                 if agent_source.get("unavailable"):
                     continue
                 if agent_source["definition"]["type"] == "json-pointer":
@@ -315,7 +354,10 @@ def load_catalog(path, purpose=None, *, probe=False, runner=subprocess.run, envi
                 entry_source = sources.get(entrypoint.get("source"))
                 if not entry_source or not isinstance(entrypoint.get("workspace"), str):
                     raise CatalogError("environment %s has invalid placement entrypoint" % env_id)
-                if not entry_source.get("unavailable"):
+                if entry_source.get("unavailable"):
+                    entrypoint = dict(entrypoint)
+                    entrypoint["resolution"] = "unverified: " + entry_source["unavailable"]
+                else:
                     workspace = entry_source.get("workspaces", {}).get(entrypoint["workspace"])
                     ref_sites = {ref["site"]["id"] for ref in resolved_refs if ref["source"] == entrypoint["source"] and ref.get("site")}
                     if workspace is None or workspace.get("site") not in ref_sites:
@@ -369,11 +411,21 @@ def _wsl_names(output):
     return {line.strip() for line in output.splitlines() if line.strip()}
 
 
-def probe_records(records, runner=subprocess.run, platform_name=None):
+def probe_records(records, runner=subprocess.run, platform_name=None, report_unregistered=True):
     """Attach observational state. No service/distro is started and SSH is batch-only."""
     now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
     platform_name = platform_name or os.name
-    declared_wsl = {record.get("connection", {}).get("distro") for record in records if record.get("connection", {}).get("transport") == "wsl"}
+    declared_wsl = {
+        ref["site"].get("host")
+        for record in records
+        for ref in record.get("refs", [])
+        if isinstance(ref.get("site"), dict) and ref["site"].get("reach") == "wsl" and isinstance(ref["site"].get("host"), str)
+    }
+    declared_wsl.update(
+        record.get("connection", {}).get("distro")
+        for record in records
+        if record.get("connection", {}).get("transport") == "wsl" and isinstance(record.get("connection", {}).get("distro"), str)
+    )
     for record in records:
         record["observation"] = {"observedAt": now, "observer": platform_name, "installed": None, "running": None, "reachable": None, "reason": "not probed"}
         connection = record.get("connection") or {}
@@ -390,7 +442,9 @@ def probe_records(records, runner=subprocess.run, platform_name=None):
             observation = {"reachable": None, "reason": "WSL lists observed" if installed.returncode == 0 else "WSL listing failed"}
             distro = connection.get("distro")
             if installed.returncode == 0 and isinstance(distro, str):
-                observation.update({"installed": distro in installed_names, "running": (distro in running_names) if running.returncode == 0 else None, "reachable": None if distro in installed_names else False, "unregisteredDistros": sorted(installed_names - declared_wsl), "reason": "WSL distro unregistered" if distro not in installed_names else ("WSL running list failed" if running.returncode else "WSL state observed; runtime reachability not probed")})
+                observation.update({"installed": distro in installed_names, "running": (distro in running_names) if running.returncode == 0 else None, "reachable": None if distro in installed_names else False, "reason": "WSL distro unregistered" if distro not in installed_names else ("WSL running list failed" if running.returncode else "WSL state observed; runtime reachability not probed")})
+                if report_unregistered:
+                    observation["unregisteredDistros"] = sorted(installed_names - declared_wsl)
             record["observation"].update(observation)
         elif transport == "ssh" and connection.get("sourceObserved"):
             record["observation"].update({"reachable": True, "reason": "reachable through successful source probe"})
@@ -409,7 +463,7 @@ def check_catalog(path, environment_id=None, probe=False, runner=subprocess.run)
         return [str(exc)], []
     errors = []
     all_records = records
-    relevant_sources = {ref["source"] for record in records for ref in record["refs"]}
+    relevant_sources = _referenced_source_ids(_catalog["environments"])
     for source_id in relevant_sources:
         if sources[source_id].get("unavailable"):
             errors.append("unverified source %s: %s" % (source_id, sources[source_id]["unavailable"]))
@@ -432,7 +486,7 @@ def check_catalog(path, environment_id=None, probe=False, runner=subprocess.run)
             for field in source["fields"]:
                 if field not in referenced:
                     errors.append("unregistered JSON field: %s/%s" % (source_id, field))
-    if probe: probe_records(records, runner)
+    if probe: probe_records(records, runner, report_unregistered=environment_id is None)
     if probe:
         for record in records:
             transport = record.get("connection", {}).get("transport")

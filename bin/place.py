@@ -790,13 +790,14 @@ def check_catalog(args):
     return 0 if not errors else 1
 
 
-def inventory_preflight(args, context, site_id, *, resolver=shutil.which):
+def inventory_preflight(args, context, site_id, *, resolver=shutil.which,
+                        mode="normal", constructing_agent=None):
     """Check an explicitly bound local inventory before launching a CLI.
 
     The optional table keeps independent public projects independent. Once a
     site is bound, a missing catalog/evidence file is a failure, never a bypass.
-    Setup callers use inventory_lifecycle.validate_lifecycle in construction
-    mode; normal start deliberately exposes no construction-mode switch.
+    Setup callers may request construction mode; normal start deliberately
+    exposes no construction-mode switch.
     """
     from types import SimpleNamespace
     import getpass
@@ -824,7 +825,12 @@ def inventory_preflight(args, context, site_id, *, resolver=shutil.which):
         return path if path.is_absolute() else declaration.parent / path
     evidence_path = relative(binding["evidence"])
     try:
-        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        try:
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            if mode != "construction":
+                raise
+            evidence = []
         if not isinstance(evidence, list):
             raise ValueError("evidence must be an array")
         for entry in evidence:
@@ -858,7 +864,7 @@ def inventory_preflight(args, context, site_id, *, resolver=shutil.which):
         relative(binding["catalog"]), context, binding["environment"],
         place_module=SimpleNamespace(**globals()), resolver=resolver,
         current_principal=principal, session_evidence=evidence,
-        declaration_path=declaration,
+        declaration_path=declaration, mode=mode, constructing_agent=constructing_agent,
     )
     if errors:
         raise PlacementError("inventory lifecycle check failed: " + "; ".join(errors))

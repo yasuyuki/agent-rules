@@ -21,6 +21,13 @@ lifecycle_result = subprocess.run(
 if lifecycle_result.returncode:
     raise AssertionError("inventory lifecycle failed\n" + lifecycle_result.stdout + lifecycle_result.stderr)
 
+inventory_result = subprocess.run(
+    [sys.executable, str(ROOT / "tests" / "test_environment_inventory.py")],
+    cwd=ROOT, text=True, capture_output=True,
+)
+if inventory_result.returncode:
+    raise AssertionError("environment inventory failed\n" + inventory_result.stdout + inventory_result.stderr)
+
 # Exercise native Windows junctions as well as POSIX symlinks in the existing
 # cross-platform CI entry point.
 projection = subprocess.run(
@@ -377,7 +384,8 @@ artifact\tlocation_id\trequirement\treason
     assert remote_calls[0][:3] == ["ssh", "-F", os.devnull]
 
     broken = json.loads(catalog.read_text(encoding="utf-8"))
-    broken["environments"][0]["entrypoint"] = {"kind": "apparatus", "paths": {"windows": "C:/not-present"}}
+    observer = os.environ.get("ENVIRONMENT_INVENTORY_HOST") or ("windows" if os.name == "nt" else "linux")
+    broken["environments"][0]["entrypoint"] = {"kind": "apparatus", "paths": {observer + "-other": "/not-present"}}
     broken_path = root / "broken-entrypoint.json"
     broken_path.write_text(json.dumps(broken), encoding="utf-8")
     _catalog, _sources, broken_records = place.environment_inventory.load_catalog(broken_path)

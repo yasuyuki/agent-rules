@@ -196,7 +196,11 @@ No fallback selection is made. An `apparatus` entrypoint uses only
 `{"kind":"apparatus","paths":{"windows":"...","linux":"..."}}`;
 the selected path is read-only checked and reported as unverified when this
 observer has no readable path. `agents` may refer to a JSON scalar field or a
-placement site field for their runtime principal and config root. Entrypoints
+placement site field for their runtime principal and config root. For lifecycle
+checks, JSON runtime values must match exactly one explicitly referenced site
+in the supplied placement declaration. The config root must match that tool's
+placement-managed default root; unsupported overrides are rejected before launch.
+Entrypoints
 are descriptive existing public paths (including an apparatus path), never
 shell commands.
 

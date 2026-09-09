@@ -91,7 +91,7 @@ with tempfile.TemporaryDirectory() as directory:
     data = root / "catalog.json"; catalog(data, decl)
     ctx = context(decl)
     # Before projection, lifecycle detects missing managed bytes; after repair it passes.
-    runtime = {"user": "agent", "home": str(home), "host": "linux", "platform": "Linux", "configRoots": {"codex": str(home / ".codex")}}
+    runtime = {"user": "agent", "home": str(home), "host": "linux", "platform": "Linux", "configRoots": {"codex": ctx["placement"]["tools"]["codex"]["configHome"]["default"].replace("$HOME", str(home))}}
     resolve = lambda name: "/bin/codex" if name == "codex" else None
     errors, _ = lifecycle.validate_lifecycle(data, ctx, "env", place_module=place, declaration_path=decl, current_principal=runtime, session_evidence=evidence(ctx, root, decl), resolver=resolve)
     assert any("missing:" in error for error in errors), errors
@@ -103,12 +103,81 @@ with tempfile.TemporaryDirectory() as directory:
     errors, _ = lifecycle.validate_lifecycle(data, ctx, "env", place_module=place, declaration_path=decl, current_principal=runtime, session_evidence=evidence(ctx, root, decl), resolver=resolve)
     assert any("managed skill" in error or "differs from canonical" in error for error in errors), errors
 
+
+# A catalog's effective config root must be the root where placement verifies
+# managed bytes. A mismatch blocks normal start before its runner is called.
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory); home = root / "home"; (home / "work").mkdir(parents=True)
+    user = __import__("pwd").getpwuid(os.getuid()).pw_name if os.name == "posix" else getpass.getuser()
+    decl = root / "placement.md"
+    text = declaration(home).replace("linux\tagent", platform.system() + "\t" + user)
+    decl.write_text(text + """<!-- BEGIN INVENTORY TSV -->
+```tsv
+site\tcatalog\tenvironment\tevidence
+s1\tcatalog.json\tenv\tevidence.json
+```
+<!-- END INVENTORY TSV -->
+""", encoding="utf-8")
+    ctx = context(decl); place.apply_projection(ctx["rules"], ctx["placement"], list(ctx["locations"].values()), ctx["exceptions"], ctx["sites"], ctx["workspaces"], ctx["skills"])
+    data = root / "catalog.json"; catalog(data, decl)
+    document = json.loads(data.read_text(encoding="utf-8"))
+    document["environments"][0]["agents"][0]["configRoot"] = {"source": "p", "site": "s1", "field": "home"}
+    data.write_text(json.dumps(document), encoding="utf-8")
+    old_home, old_codex_home, old_context = os.environ.get("HOME"), os.environ.get("CODEX_HOME"), place.load_context
+    os.environ["HOME"] = str(home); os.environ.pop("CODEX_HOME", None)
+    home_patch = mock.patch.object(place.Path, "home", return_value=home); home_patch.start()
+    place.load_context = lambda args: (ctx["placement"], ctx["rules"], ctx["sites"], ctx["workspaces"], ctx["locations"], ctx["exceptions"], [], ctx["skills"])
+    calls = []
+    try:
+        (root / "evidence.json").write_text(json.dumps(evidence(ctx, root, decl)), encoding="utf-8")
+        args = SimpleNamespace(declaration=str(decl), workspace_id="w1", tool="codex", tool_args=["--version"])
+        try: place.start(args, runner=lambda *a, **k: calls.append(a), resolver=lambda n: "/bin/codex" if n == "codex" else None)
+        except place.PlacementError as exc: assert "effective config root" in str(exc)
+        else: raise AssertionError("mismatched config root started CLI")
+        assert not calls
+        document["environments"][0]["agents"][0]["configRoot"] = {"source": "p", "site": "s1", "tool": "codex"}
+        data.write_text(json.dumps(document), encoding="utf-8")
+        assert place.start(args, runner=lambda argv, **kwargs: (calls.append((argv, kwargs)) or SimpleNamespace(returncode=0)), resolver=lambda n: "/bin/codex" if n == "codex" else None) == 0
+    finally:
+        home_patch.stop(); place.load_context = old_context
+        if old_home is None: os.environ.pop("HOME", None)
+        else: os.environ["HOME"] = old_home
+        if old_codex_home is None: os.environ.pop("CODEX_HOME", None)
+        else: os.environ["CODEX_HOME"] = old_codex_home
+
+
+# Scalar JSON runtime values are accepted only when they agree with the
+# environment's explicit placement declaration and site.
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory); home = root / "home"; (home / "work").mkdir(parents=True)
+    decl = root / "placement.md"; decl.write_text(declaration(home), encoding="utf-8")
+    runtime_json = root / "runtime.json"
+    data = root / "catalog.json"
+    data.write_text(json.dumps({"schemaVersion": 1, "sources": {
+        "p": {"type": "placement-tsv", "host": "test", "paths": {"default": str(decl)}},
+        "runtime": {"type": "json-pointer", "host": "test", "paths": {"default": str(runtime_json)},
+                    "pointers": {"principal": "/principal", "configRoot": "/configRoot"}},
+    }, "environments": [{"id": "env", "purposes": ["normal-development"], "state": "active",
+        "refs": [{"source": "p", "site": "s1"}, {"source": "runtime", "fields": {"principal": "principal", "configRoot": "configRoot"}}],
+        "agents": [{"descriptor": "codex", "principal": {"source": "runtime", "field": "principal"},
+                    "configRoot": {"source": "runtime", "field": "configRoot"}}],
+    }]}), encoding="utf-8")
+    ctx = context(decl); place.apply_projection(ctx["rules"], ctx["placement"], list(ctx["locations"].values()), ctx["exceptions"], ctx["sites"], ctx["workspaces"], ctx["skills"])
+    managed_root = ctx["placement"]["tools"]["codex"]["configHome"]["default"].replace("$HOME", str(home))
+    runtime_json.write_text(json.dumps({"principal": "agent", "configRoot": managed_root}), encoding="utf-8")
+    runtime = {"user": "agent", "home": str(home), "host": "linux", "platform": "Linux", "configRoots": {"codex": managed_root}}
+    errors, _ = lifecycle.validate_lifecycle(data, ctx, "env", place_module=place, declaration_path=decl, current_principal=runtime, session_evidence=evidence(ctx, root, decl), resolver=lambda name: "/bin/codex" if name == "codex" else None)
+    assert not errors, errors
+    runtime_json.write_text(json.dumps({"principal": "agent", "configRoot": str(root / "wrong")}), encoding="utf-8")
+    errors, _ = lifecycle.validate_lifecycle(data, ctx, "env", place_module=place, declaration_path=decl, current_principal=runtime, session_evidence=evidence(ctx, root, decl), resolver=lambda name: (_ for _ in ()).throw(AssertionError("mismatched JSON runtime resolved CLI")))
+    assert any("JSON runtime values do not match" in error for error in errors), errors
+
 with tempfile.TemporaryDirectory() as directory:
     root = Path(directory); home = root / "home"; (home / "work").mkdir(parents=True)
     decl = root / "placement.md"; decl.write_text(declaration(home), encoding="utf-8")
     ctx = context(decl); place.apply_projection(ctx["rules"], ctx["placement"], list(ctx["locations"].values()), ctx["exceptions"], ctx["sites"], ctx["workspaces"], ctx["skills"])
     data = root / "catalog.json"; catalog(data, decl, state="pending")
-    runtime = {"user": "agent", "home": str(home), "host": "linux", "platform": "Linux", "configRoots": {"codex": str(home / ".codex")}}
+    runtime = {"user": "agent", "home": str(home), "host": "linux", "platform": "Linux", "configRoots": {"codex": ctx["placement"]["tools"]["codex"]["configHome"]["default"].replace("$HOME", str(home))}}
     resolve = lambda name: "/bin/codex" if name == "codex" else None
     errors, _ = lifecycle.validate_lifecycle(data, ctx, "env", mode="construction", place_module=place, declaration_path=decl, current_principal=runtime, session_evidence=[], resolver=resolve)
     assert not errors, errors
@@ -200,12 +269,22 @@ s1\tcatalog.json\tenv\tevidence.json
         try: place.start(args, runner=lambda *a, **k: calls.append(a), resolver=lambda n: "/bin/codex" if n == "codex" else None)
         except place.PlacementError: pass
         else: raise AssertionError("pending environment started CLI")
+        (root / "evidence.json").unlink()
+        place.inventory_preflight(args, place.load_context(args), "s1", mode="construction",
+                                  constructing_agent="codex", resolver=lambda n: "/bin/codex" if n == "codex" else None)
+        (root / "evidence.json").write_text(json.dumps(ev), encoding="utf-8")
         catalog(data, decl)
         marker = home / ".codex" / "skills" / "maintain-environment-inventory" / place.agent_rules.SKILL_MARKER
         marker.unlink()
         try: place.start(args, runner=lambda *a, **k: calls.append(a), resolver=lambda n: "/bin/codex" if n == "codex" else None)
         except place.PlacementError: pass
         else: raise AssertionError("missing skill started CLI")
+        catalog(data, decl, state="pending")
+        try:
+            place.inventory_preflight(args, place.load_context(args), "s1", mode="construction",
+                                      constructing_agent="codex", resolver=lambda n: "/bin/codex" if n == "codex" else None)
+        except place.PlacementError: pass
+        else: raise AssertionError("construction accepted missing skill")
     finally:
         home_patch.stop()
         place.load_context = old_context

@@ -9,6 +9,7 @@ from __future__ import annotations
 import shutil
 import hashlib
 import importlib.util
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -65,6 +66,31 @@ def _agent_sites(agent, sources):
         if source.get("definition", {}).get("type") == "placement-tsv" and reference.get("site"):
             result.add(reference["site"])
     return result
+
+
+def _declared_placement_sites(environment, sources, declaration_path):
+    """Return the environment's explicit sites from this declaration only."""
+    result = set()
+    for reference in environment.get("refs", []):
+        if not isinstance(reference, dict):
+            continue
+        source = sources.get(reference.get("source"), {})
+        if (source.get("definition", {}).get("type") != "placement-tsv" or
+                source.get("path") is None or
+                Path(source["path"]).resolve() != Path(declaration_path).resolve()):
+            continue
+        site_id = reference.get("site")
+        if site_id in source.get("sites", {}):
+            result.add(site_id)
+    return result
+
+
+def _managed_config_root(placement, descriptor, site):
+    return placement["tools"][descriptor]["configHome"]["default"].replace("$HOME", site["home"])
+
+
+def _same_path(left, right):
+    return isinstance(left, str) and isinstance(right, str) and os.path.normcase(os.path.normpath(left)) == os.path.normcase(os.path.normpath(right))
 
 
 def _artifact_is_required(context, place_module, locations, artifact_id, kind):
@@ -189,6 +215,7 @@ def validate_lifecycle(catalog_path, placement_context, environment_id, mode="no
             continue
         agent_sites = _agent_sites(raw_agent, sources)
         source = sources.get(raw_agent["principal"].get("source"), {})
+        config_source = sources.get(raw_agent["configRoot"].get("source"), {})
         if (raw_agent["principal"].get("source") != raw_agent["configRoot"].get("source") or
                 raw_agent["principal"].get("site") != raw_agent["configRoot"].get("site")):
             errors.append("%s: %s principal and config root must share catalog source and site" % (environment_id, descriptor))
@@ -197,18 +224,45 @@ def validate_lifecycle(catalog_path, placement_context, environment_id, mode="no
         if declaration_path is None:
             errors.append("%s: %s declaration identity is unverified" % (environment_id, descriptor))
             return errors, record
-        elif source.get("path") is None or Path(source["path"]).resolve() != Path(declaration_path).resolve():
+        if source.get("definition", {}).get("type") == "placement-tsv" and (
+                source.get("path") is None or Path(source["path"]).resolve() != Path(declaration_path).resolve()):
             errors.append("%s: %s catalog source does not match placement declaration" % (environment_id, descriptor))
             return errors, record
-        site = next((context["sites"].get(site_id) for site_id in agent_sites if site_id in context["sites"]), None)
+        if source.get("definition", {}).get("type") == "json-pointer" and config_source.get("definition", {}).get("type") == "json-pointer":
+            agent_sites = {
+                site_id for site_id in _declared_placement_sites(raw_environment, sources, declaration_path)
+                if site_id in context["sites"] and context["sites"][site_id].get("user") == principal and
+                _same_path(_managed_config_root(context["placement"], descriptor, context["sites"][site_id]), config_root)
+            }
+            if len(agent_sites) != 1:
+                errors.append("%s: %s JSON runtime values do not match one explicitly referenced placement site" %
+                              (environment_id, descriptor))
+                # The source is foreign to the caller, so never fall through to
+                # local CLI discovery after a failed runtime identity check.
+                return errors, record
+        if len(agent_sites) != 1:
+            errors.append("%s: %s runtime values do not identify one declared placement site" %
+                          (environment_id, descriptor))
+            return errors, record
+        site_id = next(iter(agent_sites))
+        site = context["sites"].get(site_id)
+        if site is None:
+            errors.append("%s: %s placement site is absent from the active declaration" % (environment_id, descriptor))
+            return errors, record
+        managed_config_root = _managed_config_root(context["placement"], descriptor, site)
+        if not _same_path(config_root, managed_config_root):
+            errors.append("%s: %s effective config root %r does not match managed root %r" %
+                          (environment_id, descriptor, config_root, managed_config_root))
+            return errors, record
         expected_runtime = {"user": principal, "home": site.get("home") if site else None,
                             "host": site.get("host") if site else None}
         host_matches = (isinstance(current_principal, dict) and
                         (current_principal.get("host") == expected_runtime["host"] or
                          (expected_runtime["host"] == "Linux" and current_principal.get("platform") == "Linux")))
         if (not isinstance(current_principal, dict) or
-                any(current_principal.get(key) != value for key, value in expected_runtime.items() if key != "host") or not host_matches or
-                current_principal.get("configRoots", {}).get(descriptor) != config_root):
+                current_principal.get("user") != principal or
+                not _same_path(current_principal.get("home"), expected_runtime["home"]) or not host_matches or
+                not _same_path(current_principal.get("configRoots", {}).get(descriptor), config_root)):
             errors.append("%s: %s runtime principal %r is unverified from current runtime %r" %
                           (environment_id, descriptor, expected_runtime, current_principal))
         elif not resolver(tool["entrypoint"]):
@@ -237,7 +291,8 @@ def validate_lifecycle(catalog_path, placement_context, environment_id, mode="no
     # be registered for this environment; no arbitrary filesystem discovery is
     # attempted.
     local_site = next((site for site in context["sites"].values() if isinstance(current_principal, dict) and
-                       all(current_principal.get(key) == site.get(key) for key in ("user", "home")) and
+                       current_principal.get("user") == site.get("user") and
+                       _same_path(current_principal.get("home"), site.get("home")) and
                        (current_principal.get("host") == site.get("host") or
                         (site.get("host") == "Linux" and current_principal.get("platform") == "Linux"))), None)
     if local_site and mode == "normal":
