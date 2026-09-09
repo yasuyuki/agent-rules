@@ -464,6 +464,20 @@ def check_state(rules, placement, locations, exceptions, sites, workspaces, all_
     errors = []
     reachable = [loc for loc in locations if site_reachable(sites[site_of(loc, workspaces)])]
     files, sections = expected_writes(rules, placement, reachable, exceptions, sites, workspaces, skills)
+    # A section file may be shared by several tools (for example AGENTS.md).
+    # A tool-scoped lifecycle check owns its own files and required artifacts,
+    # but it must recognize the canonical sections legitimately contributed by
+    # other declared tools to that same selected file.
+    all_location_values = all_locations.values() if isinstance(all_locations, dict) else all_locations
+    for location in all_location_values:
+        if location.get("tool") not in placement["tools"]:
+            continue
+        _shared_files, shared_sections = expected_writes(
+            rules, placement, [location], exceptions, sites, workspaces, skills
+        )
+        for dest, blocks in shared_sections.items():
+            if dest in sections:
+                sections[dest].update(blocks)
     printed = []
     for loc in locations:
         if loc["scope"] == "workspace":

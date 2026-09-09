@@ -388,10 +388,19 @@ def load_catalog(path, purpose=None, *, probe=False, runner=subprocess.run, envi
         if connection.get("transport") == "wsl" and isinstance(connection.get("distro"), dict):
             distro_ref = connection["distro"]
             distro_source = sources.get(distro_ref.get("source"))
-            if distro_source is None or distro_source.get("unavailable") or distro_ref.get("field") not in distro_source.get("fields", {}):
+            if distro_source is None or distro_source.get("unavailable"):
+                raise CatalogError("environment %s has invalid WSL distro reference" % env_id)
+            if distro_source["definition"]["type"] == "json-pointer":
+                valid = distro_ref.get("field") in distro_source.get("fields", {})
+            else:
+                site = distro_source.get("sites", {}).get(distro_ref.get("site"))
+                valid = isinstance(distro_ref.get("field"), str) and isinstance(site, dict) and distro_ref["field"] in site
+            if not valid:
                 raise CatalogError("environment %s has invalid WSL distro reference" % env_id)
             connection = dict(connection)
-            connection["distro"] = distro_source["fields"][distro_ref["field"]]
+            connection["distro"], _resolution = _agent_value(distro_ref, sources)
+            if not isinstance(connection["distro"], str) or not connection["distro"]:
+                raise CatalogError("environment %s WSL distro reference must resolve to a non-empty string" % env_id)
         descriptors = [agent["descriptor"] for agent in agents]
         if len(descriptors) != len(set(descriptors)) or any(name not in TOOL_CONFIG_HOMES for name in descriptors):
             raise CatalogError("environment %s has duplicate or unknown agent descriptor" % env_id)
