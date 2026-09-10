@@ -7,10 +7,8 @@ the command module which will eventually call it.
 from __future__ import annotations
 
 import shutil
-import hashlib
 import importlib.util
 import os
-from datetime import datetime
 from pathlib import Path
 
 _inventory_spec = importlib.util.spec_from_file_location(
@@ -71,7 +69,7 @@ def _agent_sites(agent, sources):
 def _declared_placement_sites(environment, sources, declaration_path):
     """Return the environment's explicit sites from this declaration only."""
     result = set()
-    for reference in environment.get("refs", []):
+    for reference in environment_inventory._environment_refs(environment):
         if not isinstance(reference, dict):
             continue
         source = sources.get(reference.get("source"), {})
@@ -112,91 +110,54 @@ def _artifact_is_required(context, place_module, locations, artifact_id, kind):
     return bool(files or sections)
 
 
-def _sha256(value):
-    if isinstance(value, str):
-        value = value.encode("utf-8")
-    return hashlib.sha256(value).hexdigest()
-
-
-def _evidence_errors(evidence, descriptor, skill_id, skill_sha256, binding_sha256, principal, config_root,
-                     environment_id, declaration_sha256):
-    seen = set()
-    for item in evidence:
-        if not isinstance(item, dict) or item.get("descriptor") != descriptor:
-            continue
-        try:
-            observed = item.get("observedAt")
-            if isinstance(observed, str):
-                datetime.fromisoformat(observed.replace("Z", "+00:00"))
-            else:
-                raise ValueError
-        except ValueError:
-            continue
-        record_path = item.get("record")
-        if not isinstance(record_path, str) or not record_path:
-            continue
-        record = Path(record_path)
-        try:
-            if not record.is_file() or item.get("recordSha256") != _sha256(record.read_bytes()):
-                continue
-        except OSError:
-            continue
-        if (item.get("skillId") != skill_id or not item.get("observedAt") or
-                not item.get("condition") or not item.get("record") or
-                item.get("applied") is not True or item.get("skillSha256") != skill_sha256 or
-                item.get("bindingSha256") != binding_sha256 or item.get("principal") != principal or
-                item.get("configRoot") != config_root or item.get("environmentId") != environment_id or
-                item.get("declarationSha256") != declaration_sha256):
-            continue
-        if item.get("session") in {"continuing", "startup"}:
-            seen.add(item["session"])
-    return ["%s: missing initial skill-reading evidence for %s session" % (descriptor, session)
-            for session in ("continuing", "startup") if session not in seen]
-
-
-def validate_lifecycle(catalog_path, placement_context, environment_id, mode="normal", *,
+def validate_lifecycle(catalog_path, placement_context, environment_id, mode="readiness", *,
                        place_module, resolver=shutil.which, current_principal=None,
                        required_skill_id=DEFAULT_SKILL, required_binding_id=DEFAULT_BINDING,
-                       session_evidence=None, declaration_path=None, constructing_agent=None):
-    """Validate one environment before normal start or construction work.
+                       declaration_path=None, constructing_agent=None, target_agent=None,
+                       required_site=None):
+    """Validate one environment's placement readiness or one normal CLI start.
 
     Resolver is called only for a local runtime agent and receives its placement
     entrypoint.  A foreign principal is deliberately an error, rather than an
     excuse to inspect the caller's PATH as if it represented that runtime.
     """
-    if mode not in {"normal", "construction"}:
-        raise ValueError("mode must be 'normal' or 'construction'")
+    if mode not in {"normal", "readiness", "construction"}:
+        raise ValueError("mode must be 'normal', 'readiness', or 'construction'")
     context = _context(placement_context)
-    errors, records = environment_inventory.check_catalog(catalog_path, environment_id=environment_id)
+    target_only = mode == "normal"
+    errors, records = environment_inventory.check_catalog(
+        catalog_path, environment_id=environment_id,
+        agent_descriptor=target_agent if target_only else None,
+        site_id=required_site if target_only else None,
+    )
     if errors or not records:
         return errors, records[0] if records else None
     record = records[0]
     state = record["state"]
     if mode == "normal" and state != "active":
         errors.append("%s: normal lifecycle requires active state (found %s)" % (environment_id, state))
-    if mode == "construction" and state not in {"pending", "active"}:
-        errors.append("%s: construction lifecycle cannot validate state %s" % (environment_id, state))
-    evidence = [] if session_evidence is None else session_evidence
-    if not isinstance(evidence, list):
-        errors.append("%s: sessionEvidence must be an array" % environment_id)
-        evidence = []
+    if mode in {"readiness", "construction"} and state not in {"pending", "active"}:
+        errors.append("%s: readiness or construction cannot validate state %s" % (environment_id, state))
 
-    _catalog, sources, _all_records = environment_inventory.load_catalog(catalog_path, environment_id=environment_id)
-    declaration_sha256 = _sha256(Path(declaration_path).read_bytes()) if declaration_path is not None and Path(declaration_path).is_file() else None
+    _catalog, sources, _all_records = environment_inventory.load_catalog(
+        catalog_path, environment_id=environment_id,
+        agent_descriptor=target_agent if target_only else None,
+        site_id=required_site if target_only else None,
+    )
     raw_environment = next(item for item in _catalog["environments"] if item["id"] == environment_id)
+    if required_site is not None and required_site not in _declared_placement_sites(
+            raw_environment, sources, declaration_path):
+        errors.append("%s: selected site %s is not an explicit environment reference" %
+                      (environment_id, required_site))
+        return errors, record
     raw_agents = {item["descriptor"]: item for item in raw_environment["agents"]}
     if not record["agents"]:
         errors.append("%s: active lifecycle has no registered agents" % environment_id)
-    binding_rules = [rule for rule in context["rules"] if rule[0].get("id") == required_binding_id]
-    skill = context["skills"].get(required_skill_id)
-    skill_bytes = skill.get("SKILL.md") if isinstance(skill, dict) else None
-    binding_bytes = binding_rules[0][1] if binding_rules else None
-    if not isinstance(skill_bytes, bytes) or binding_bytes is None:
-        # The per-agent placement errors explain which source is absent too.
-        skill_sha256 = binding_sha256 = None
-    else:
-        skill_sha256, binding_sha256 = _sha256(skill_bytes), _sha256(binding_bytes)
     agents_to_check = record["agents"]
+    if mode == "normal":
+        agents_to_check = [agent for agent in record["agents"] if agent["descriptor"] == target_agent]
+        if not agents_to_check:
+            errors.append("%s: target agent %s is not registered" % (environment_id, target_agent))
     if mode == "construction" and constructing_agent is not None:
         agents_to_check = [agent for agent in record["agents"] if agent["descriptor"] == constructing_agent]
         if not agents_to_check:
@@ -245,6 +206,10 @@ def validate_lifecycle(catalog_path, placement_context, environment_id, mode="no
                           (environment_id, descriptor))
             return errors, record
         site_id = next(iter(agent_sites))
+        if required_site is not None and site_id != required_site:
+            errors.append("%s: %s references placement site %s, not selected site %s" %
+                          (environment_id, descriptor, site_id, required_site))
+            continue
         site = context["sites"].get(site_id)
         if site is None:
             errors.append("%s: %s placement site is absent from the active declaration" % (environment_id, descriptor))
@@ -254,20 +219,21 @@ def validate_lifecycle(catalog_path, placement_context, environment_id, mode="no
             errors.append("%s: %s effective config root %r does not match managed root %r" %
                           (environment_id, descriptor, config_root, managed_config_root))
             return errors, record
-        expected_runtime = {"user": principal, "home": site.get("home") if site else None,
-                            "host": site.get("host") if site else None}
-        host_matches = (isinstance(current_principal, dict) and
-                        (current_principal.get("host") == expected_runtime["host"] or
-                         (expected_runtime["host"] == "Linux" and current_principal.get("platform") == "Linux")))
-        if (not isinstance(current_principal, dict) or
-                current_principal.get("user") != principal or
-                not _same_path(current_principal.get("home"), expected_runtime["home"]) or not host_matches or
-                not _same_path(current_principal.get("configRoots", {}).get(descriptor), config_root)):
-            errors.append("%s: %s runtime principal %r is unverified from current runtime %r" %
-                          (environment_id, descriptor, expected_runtime, current_principal))
-        elif not resolver(tool["entrypoint"]):
-            errors.append("%s: %s CLI does not resolve for runtime principal %s" %
-                          (environment_id, descriptor, principal))
+        if mode in {"normal", "readiness", "construction"}:
+            expected_runtime = {"user": principal, "home": site.get("home") if site else None,
+                                "host": site.get("host") if site else None}
+            host_matches = (isinstance(current_principal, dict) and
+                            (current_principal.get("host") == expected_runtime["host"] or
+                             (expected_runtime["host"] == "Linux" and current_principal.get("platform") == "Linux")))
+            if (not isinstance(current_principal, dict) or
+                    current_principal.get("user") != principal or
+                    not _same_path(current_principal.get("home"), expected_runtime["home"]) or not host_matches or
+                    not _same_path(current_principal.get("configRoots", {}).get(descriptor), config_root)):
+                errors.append("%s: %s runtime principal %r is unverified from current runtime %r" %
+                              (environment_id, descriptor, expected_runtime, current_principal))
+            elif not resolver(tool["entrypoint"]):
+                errors.append("%s: %s CLI does not resolve for runtime principal %s" %
+                              (environment_id, descriptor, principal))
 
         all_locations = context["locations"].values() if isinstance(context["locations"], dict) else context["locations"]
         selected = [location for location in all_locations
@@ -285,8 +251,6 @@ def validate_lifecycle(catalog_path, placement_context, environment_id, mode="no
             context["workspaces"], context["locations"], context["skills"], check_installed=False,
         )
         errors.extend("%s: %s" % (descriptor, error) for error in placement_errors)
-        if state == "active":
-            errors.extend(_evidence_errors(evidence, descriptor, required_skill_id, skill_sha256, binding_sha256, principal, config_root, environment_id, declaration_sha256))
     # A supported CLI visible in this runtime is an installation fact.  It must
     # be registered for this environment; no arbitrary filesystem discovery is
     # attempted.
@@ -295,7 +259,7 @@ def validate_lifecycle(catalog_path, placement_context, environment_id, mode="no
                        _same_path(current_principal.get("home"), site.get("home")) and
                        (current_principal.get("host") == site.get("host") or
                         (site.get("host") == "Linux" and current_principal.get("platform") == "Linux"))), None)
-    if local_site and mode == "normal":
+    if local_site and mode == "readiness":
         registered = {agent["descriptor"] for agent in record["agents"]}
         for descriptor, tool in context["placement"]["tools"].items():
             if descriptor not in registered and (resolver(tool["entrypoint"]) or place_module.detect_cli(local_site, tool)):
