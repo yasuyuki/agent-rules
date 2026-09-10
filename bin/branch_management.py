@@ -84,13 +84,12 @@ def locked(repo, create=False):
     with (directory / 'lock').open('a+b') as stream:
         if os.name == 'nt':
             import msvcrt
-            stream.seek(0)
-            if not stream.read(1):
+            if os.fstat(stream.fileno()).st_size == 0:
                 stream.write(b'0')
                 stream.flush()
             stream.seek(0)
             try:
-                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
             except OSError as exc:
                 raise BranchError('registration busy; retry without discarding work') from exc
         else:

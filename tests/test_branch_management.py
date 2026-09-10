@@ -163,8 +163,8 @@ class BranchManagementTests(unittest.TestCase):
                              text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             for checkout, name in ((one, "one"), (linked, "two"))
         ]
-        for process in processes:
-            stdout, stderr = process.communicate()
+        completed = [(process, process.communicate()) for process in processes]
+        for process, (stdout, stderr) in completed:
             self.assertEqual(process.returncode, 0, stdout + stderr)
 
     def test_prepare_merge_requires_the_registered_source_and_allows_no_ff_merge(self):
