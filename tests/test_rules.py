@@ -28,6 +28,13 @@ inventory_result = subprocess.run(
 if inventory_result.returncode:
     raise AssertionError("environment inventory failed\n" + inventory_result.stdout + inventory_result.stderr)
 
+classification_result = subprocess.run(
+    [sys.executable, str(ROOT / "tests" / "test_work_classification.py")],
+    cwd=ROOT, text=True, capture_output=True,
+)
+if classification_result.returncode:
+    raise AssertionError("work classification failed\n" + classification_result.stdout + classification_result.stderr)
+
 # Exercise native Windows junctions as well as POSIX symlinks in the existing
 # cross-platform CI entry point.
 projection = subprocess.run(
@@ -186,6 +193,18 @@ with tempfile.TemporaryDirectory() as directory:
     if not (hand_placed / "SKILL.md").is_file():
         raise AssertionError("render removed a skill from a skills directory")
     run(workspace, "verify")
+
+
+# Windows checkouts may use CRLF. Parse metadata without changing copied bytes.
+with tempfile.TemporaryDirectory() as directory:
+    skill_dir = Path(directory) / "example"
+    skill_dir.mkdir()
+    for newline in (b"\n", b"\r\n"):
+        payload = newline.join([
+            b"---", b"name: example", b"description: Example skill", b"---", b"Body", b"",
+        ])
+        (skill_dir / "SKILL.md").write_bytes(payload)
+        assert agent_rules.load_skills(directory)["example"]["SKILL.md"] == payload
 
 
 # A UPSTREAM.tsv that cannot be read says nothing about authorship. Reading it as
@@ -368,7 +387,7 @@ artifact\tlocation_id\trequirement\treason
     assert wsl_calls == [["wsl.exe", "--list", "--quiet"], ["wsl.exe", "--list", "--running", "--quiet"]]
 
     ssh_config = root / "probe.conf"
-    ssh_config.write_text("Host remote\n  HostName example.test\n  User agent\n  IdentityFile /tmp/id\n  UserKnownHostsFile /tmp/known\n", encoding="utf-8")
+    ssh_config.write_text("Host remote\n  HostName example.test\n  User agent\n  Port 22\n  IdentityFile /tmp/id\n  UserKnownHostsFile /tmp/known\n  ConnectTimeout 5\n", encoding="utf-8")
     remote_catalog = root / "remote-catalog.json"
     remote_catalog.write_text(json.dumps({"schemaVersion": 1, "sources": {"remote": {
         "type": "placement-tsv", "host": "remote", "path": "/policy/PLACEMENT.md", "paths": {},

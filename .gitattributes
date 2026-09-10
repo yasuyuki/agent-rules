@@ -1,0 +1,2 @@
+# Git for Windows executes the public hook with its POSIX shell.
+hooks/branch-hook text eol=lf

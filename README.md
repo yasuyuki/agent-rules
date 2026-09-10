@@ -214,7 +214,11 @@ limits the reported target while still rejecting an unknown ID.
 A remote source can declare `probe: {"transport":"ssh","target":"alias",
 "configPaths":{"windows":"C:/config/alias.conf"}}` and its absolute remote
 `path`. The explicit config file is parsed as data: an exact `Host` block with
-hostname, user, port, identity, known-hosts file and connection timeout. Executable
+hostname, user, port, identity, known-hosts file and connection timeout. After
+config values and inline probe fields are combined, `user`, `port`, `identityFile`,
+`knownHosts` and `connectTimeout` must all be explicitly non-empty; missing values
+are rejected before SSH runs. Inline `target` remains the fallback when the
+config omits `HostName`. Executable
 SSH directives and includes are rejected; the probe passes explicit options to
 SSH with user/system config disabled and reads only the declared file. An
 environment's `connection: {"transport":"ssh","source":"source-id"}` reuses
@@ -243,6 +247,262 @@ Unrelated rule files and root instructions are outside that namespace and are
 left untouched. A malformed unmatched managed marker fails closed; repair that
 marker before rendering so the tool never guesses how much local text to
 remove.
+
+## Work classification
+
+Classify declared work without probing, launching, installing, connecting, or
+writing to an environment:
+
+```console
+python3 bin/place.py classify --catalog tests/fixtures/work-classification/catalog.json --work tests/fixtures/work-classification/work.json --prefer-environment isolated --json
+```
+
+Those fixture files are synthetic and runnable from this checkout; private
+catalogs and work inputs belong outside the public repository.
+
+The work document has `schemaVersion: 1` and a `work` array. Each ordinary item
+has a stable `id`, a source-record `reference`, and one or more phases. A phase
+requires `id`, `summary`, `purpose`, `requires`, and `executor`; it may include
+`environment`, `prerequisites`, `acceptance`, and `handoffs`, which default to
+empty values. `purpose` uses the catalog purposes; `requires` is an array of
+capability IDs; and `environment` is
+`{"ids":["optional-host-lock"],"mode":"normal|construction|repair"}`.
+An explicit ID permits a retained environment; a pending environment is usable
+only for construction or repair. Retired and unclassified environments are
+never eligible. `executor` is
+`{"kind":"agent|human|ci|external","state":"ready|hold|waiting|unspecified"}`
+and may include boolean `required`. The last three fields are arrays of strings.
+An excluded item instead has `id`, `reference`, and `excludedReason`; it has no
+phases. This preserves why old or completed records did not become work.
+
+Catalog environments may add a `capabilities` object. Each capability ID maps
+to `status` (`available`, `preparable`, `unavailable`, or `unknown`), `reason`,
+required string-array `evidence`, and, for `preparable`, a `preparation` route.
+Omitted capability data means unknown; it never means unavailable. The result
+lists every environment candidate, technical classification, preparation,
+unmet conditions, and readiness separately. An executor hold or an unreadable
+source therefore does not change a declared technical capability into an
+unavailable one. A `--prefer-environment` sorts that environment first but
+never relaxes a phase's purpose, state, host lock, or capability requirements.
+With `--prefer-environment`, a phase's top-level `classification` is relative
+to that preferred environment; `proposedEnvironment` is separately selected
+only from available or preparable eligible candidates. Unknown candidates stay
+visible but never become a positive proposal. Each assessment includes the
+capability evidence used for its reasons.
+
+An observer that cannot read a referenced WSL source retains that environment
+as unverified. A malformed reference remains an error when its source is
+readable. This lets another environment still be listed while making the
+missing evidence visible to classification and catalog checks.
+
+## Agent configuration report
+
+`bin/agent_report.py` is a standalone Python 3.10+ tool: copy that one file
+anywhere to use its built-in Codex, Claude Code and Cursor Agent adapters. It
+does not import the renderer, read a placement declaration, or require private
+environment code. It asks **new diagnostic sessions** which instruction/config
+files and skills they know about, checks reported local paths, and writes one
+offline HTML with search, reported-state and path-existence filters.
+
+From the checkout, with the desired CLIs already installed and authenticated:
+
+```console
+python3 bin/agent_report.py --output report.html
+```
+
+The optional positional argument selects a target directory (default: current
+directory). `--output` is required and must name a **new file** in an existing
+directory; it never overwrites files. Relative output/plugin/config paths are
+relative to the caller's directory, not the target. Repeat `--platform codex`,
+`--platform claude`, or `--platform cursor` to select adapters. Without selection,
+all registered adapters are checked and installed ones are queried; missing
+CLIs are explicitly listed. CLI candidates are resolved in PATH order within
+each adapter: `codex`, `claude`, and `agent` then `cursor-agent`, respectively.
+`--timeout SECONDS` optionally limits each invocation; there is no default
+deadline and the collector never automatically retries. CLI/provider-internal
+retries remain their own behavior.
+
+Exit 0 means selected queries returned valid data (possibly partial); exit 1
+means at least one query failed or an explicitly selected CLI was unavailable;
+exit 2 means invalid inputs/plugin contracts or report-write failure. Missing
+auto-detected CLIs do not change exit 0. A report with no installed CLI still
+says that no inventory was collected. Version-query failures remain visible
+and do not prevent the inventory query.
+
+The report separates **reported state** from **path existence**. `available`
+means a skill is catalogued, while `loaded` means its body is reported as already
+in context. The prompt forbids opening skills just to enumerate them. The
+diagnostic uses visible metadata only, not an independent configuration search
+or precedence calculation; configuration values not exposed to the model may
+be unknown. Omitted categories become `unknowns`, not empty successes. Missing
+item metadata defaults to unknown or an empty path/source. Existence uses
+`stat()` as the current user, with relative paths based on the target and `~`
+expanded using the inherited home. Non-file sources, foreign paths and access
+errors are `not checkable`; a missing path never negates a loading claim.
+
+The built-ins use Codex's read-only sandbox and ephemeral session, Claude's
+empty built-in tool set / `dontAsk` / no session persistence, and Cursor's ask
+mode. Their diagnostic restrictions are recorded in the HTML. They request no
+tool use, file changes, delegation or external calls beyond the model query.
+These are **not equivalent to normal interactive sessions**: restrictions can
+limit visibility. HOME, configuration environment variables and authentication
+are inherited unchanged; settings and permissions are not rewritten. Normal
+CLI startup may execute trusted hooks, initialize plugins/MCP servers, refresh
+authentication, write caches/telemetry/history, or incur model charges. The
+collector cannot sandbox a launcher, plugin or startup hook; use trusted
+directories and existing platform policy. It never adds permission-bypass flags.
+
+Only normalized metadata is rendered, with all display strings HTML-escaped
+and no external resources. Raw stdout/stderr, exception messages, conversation
+events, setting bodies and environment values are not included. Unexpected
+schema fields are rejected. This is not a semantic secret scanner: the model
+and trusted adapters must obey the metadata-only contract, and filenames or
+metadata can themselves be private. Review HTML before sharing; never commit
+real-environment reports to this public repository.
+
+### Existing launch entry points
+
+`--launch-config FILE` accepts a JSON object mapping platform IDs to nonempty
+argument arrays. An array replaces the executable prefix; the adapter's
+version/query arguments are appended without shell expansion. The prefix's
+first element resolves through PATH (or may be an explicit executable path).
+On Windows, direct `.cmd`/`.bat` launchers are rejected because Windows can
+implicitly expand them through `cmd.exe` even with `shell=False`. For a CLI
+distributed as an npm shim, configure its existing native `node.exe` and CLI
+JavaScript entry point as separate prefix elements, or use a native CLI build.
+Arguments are literal: no variable, `~`, placeholder or shell expansion is
+performed. Relative executable/argument paths should be avoided: child working
+directory is the target. A launcher must forward to the selected product in
+that same target and preserve stdout and exit status. The HTML records the
+PATH-resolved product candidate and launcher separately; it cannot inspect a
+custom launcher's internal executable selection. Keep credentials out of argv.
+
+For environments using the public `place.py start`, first use its existing
+`list` command to identify the workspace. A configuration has this shape
+(replace the example paths/workspace with that environment's declarations):
+
+```json
+{
+  "codex": [
+    "python3", "/path/to/agent-rules/bin/place.py", "start",
+    "--declaration", "/path/to/PLACEMENT.md",
+    "workspace-id", "codex", "--"
+  ]
+}
+```
+
+Add the environment's existing `--rules` inputs before the workspace ID when
+required. Use the declared workspace's path as the report target: `place.py`
+sets its child cwd from that declaration. There is no mandatory launcher or
+environment-specific path in the report implementation.
+
+### Report plugin API v1
+
+These are report adapters, separate from any vendor's agent plugin format.
+Repeat `--plugin-dir DIRECTORY` to load trusted Python files from explicitly
+specified directories. Immediate `*.py` files load in sorted order; files that
+resolve outside that directory are rejected. There is no
+recursive discovery, cwd auto-loading, dependency installation or download.
+The files execute as the current user, so specify only code you trust.
+Dependencies and authentication requirements must be documented by each plugin.
+
+Each module exports integer `PLUGIN_API_VERSION = 1` and
+`get_platforms() -> list[Adapter] | tuple[Adapter, ...]` (nonempty). An adapter
+is any object exposing this interface; no inheritance/import of the report
+module is required:
+
+| Member | Contract |
+| --- | --- |
+| `id: str` | Unique `[a-z][a-z0-9_-]*`; built-ins cannot be overridden |
+| `name: str` | Nonempty display name |
+| `cli_candidates: list[str]` | Nonempty PATH command names, in preference order |
+| `restrictions: str` | Nonempty description of diagnostic restrictions and limits |
+| `version_args() -> list[str]` | Arguments appended to executable/launcher |
+| `parse_version(stdout: str) -> str` | Version token matching `[0-9][\w.+-]*`, not arbitrary output |
+| `query_args(target: pathlib.Path) -> list[str]` | Nonempty arguments, including prompt, for a fresh read-only session |
+| `parse_response(stdout: str) -> dict` | Extract final metadata only, reject product errors/incomplete responses |
+
+Metadata/method signatures and generated argument arrays for **all** adapters
+are checked before any CLI invocation, even for unselected adapters. Loading
+failure, unsupported API, duplicate IDs and invalid implementations fail the
+whole invocation before collection. Methods that prepare arguments must be
+side-effect-free; only the collector runs CLIs. Return-value correctness of
+parsers is checked when real responses arrive, and conversion failures are
+isolated per platform. Plugin exceptions must be ordinary `Exception`
+subclasses, not process exits. Never include raw CLI output in returned fields.
+
+The common result is a dict with `files`, `skills`, `unknowns` lists. Every
+item uses only the string fields `name`, `path`, `source`, `role`, `scope`,
+`state`; `name` is required and nonempty. `path` is a concrete local path or
+empty; `source` identifies non-file origins. `state` is one of `loaded`,
+`available`, `applicable`, `inactive`, `unavailable`, `unknown`. For skills,
+prefer `loaded`, `available` or `unknown` as defined above. Example:
+
+```json
+{
+  "files": [],
+  "skills": [{
+    "name": "example", "path": "", "source": "session skill catalog",
+    "role": "example task", "scope": "session", "state": "available"
+  }],
+  "unknowns": []
+}
+```
+
+A minimal adapter for a hypothetical CLI that implements a read-only
+`report --metadata-only --json` command returning that schema:
+
+```python
+import json
+
+PLUGIN_API_VERSION = 1
+
+class Example:
+    id = "example"
+    name = "Example Agent"
+    cli_candidates = ["example-agent"]
+    restrictions = "Read-only metadata report; requires example-agent login"
+
+    def version_args(self):
+        return ["--version"]
+
+    def parse_version(self, stdout):
+        return stdout.strip()  # CLI must return only its version token
+
+    def query_args(self, target):
+        return ["report", "--metadata-only", "--json", "--directory", str(target)]
+
+    def parse_response(self, stdout):
+        return json.loads(stdout)
+
+def get_platforms():
+    return [Example()]
+```
+
+Adapter CLI formats are based on the official
+[Codex non-interactive documentation](https://learn.chatgpt.com/docs/non-interactive-mode),
+[Claude CLI reference](https://code.claude.com/docs/en/cli-reference), and
+[Cursor parameters](https://cursor.com/docs/cli/reference/parameters) /
+[JSON output](https://cursor.com/docs/cli/reference/output-format).
+Run offline contract, standalone-copy and simulated-CLI tests with:
+
+```console
+python3 tests/test_agent_report.py
+```
+
+These tests run in the existing Linux/Windows CI. Actual Cursor responses
+remain unverified until exercised on a host with an installed, authenticated
+Cursor CLI; mock success is not evidence of live compatibility.
+
+Live validation on 2026-09-08 (Linux, Python 3.14.4) used the existing public
+launch entry point, Codex 0.153.4 and Claude Code 2.1.263. Both returned valid
+partial inventories, including explicit unknowns, and produced HTML tables.
+The target's pre-existing instruction/configuration files were unchanged after
+the diagnostic. Cursor was unavailable through that environment's launcher;
+its failure was isolated and recorded in the same report. Real report data and
+launch configuration remain outside this repository. These observations do
+not establish completeness of the agents' self-reports or absence of startup
+side effects outside the target.
 
 ## Push preflight
 
@@ -462,6 +722,101 @@ with Twine, verify the installed version from PyPI in a clean environment,
 and update the publication-status paragraph above. Do not add tokens to this
 repository or automatically publish on pushes. This change does not create
 tags, GitHub Releases or PyPI releases.
+
+## Registered work and branch enforcement
+
+`python3 bin/place.py branch --help` exposes the local Git integration. It uses
+only this public source, the selected Python runtime and repository-local Git
+configuration; no private launcher or personal path is required. Git must support
+`reference-transaction` hooks and `rev-parse --path-format` (Git 2.31 or newer).
+The runtime needs Python 3.10 or newer. Git for Windows supplies the shell used
+by the fixed dispatcher. Keep the public source available after installation.
+
+Install with `branch install --repo REPO --remote REMOTE`. This verifies the
+remote default via `ls-remote --symref`, preserves existing hooks and installs the
+fixed `hooks/branch-hook` bytes for `prepare-commit-msg`, `reference-transaction`
+and `pre-push`. `agentBranch.python`, `agentBranch.source` and `core.hooksPath`
+are explicit local configuration. Existing hooks retain arguments, input and
+exit status. A collision that cannot be preserved is rejected. Install can retry
+an interrupted owned installation; unknown files are never overwritten. Re-running
+install from a reviewed public checkout rebinds the Python source and runtime
+while preserving registrations and hook bytes. Before updating the checkout that
+supplies its own hooks, rebind from a separate reviewed source so its source hash
+remains stable during the merge. A changed dispatcher needs a separately reviewed
+hook migration; it is never silently overwritten.
+
+Register existing integration and topic checkouts with `branch begin --mode
+adopt --repo REPO --task ID --request REQUEST --branch BRANCH --worktree PATH
+--base COMMIT --into DESTINATION`. Paths are absolute. `REQUEST` references the
+existing user requirement or issue; it is not a duplicate progress ledger.
+`COMMIT` is the explicitly reviewed historical starting point and must agree
+with the remote history. The default branch is registered with itself as its
+integration destination. No historical commits before adoption are retroactively
+classified as violations. Unregistered retained branches remain untouched; their
+future updates are refused.
+
+For independent work use `branch begin --mode new --repo REPO --task ID
+--request REQUEST --branch TOPIC --worktree NEW_PATH`. Fetch the remote default
+first; the command verifies that the fetched commit still agrees with the remote.
+It creates a new topic and worktree using standard Git. `--into BRANCH` defaults
+to the verified remote default. For dependent work add `--depends-on PARENT_ID`;
+the parent tip becomes the starting point. Reuse existing work with `branch begin
+--mode continue --repo REPO --task ID`. A mismatched branch, path or common Git
+directory is rejected. Interrupted worktree creation is resumed without reset,
+stash or automatic removal. Each worktree has one lead performing Git updates.
+
+A fetched update of the **same** remote branch can be admitted with `begin
+--mode continue --task ID --repo REPO --sync`, then `git merge --ff-only
+REMOTE/BRANCH` in its registered worktree. The one-use import is pinned to the
+old and fetched new commits; unrelated fast-forwards are rejected. This does not
+identify which Git command produced the same reference transition.
+
+Prepare integration in the registered destination with `branch prepare-merge
+--repo DESTINATION_PATH --task SOURCE_ID`. Merge with `git merge --no-ff
+--no-commit SOURCE_BRANCH`, run the project's required verification, then commit.
+Both tips and the ordered parents are checked again. A dependent task can be
+integrated only after its parent has been integrated into the destination's
+history. A moved source or destination requires fresh preparation. A successful
+integration consumes the permission. A failed or interrupted commit preserves
+changes and can be retried; a source reserved by a prepared integration must wait
+for that integration to finish or retry.
+
+A user-approved cherry-pick exception is registered in its destination topic with
+`branch allow-cherry-pick --repo PATH --commit SOURCE_SHA --approval USER_REFERENCE
+--reason REASON`. Each permission is pinned to the current destination HEAD and
+one source commit, and is consumed after success. For a sequence, each current
+source needs its own applicable exception; a rejected later pick preserves
+already committed earlier picks. Conflict resolution does not broaden approval.
+Default-branch ordinary commits, unregistered reference updates, unrelated merges,
+amend and unauthorized fast-forwards fail before the reference is committed,
+including `git commit --no-verify`. Existing approval requirements for history
+rewrites remain in force; this interface does not grant rewrite permission.
+
+`branch check --repo PATH` explains inconsistencies and exits nonzero; `--json`
+provides machine output. It checks worktree ownership, tips, dependencies, public
+source and installed hook bytes and executable state. Registration, commit
+permits and integration receipts live in the Git common directory's
+`agent-branches/state.json`, shared by linked worktrees. OS locks and atomic
+writes serialize registry changes. On another clone/host, register the same work
+ID against that clone's remote history; never copy local operation permissions.
+The shared push preflight applies the same branch/tip check to installed repos,
+then retains its existing visibility, destination and history-protection policy.
+The actual pre-push hook checks all submitted refs and commits.
+
+These are accidental-misuse guards, not an isolation boundary against deliberate
+Git configuration changes. In particular, a missing hook cannot execute itself:
+remaining hooks, `branch check` and the common push preflight detect the missing
+file. Deliberately bypassing all these entrypoints is prohibited by policy.
+Changes produced by `cherry-pick --no-commit` cannot be attributed after the fact.
+The lead still judges functional relationships and the validity of verification.
+See the [Git hook contract](https://git-scm.com/docs/githooks) and
+[cherry-pick contract](https://git-scm.com/docs/git-cherry-pick).
+
+Run `python3 tests/test_branch_management.py` and
+`python3 tests/test_branch_recovery.py` for isolated real-Git tests, in
+addition to the existing rules, push preflight and installed-package checks.
+The Linux/Windows CI matrix runs the same test. CI results do not establish
+installation or behavioral acceptance on an operator's actual host.
 
 ## License
 
