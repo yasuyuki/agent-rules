@@ -17,6 +17,32 @@ spec.loader.exec_module(management)
 
 
 class RecoveryTests(BranchManagementTests):
+    def test_pack_refs_preserves_registered_and_retained_branches(self):
+        clone = self.root / 'packed refs'
+        self.command('git', 'clone', self.remote, clone)
+        self.git_at(clone, 'config', 'user.name', 'Test User')
+        self.git_at(clone, 'config', 'user.email', 'test@example.invalid')
+        self.git_at(clone, 'branch', 'retained')
+        self.branch('install', repo=clone)
+        for key in ('maintenance.pack-refs.enabled', 'gc.packRefs'):
+            self.assertEqual(self.git_at(clone, 'config', '--local', '--get', key).stdout.strip(), 'false')
+        self.begin('main', 'adopt', repo=clone, branch='main', into='main')
+        topic = Path(self.begin('topic', repo=clone, branch='topic')['worktree'])
+        before = self.git_at(clone, 'show-ref', '--heads').stdout
+        self.git_at(clone, 'pack-refs', '--all', '--no-prune')
+        self.assertEqual(self.git_at(clone, 'show-ref', '--heads').stdout, before)
+        self.branch('check', repo=topic)
+        self.git_at(clone, 'maintenance', 'run', '--task=gc')
+        self.git_at(clone, 'pack-refs', '--all', '--prune', ok=False)
+        self.assertEqual(self.git_at(clone, 'show-ref', '--heads').stdout, before)
+        self.branch('check', repo=topic)
+        old = self.git_at(clone, 'rev-parse', 'retained').stdout.strip()
+        tree = self.git_at(clone, 'rev-parse', 'HEAD^{tree}').stdout.strip()
+        new = self.git_at(clone, 'commit-tree', tree, '-p', old, '-m', 'unapproved').stdout.strip()
+        self.git_at(clone, 'update-ref', 'refs/heads/retained', new, old, ok=False)
+        self.git_at(clone, 'update-ref', '-d', 'refs/heads/retained', old, ok=False)
+        self.assertEqual(self.git_at(clone, 'rev-parse', 'retained').stdout.strip(), old)
+
     def state_path(self):
         return self.repo / '.git/agent-branches/state.json'
 

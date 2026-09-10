@@ -745,6 +745,13 @@ supplies its own hooks, rebind from a separate reviewed source so its source has
 remains stable during the merge. A changed dispatcher needs a separately reviewed
 hook migration; it is never silently overwritten.
 
+Installation disables automatic reference packing in this repository with
+`maintenance.pack-refs.enabled=false` and `gc.packRefs=false`; other maintenance
+remains enabled. Git's hook interface cannot distinguish pruning a loose reference
+from deleting the branch itself. `git pack-refs --all --no-prune` is supported;
+reference pruning remains rejected. This preserves branch-deletion protection
+without a maintenance wrapper or a hook bypass.
+
 Register existing integration and topic checkouts with `branch begin --mode
 adopt --repo REPO --task ID --request REQUEST --branch BRANCH --worktree PATH
 --base COMMIT --into DESTINATION`. Paths are absolute. `REQUEST` references the
