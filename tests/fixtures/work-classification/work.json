@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "work": [
+    {
+      "id": "synthetic-desktop-flow",
+      "reference": "synthetic fixture",
+      "phases": [
+        {
+          "id": "implement",
+          "summary": "Edit and run synthetic checks",
+          "purpose": "normal-development",
+          "requires": ["source-edit", "extra-tool"],
+          "executor": {"kind": "agent", "state": "ready"},
+          "handoffs": ["source revision and synthetic-check result"]
+        },
+        {
+          "id": "desktop-acceptance",
+          "summary": "Observe the synthetic Windows GUI acceptance",
+          "purpose": "operator",
+          "requires": ["windows-gui"],
+          "environment": {"ids": ["windows-desktop"]},
+          "executor": {"kind": "human", "state": "unspecified"},
+          "acceptance": ["synthetic desktop observation"],
+          "handoffs": []
+        }
+      ]
+    }
+  ]
+}

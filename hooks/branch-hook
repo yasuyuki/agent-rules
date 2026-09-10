@@ -1,0 +1,5 @@
+#!/bin/sh
+# Fixed public dispatcher. Configuration is data, never shell code.
+python=$(git config --get agentBranch.python) || exit 1
+source=$(git config --get agentBranch.source) || exit 1
+exec "$python" "$source/bin/branch_management.py" hook "${0##*/}" "$@"
