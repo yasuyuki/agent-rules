@@ -167,6 +167,29 @@ class BranchManagementTests(unittest.TestCase):
         for process, (stdout, stderr) in completed:
             self.assertEqual(process.returncode, 0, stdout + stderr)
 
+    def test_detached_checkout_can_return_only_to_its_registered_tip(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        feature = Path(self.begin("feature", branch="feature")["worktree"])
+        recorded = self.git_at(feature, "rev-parse", "HEAD").stdout.strip()
+        other = Path(self.begin("other", branch="other")["worktree"])
+        (other / "other-change").write_text("other\n", encoding="utf-8")
+        self.git_at(other, "add", "other-change")
+        self.git_at(other, "commit", "-m", "other-change")
+        other_tip = self.git_at(other, "rev-parse", "HEAD").stdout.strip()
+
+        # An immutable dependency checkout makes this worktree detached at a
+        # different commit.  A normal checkout restores its recorded branch.
+        self.git_at(feature, "checkout", "--detach", other_tip)
+        self.assertNotEqual(self.branch("check", repo=feature, ok=False).returncode, 0)
+        self.git_at(feature, "checkout", "feature")
+        self.assertEqual(self.branch("check", repo=feature).returncode, 0)
+
+        self.git_at(feature, "checkout", "--detach", other_tip)
+        # A detached worktree cannot move HEAD even to its own recorded tip.
+        self.git_at(feature, "checkout", "--detach", recorded, ok=False)
+        self.git_at(feature, "checkout", "feature")
+        self.assertEqual(self.branch("check", repo=feature).returncode, 0)
+
     def test_prepare_merge_requires_the_registered_source_and_allows_no_ff_merge(self):
         self.begin("integration", "adopt", branch="main", into="main")
         source = Path(self.begin("source", branch="source")["worktree"])

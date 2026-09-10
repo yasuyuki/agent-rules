@@ -170,6 +170,23 @@ def same_checkout(repo, path, name):
             and common(path).resolve() == common(repo).resolve())
 
 
+def registered_head_return(repo, state, new):
+    """Allow only a detached worktree to reattach to its recorded branch tip.
+
+    A symbolic HEAD update identifies its named target as
+    ``ref:refs/heads/<branch>``.  Requiring that target, the worktree, its
+    single registered task, the named branch ref, and the recorded tip to agree
+    limits this exception to restoring the registered checkout state.
+    """
+    path = top(repo)
+    matches = [task for task in state['tasks'].values() if task['worktree'] == path]
+    if len(matches) != 1:
+        return False
+    task = matches[0]
+    return (new == 'ref:refs/heads/' + task['branch']
+            and git(repo, 'rev-parse', '--verify', 'refs/heads/' + task['branch'], optional=True) == task['tip'])
+
+
 def default_remote(repo, remote):
     if remote.startswith('-') or remote not in (git(repo, 'remote') or '').splitlines():
         raise BranchError('choose an existing remote explicitly')
@@ -495,11 +512,14 @@ def transaction(repo, directory, state, phase, data):
         raise BranchError('invalid reference transaction')
     updates = [row for row in rows if row[2].startswith('refs/heads/')]
     # HEAD updates paired with a branch are validated through that branch.
+    # A detached checkout may return only to its own recorded branch tip.
     if phase == 'prepared' and any(r[2] == 'HEAD' for r in rows) and not updates:
         try:
             branch(repo)
         except BranchError:
-            raise BranchError('detached HEAD updates are not authorized')
+            head_rows = [row for row in rows if row[2] == 'HEAD']
+            if len(head_rows) != 1 or not registered_head_return(repo, state, head_rows[0][1]):
+                raise BranchError('detached HEAD updates are not authorized')
     if phase == 'prepared':
         checked = []
         for old, new, ref in updates:
