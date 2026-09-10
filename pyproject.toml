@@ -29,4 +29,4 @@ package-dir = {agent_rules_manager = "."}
 include-package-data = false
 
 [tool.setuptools.package-data]
-agent_rules_manager = ["placement.json"]
+agent_rules_manager = ["placement.json", "hooks/branch-hook"]

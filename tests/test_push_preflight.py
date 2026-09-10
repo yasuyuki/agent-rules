@@ -151,6 +151,7 @@ class PolicyTests(unittest.TestCase):
         state = copy.deepcopy(BASE)
         state["current_branch"] = "main"
         with tempfile.TemporaryDirectory() as directory:
+            subprocess.run(["git", "init", directory], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             path = Path(directory) / "policy.json"
             def invoke(*args):
                 output = io.StringIO()

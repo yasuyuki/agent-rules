@@ -723,6 +723,101 @@ and update the publication-status paragraph above. Do not add tokens to this
 repository or automatically publish on pushes. This change does not create
 tags, GitHub Releases or PyPI releases.
 
+## Registered work and branch enforcement
+
+`python3 bin/place.py branch --help` exposes the local Git integration. It uses
+only this public source, the selected Python runtime and repository-local Git
+configuration; no private launcher or personal path is required. Git must support
+`reference-transaction` hooks and `rev-parse --path-format` (Git 2.31 or newer).
+The runtime needs Python 3.10 or newer. Git for Windows supplies the shell used
+by the fixed dispatcher. Keep the public source available after installation.
+
+Install with `branch install --repo REPO --remote REMOTE`. This verifies the
+remote default via `ls-remote --symref`, preserves existing hooks and installs the
+fixed `hooks/branch-hook` bytes for `prepare-commit-msg`, `reference-transaction`
+and `pre-push`. `agentBranch.python`, `agentBranch.source` and `core.hooksPath`
+are explicit local configuration. Existing hooks retain arguments, input and
+exit status. A collision that cannot be preserved is rejected. Install can retry
+an interrupted owned installation; unknown files are never overwritten. Re-running
+install from a reviewed public checkout rebinds the Python source and runtime
+while preserving registrations and hook bytes. Before updating the checkout that
+supplies its own hooks, rebind from a separate reviewed source so its source hash
+remains stable during the merge. A changed dispatcher needs a separately reviewed
+hook migration; it is never silently overwritten.
+
+Register existing integration and topic checkouts with `branch begin --mode
+adopt --repo REPO --task ID --request REQUEST --branch BRANCH --worktree PATH
+--base COMMIT --into DESTINATION`. Paths are absolute. `REQUEST` references the
+existing user requirement or issue; it is not a duplicate progress ledger.
+`COMMIT` is the explicitly reviewed historical starting point and must agree
+with the remote history. The default branch is registered with itself as its
+integration destination. No historical commits before adoption are retroactively
+classified as violations. Unregistered retained branches remain untouched; their
+future updates are refused.
+
+For independent work use `branch begin --mode new --repo REPO --task ID
+--request REQUEST --branch TOPIC --worktree NEW_PATH`. Fetch the remote default
+first; the command verifies that the fetched commit still agrees with the remote.
+It creates a new topic and worktree using standard Git. `--into BRANCH` defaults
+to the verified remote default. For dependent work add `--depends-on PARENT_ID`;
+the parent tip becomes the starting point. Reuse existing work with `branch begin
+--mode continue --repo REPO --task ID`. A mismatched branch, path or common Git
+directory is rejected. Interrupted worktree creation is resumed without reset,
+stash or automatic removal. Each worktree has one lead performing Git updates.
+
+A fetched update of the **same** remote branch can be admitted with `begin
+--mode continue --task ID --repo REPO --sync`, then `git merge --ff-only
+REMOTE/BRANCH` in its registered worktree. The one-use import is pinned to the
+old and fetched new commits; unrelated fast-forwards are rejected. This does not
+identify which Git command produced the same reference transition.
+
+Prepare integration in the registered destination with `branch prepare-merge
+--repo DESTINATION_PATH --task SOURCE_ID`. Merge with `git merge --no-ff
+--no-commit SOURCE_BRANCH`, run the project's required verification, then commit.
+Both tips and the ordered parents are checked again. A dependent task can be
+integrated only after its parent has been integrated into the destination's
+history. A moved source or destination requires fresh preparation. A successful
+integration consumes the permission. A failed or interrupted commit preserves
+changes and can be retried; a source reserved by a prepared integration must wait
+for that integration to finish or retry.
+
+A user-approved cherry-pick exception is registered in its destination topic with
+`branch allow-cherry-pick --repo PATH --commit SOURCE_SHA --approval USER_REFERENCE
+--reason REASON`. Each permission is pinned to the current destination HEAD and
+one source commit, and is consumed after success. For a sequence, each current
+source needs its own applicable exception; a rejected later pick preserves
+already committed earlier picks. Conflict resolution does not broaden approval.
+Default-branch ordinary commits, unregistered reference updates, unrelated merges,
+amend and unauthorized fast-forwards fail before the reference is committed,
+including `git commit --no-verify`. Existing approval requirements for history
+rewrites remain in force; this interface does not grant rewrite permission.
+
+`branch check --repo PATH` explains inconsistencies and exits nonzero; `--json`
+provides machine output. It checks worktree ownership, tips, dependencies, public
+source and installed hook bytes and executable state. Registration, commit
+permits and integration receipts live in the Git common directory's
+`agent-branches/state.json`, shared by linked worktrees. OS locks and atomic
+writes serialize registry changes. On another clone/host, register the same work
+ID against that clone's remote history; never copy local operation permissions.
+The shared push preflight applies the same branch/tip check to installed repos,
+then retains its existing visibility, destination and history-protection policy.
+The actual pre-push hook checks all submitted refs and commits.
+
+These are accidental-misuse guards, not an isolation boundary against deliberate
+Git configuration changes. In particular, a missing hook cannot execute itself:
+remaining hooks, `branch check` and the common push preflight detect the missing
+file. Deliberately bypassing all these entrypoints is prohibited by policy.
+Changes produced by `cherry-pick --no-commit` cannot be attributed after the fact.
+The lead still judges functional relationships and the validity of verification.
+See the [Git hook contract](https://git-scm.com/docs/githooks) and
+[cherry-pick contract](https://git-scm.com/docs/git-cherry-pick).
+
+Run `python3 tests/test_branch_management.py` and
+`python3 tests/test_branch_recovery.py` for isolated real-Git tests, in
+addition to the existing rules, push preflight and installed-package checks.
+The Linux/Windows CI matrix runs the same test. CI results do not establish
+installation or behavioral acceptance on an operator's actual host.
+
 ## License
 
 MIT. See `LICENSE`.
