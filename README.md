@@ -234,9 +234,11 @@ placement or JSON source, its SSH connection may carry an optional
 is excluded from the full Windows `unregisteredDistros` diagnostic; it does not
 replace the SSH target, inner runtime principal, or config root.
 
-`start` accepts only a local `kind=direct` workspace. It verifies every managed
-location on that site before resolving the declared tool entry point, then
-preserves the child process's standard streams and exit status. For a remote
+`start` accepts only a local `kind=direct` workspace. When the site has an
+inventory binding, it requires an active environment and verifies the selected
+CLI's registration, runtime identity, effective config root, and required
+placement. A broken placement for another registered CLI does not block this
+normal start. For a remote
 workspace, run this same public command on the target host. Transport, GUI,
 authentication probes, generated wrappers, and environment-specific session
 bookkeeping are not launcher functions.
@@ -617,39 +619,41 @@ lists nothing: publishing stops when it is missing, has lost the header, or
 names a skill this repository no longer holds, because a manifest that cannot
 be read would otherwise pass for one that reports no vendored work.
 
-## Inventory checks at normal start
+## Inventory readiness and normal start
 
 An environment owner can bind a declaration's sites to inventory validation.
-Add an `INVENTORY` TSV section with `site`, `catalog`, `environment`, and
-`evidence` columns. Paths are relative to the declaration, unless absolute.
-For example, a row `local`, `environments.json`, `development`,
-`session-evidence.json` binds the `local` site to that catalog environment.
+Add an `INVENTORY` TSV section with exactly `site`, `catalog`, and `environment`
+columns. Paths are relative to the declaration, unless absolute. For example,
+a row `local`, `environments.json`, `development` binds the `local` site to
+that catalog environment.
 Every site started from a declaration containing this table needs a binding.
 
-`place.py start` checks the binding before invoking the CLI. It requires an
-active environment, registered installed tools, the management skill and reading
-binding, unchanged managed placement, matching runtime identity/config roots,
-and external initial-reading evidence. Missing evidence and pending state reject
-normal start. There is no normal-start bypass option. Existing check/apply remain
-available for repair.
+Use readiness after changing a CLI, placement, connection, or environment
+declaration:
 
-Setup integrations call the same public
+```console
+python3 bin/place.py check --declaration PLACEMENT.md --site local --readiness
+```
+
+Readiness is read-only. It resolves catalog and environment from the selected
+`INVENTORY` row and checks pending or active environments across every registered
+CLI: principal, config root, referenced site, required placement, managed bytes,
+and visible supported CLIs missing from registration. It rejects `--workspace`
+and `--scope` because it is an environment-wide check. It does not launch a CLI
+or update state. The normal transition is `pending` → repair → readiness passes
+→ `active` → behavioral acceptance through the ordinary CLI entry point.
+
+`place.py start` checks only the selected CLI's active binding and required
+placement before invoking it. It does not read session evidence or compare
+historical hashes, and another CLI's placement defect is reported by readiness
+rather than blocking the selected CLI.
+
+Setup integrations may call the same public
 `inventory_lifecycle.validate_lifecycle` function in construction mode, passing
 the constructing agent, explicit declaration, placement context, and actual
-runtime identity. Pending construction may lack initial-reading evidence but
-must have the constructing agent's skill and binding. This helper does not
+runtime identity. Pending construction must have the constructing agent's skill
+and binding. This helper does not
 perform a state transition or launch anything.
-
-Evidence is an external JSON array. Each entry identifies the descriptor,
-`session` (`continuing` or `startup`), ISO `observedAt`, `skillId`, observed
-`condition`, `applied: true`, `environmentId`, `declarationSha256`, runtime
-`principal` and `configRoot`, and the
-SHA-256 values `skillSha256`, `bindingSha256`, and `recordSha256`. `record` points
-to an actual session observation record; relative paths resolve against the
-evidence file. The skill hash covers SKILL.md source bytes; the binding hash
-covers the parsed rule body. Keep real session records outside version control.
-These references make stale or missing evidence detectable; they do not prove
-the truth of an observation or enforce subsequent model behavior.
 
 Deploy a binding only through the environment's existing setup and reviewed
 adoption flow. An unbound declaration retains the independent project's normal

@@ -292,7 +292,8 @@ def _referenced_source_ids(environments):
     return source_ids
 
 
-def load_catalog(path, purpose=None, *, probe=False, runner=subprocess.run, environment_id=None):
+def load_catalog(path, purpose=None, *, probe=False, runner=subprocess.run, environment_id=None,
+                 agent_descriptor=None, site_id=None):
     catalog_path = Path(path)
     try:
         catalog = json.loads(catalog_path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
@@ -315,6 +316,27 @@ def load_catalog(path, purpose=None, *, probe=False, runner=subprocess.run, envi
         catalog = dict(catalog)
         catalog["sources"] = {key: value for key, value in catalog["sources"].items() if key in needed}
         catalog["environments"] = environments
+    if agent_descriptor is not None:
+        # A normal CLI start proves only its selected runtime.  Keep the
+        # enclosing environment identity and the selected placement site, but
+        # do not resolve unrelated agents or remote references; readiness owns
+        # that full-environment validation.
+        catalog = dict(catalog)
+        narrowed = []
+        for item in catalog["environments"]:
+            item = dict(item)
+            agents = item.get("agents")
+            if isinstance(agents, list):
+                item["agents"] = [agent for agent in agents
+                                  if isinstance(agent, dict) and agent.get("descriptor") == agent_descriptor]
+            if site_id is not None:
+                item["refs"] = [ref for ref in _environment_refs(item)
+                                if isinstance(ref, dict) and ref.get("site") == site_id]
+            narrowed.append(item)
+        catalog["environments"] = narrowed
+        needed = _referenced_source_ids(narrowed)
+        catalog["sources"] = {key: value for key, value in catalog["sources"].items() if key in needed}
+        environments = narrowed
     sources = _sources(catalog_path, catalog, probe=probe, runner=runner)
     ids, resolved = set(), []
     for item in environments:
@@ -499,10 +521,14 @@ def probe_records(records, runner=subprocess.run, platform_name=None, report_unr
     return records
 
 
-def check_catalog(path, environment_id=None, probe=False, runner=subprocess.run):
+def check_catalog(path, environment_id=None, probe=False, runner=subprocess.run,
+                  agent_descriptor=None, site_id=None):
     """Return ``(errors, records)`` for callers such as start preflight."""
     try:
-        _catalog, sources, records = load_catalog(path, probe=probe, runner=runner, environment_id=environment_id)
+        _catalog, sources, records = load_catalog(
+            path, probe=probe, runner=runner, environment_id=environment_id,
+            agent_descriptor=agent_descriptor, site_id=site_id,
+        )
     except CatalogError as exc:
         return [str(exc)], []
     errors = []

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Project rules and skills onto the sites and workspaces a declaration names.
 
-    place.py check  --declaration <path> [--rules <dir>] [--skills <dir>]
+    place.py check  --declaration <path> [--rules <dir>] [--skills <dir>] [--site <id> --readiness]
     place.py apply  --declaration <path> [--rules <dir>] [--skills <dir>]
     place.py list   --declaration <path>
     place.py start  --declaration <path> [--rules <dir>] [--skills <dir>] <workspace> <tool> [-- <tool-argv>...]
@@ -727,6 +727,18 @@ def load_context(args):
 
 
 def check(args, *, context=None):
+    if getattr(args, "readiness", False):
+        if getattr(args, "workspace", None) or getattr(args, "scope", None):
+            raise PlacementError("--readiness cannot be combined with --workspace or --scope")
+        if not getattr(args, "site", None):
+            raise PlacementError("--readiness requires --site")
+        placement, rules, sites, workspaces, locations, exceptions, selected, skills = context if context is not None else load_context(args)
+        if args.site not in sites:
+            raise PlacementError("unknown site: " + args.site)
+        inventory_preflight(args, (placement, rules, sites, workspaces, locations, exceptions, selected, skills),
+                            args.site, mode="readiness")
+        print("readiness: OK")
+        return 0
     placement, rules, sites, workspaces, locations, exceptions, selected, skills = context if context is not None else load_context(args)
     errors, printed = check_state(rules, placement, selected, exceptions, sites, workspaces, locations, skills, check_installed=context is None)
     for path in printed:
@@ -826,27 +838,16 @@ def classify_work(args):
     return 0
 
 
-def inventory_preflight(args, context, site_id, *, resolver=shutil.which,
-                        mode="normal", constructing_agent=None):
-    """Check an explicitly bound local inventory before launching a CLI.
-
-    The optional table keeps independent public projects independent. Once a
-    site is bound, a missing catalog/evidence file is a failure, never a bypass.
-    Setup callers may request construction mode; normal start deliberately
-    exposes no construction-mode switch.
-    """
-    from types import SimpleNamespace
-    import getpass
-    import platform
-
+def inventory_binding(args, context, site_id):
+    """Resolve one site's three-column inventory binding."""
     declaration = Path(args.declaration).resolve()
     text = declaration.read_text(encoding="utf-8")
     if "<!-- BEGIN INVENTORY TSV -->" not in text:
-        return
+        return None
     rows = markdown_tsv(declaration, "INVENTORY", text)
-    required = {"site", "catalog", "environment", "evidence"}
-    if any(not required.issubset(row) for row in rows):
-        raise PlacementError("INVENTORY needs site, catalog, environment, evidence columns")
+    required = {"site", "catalog", "environment"}
+    if any(set(row) != required for row in rows):
+        raise PlacementError("INVENTORY needs exactly site, catalog, environment columns")
     if len({row["site"] for row in rows}) != len(rows):
         raise PlacementError("duplicate INVENTORY site")
     if any(row["site"] not in context[2] for row in rows):
@@ -856,32 +857,13 @@ def inventory_preflight(args, context, site_id, *, resolver=shutil.which,
         raise PlacementError("INVENTORY has no binding for selected site: " + site_id)
     if any(not binding[key].strip() for key in required):
         raise PlacementError("INVENTORY binding has an empty required value")
-    def relative(value):
-        path = Path(value)
-        return path if path.is_absolute() else declaration.parent / path
-    evidence_path = relative(binding["evidence"])
-    try:
-        try:
-            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            if mode != "construction":
-                raise
-            evidence = []
-        if not isinstance(evidence, list):
-            raise ValueError("evidence must be an array")
-        for entry in evidence:
-            if not isinstance(entry, dict):
-                raise ValueError("evidence entry must be an object")
-            record = entry.get("record")
-            if not isinstance(record, str) or not record:
-                raise ValueError("evidence entry needs a record path")
-            path = Path(record)
-            entry["record"] = str(path if path.is_absolute() else evidence_path.parent / path)
-    except (OSError, ValueError) as exc:
-        raise PlacementError("inventory evidence is unverified: " + str(exc)) from None
-    lifecycle_spec = importlib.util.spec_from_file_location("inventory_lifecycle", HERE / "inventory_lifecycle.py")
-    lifecycle = importlib.util.module_from_spec(lifecycle_spec)
-    lifecycle_spec.loader.exec_module(lifecycle)
+    catalog = Path(binding["catalog"])
+    return declaration, (catalog if catalog.is_absolute() else declaration.parent / catalog), binding["environment"]
+
+
+def current_runtime(context):
+    import getpass
+    import platform
     if os.name == "posix":
         import pwd
         user = pwd.getpwuid(os.getuid()).pw_name
@@ -892,15 +874,31 @@ def inventory_preflight(args, context, site_id, *, resolver=shutil.which,
     for name, tool in context[0]["tools"].items():
         spec = tool["configHome"]
         config_roots[name] = os.environ.get(spec.get("env", "")) or spec["default"].replace("$HOME", home)
-    principal = {"user": user, "home": home,
+    return {"user": user, "home": home,
                  "host": os.environ.get("WSL_DISTRO_NAME") or platform.system(),
                  "platform": platform.system(),
                  "configRoots": config_roots}
+
+
+def inventory_preflight(args, context, site_id, *, resolver=shutil.which,
+                        mode="normal", constructing_agent=None, target_tool=None):
+    """Check one target before start, or every registered CLI for readiness."""
+    binding = inventory_binding(args, context, site_id)
+    if binding is None:
+        if mode == "readiness":
+            raise PlacementError("--readiness requires an INVENTORY binding for the selected site")
+        return
+    declaration, catalog, environment = binding
+    from types import SimpleNamespace
+    lifecycle_spec = importlib.util.spec_from_file_location("inventory_lifecycle", HERE / "inventory_lifecycle.py")
+    lifecycle = importlib.util.module_from_spec(lifecycle_spec)
+    lifecycle_spec.loader.exec_module(lifecycle)
     errors, _record = lifecycle.validate_lifecycle(
-        relative(binding["catalog"]), context, binding["environment"],
+        catalog, context, environment,
         place_module=SimpleNamespace(**globals()), resolver=resolver,
-        current_principal=principal, session_evidence=evidence,
-        declaration_path=declaration, mode=mode, constructing_agent=constructing_agent,
+        current_principal=current_runtime(context), declaration_path=declaration,
+        mode=mode, constructing_agent=constructing_agent, target_agent=target_tool,
+        required_site=site_id,
     )
     if errors:
         raise PlacementError("inventory lifecycle check failed: " + "; ".join(errors))
@@ -936,11 +934,13 @@ def start(args, runner=subprocess.run, resolver=shutil.which):
     if tool is None:
         raise PlacementError("unknown tool: %s" % args.tool)
 
-    inventory_preflight(args, context, site_id, resolver=resolver)
+    inventory_preflight(args, context, site_id, resolver=resolver, target_tool=args.tool)
 
-    selected = filter_locations(locations, workspaces, site=site_id)
+    selected = [location for location in locations.values()
+                if location["tool"] == args.tool and site_of(location, workspaces) == site_id]
     errors, _printed = check_state(
-        rules, placement, selected, exceptions, sites, workspaces, locations, skills
+        rules, placement, selected, exceptions, sites, workspaces, locations, skills,
+        check_installed=False,
     )
     if errors:
         raise PlacementError("placement check failed: " + "; ".join(errors))
@@ -1299,6 +1299,7 @@ def main(argv):
     check_p.add_argument("--scope")
     check_p.add_argument("--environment")
     check_p.add_argument("--probe", action="store_true")
+    check_p.add_argument("--readiness", action="store_true")
     apply_p = sub.add_parser("apply")
     add_common(apply_p)
     list_p = sub.add_parser("list")
@@ -1329,7 +1330,11 @@ def main(argv):
     try:
         if args.command == "check":
             if args.catalog:
+                if args.readiness:
+                    raise PlacementError("--readiness requires --declaration, not --catalog")
                 return check_catalog(args)
+            if args.readiness and args.environment:
+                raise PlacementError("--readiness resolves environment from INVENTORY; do not pass --environment")
             return check(args)
         if args.command == "apply":
             return apply(args)
