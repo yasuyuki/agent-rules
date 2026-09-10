@@ -20,6 +20,8 @@ class RecoveryTests(BranchManagementTests):
     def test_pack_refs_preserves_registered_and_retained_branches(self):
         clone = self.root / 'packed refs'
         self.command('git', 'clone', self.remote, clone)
+        self.git_at(clone, 'config', 'user.name', 'Test User')
+        self.git_at(clone, 'config', 'user.email', 'test@example.invalid')
         self.git_at(clone, 'branch', 'retained')
         self.branch('install', repo=clone)
         for key in ('maintenance.pack-refs.enabled', 'gc.packRefs'):
