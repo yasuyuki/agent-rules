@@ -9,6 +9,7 @@ shape produced for a real repository.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import subprocess
@@ -333,6 +334,14 @@ def main() -> int:
     need_metadata = args.user_intent == "auto" and not args.temporary
     policy = load_policy(args.policy) if need_metadata and args.policy is not None else None
     output = decide(collect_state(Path(args.repo).resolve(), need_metadata), args.user_intent, args.temporary, args.oss, policy)
+    if output["decision"] == "push":
+        spec = importlib.util.spec_from_file_location("branch_management", Path(__file__).with_name("branch_management.py"))
+        branch_management = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(branch_management)
+        try:
+            branch_management.push_check(Path(args.repo).resolve(), output["remote"], output["destination"])
+        except (branch_management.BranchError, OSError, ValueError, KeyError) as exc:
+            output = result("hold", "BRANCH_CHECK_FAILED: " + str(exc))
     print(json.dumps(output, sort_keys=True, separators=(",", ":")))
     return 0
 
