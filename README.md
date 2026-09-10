@@ -242,6 +242,53 @@ left untouched. A malformed unmatched managed marker fails closed; repair that
 marker before rendering so the tool never guesses how much local text to
 remove.
 
+## Work classification
+
+Classify declared work without probing, launching, installing, connecting, or
+writing to an environment:
+
+```console
+python3 bin/place.py classify --catalog tests/fixtures/work-classification/catalog.json --work tests/fixtures/work-classification/work.json --prefer-environment isolated --json
+```
+
+Those fixture files are synthetic and runnable from this checkout; private
+catalogs and work inputs belong outside the public repository.
+
+The work document has `schemaVersion: 1` and a `work` array. Each ordinary item
+has a stable `id`, a source-record `reference`, and one or more phases. A phase
+requires `id`, `summary`, `purpose`, `requires`, and `executor`; it may include
+`environment`, `prerequisites`, `acceptance`, and `handoffs`, which default to
+empty values. `purpose` uses the catalog purposes; `requires` is an array of
+capability IDs; and `environment` is
+`{"ids":["optional-host-lock"],"mode":"normal|construction|repair"}`.
+An explicit ID permits a retained environment; a pending environment is usable
+only for construction or repair. Retired and unclassified environments are
+never eligible. `executor` is
+`{"kind":"agent|human|ci|external","state":"ready|hold|waiting|unspecified"}`
+and may include boolean `required`. The last three fields are arrays of strings.
+An excluded item instead has `id`, `reference`, and `excludedReason`; it has no
+phases. This preserves why old or completed records did not become work.
+
+Catalog environments may add a `capabilities` object. Each capability ID maps
+to `status` (`available`, `preparable`, `unavailable`, or `unknown`), `reason`,
+required string-array `evidence`, and, for `preparable`, a `preparation` route.
+Omitted capability data means unknown; it never means unavailable. The result
+lists every environment candidate, technical classification, preparation,
+unmet conditions, and readiness separately. An executor hold or an unreadable
+source therefore does not change a declared technical capability into an
+unavailable one. A `--prefer-environment` sorts that environment first but
+never relaxes a phase's purpose, state, host lock, or capability requirements.
+With `--prefer-environment`, a phase's top-level `classification` is relative
+to that preferred environment; `proposedEnvironment` is separately selected
+only from available or preparable eligible candidates. Unknown candidates stay
+visible but never become a positive proposal. Each assessment includes the
+capability evidence used for its reasons.
+
+An observer that cannot read a referenced WSL source retains that environment
+as unverified. A malformed reference remains an error when its source is
+readable. This lets another environment still be listed while making the
+missing evidence visible to classification and catalog checks.
+
 ## Agent configuration report
 
 `bin/agent_report.py` is a standalone Python 3.10+ tool: copy that one file

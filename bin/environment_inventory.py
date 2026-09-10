@@ -16,11 +16,35 @@ from pathlib import Path
 
 PURPOSES = {"normal-development", "rule-experiment", "product-development", "operator", "recovery"}
 STATES = {"pending", "active", "retained", "retired", "unclassified"}
+CAPABILITY_STATES = {"available", "preparable", "unavailable", "unknown"}
 TOOL_CONFIG_HOMES = json.loads((Path(__file__).resolve().parents[1] / "placement.json").read_text(encoding="utf-8"))["tools"]
 
 
 class CatalogError(RuntimeError):
     pass
+
+
+def validate_capabilities(value, environment_id="?"):
+    """Validate optional, declarative capability metadata without probing it."""
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        raise CatalogError("environment %s capabilities must be an object" % environment_id)
+    result = {}
+    for capability_id, item in value.items():
+        if not isinstance(capability_id, str) or not capability_id or not isinstance(item, dict) or set(item) - {"status", "reason", "evidence", "preparation"}:
+            raise CatalogError("environment %s has invalid capability" % environment_id)
+        if not isinstance(item.get("status"), str) or item["status"] not in CAPABILITY_STATES or not isinstance(item.get("reason"), str) or not item["reason"]:
+            raise CatalogError("environment %s capability needs status and reason" % environment_id)
+        evidence = item.get("evidence")
+        if not isinstance(evidence, list) or any(not isinstance(entry, str) or not entry for entry in evidence):
+            raise CatalogError("environment %s capability needs evidence strings" % environment_id)
+        if "preparation" in item and (not isinstance(item["preparation"], str) or not item["preparation"]):
+            raise CatalogError("environment %s capability preparation must be a non-empty string" % environment_id)
+        if item["status"] == "preparable" and "preparation" not in item:
+            raise CatalogError("environment %s preparable capability needs preparation" % environment_id)
+        result[capability_id] = dict(item)
+    return result
 
 
 def _unique_object(pairs):
@@ -298,6 +322,7 @@ def load_catalog(path, purpose=None, *, probe=False, runner=subprocess.run, envi
         env_id, state, purposes = item.get("id"), item.get("state"), item.get("purposes")
         if not isinstance(env_id, str) or not env_id or env_id in ids: raise CatalogError("environment IDs must be unique and non-empty")
         ids.add(env_id)
+        capabilities = validate_capabilities(item.get("capabilities", {}), env_id)
         if state not in STATES: raise CatalogError("environment %s has invalid state" % env_id)
         if not isinstance(purposes, list) or any(x not in PURPOSES for x in purposes) or (not purposes and state != "unclassified"):
             raise CatalogError("environment %s has invalid purposes" % env_id)
@@ -388,19 +413,26 @@ def load_catalog(path, purpose=None, *, probe=False, runner=subprocess.run, envi
         if connection.get("transport") == "wsl" and isinstance(connection.get("distro"), dict):
             distro_ref = connection["distro"]
             distro_source = sources.get(distro_ref.get("source"))
-            if distro_source is None or distro_source.get("unavailable"):
+            if distro_source is None:
                 raise CatalogError("environment %s has invalid WSL distro reference" % env_id)
             if distro_source["definition"]["type"] == "json-pointer":
-                valid = distro_ref.get("field") in distro_source.get("fields", {})
+                valid = isinstance(distro_ref.get("field"), str) and distro_ref["field"] in distro_source["definition"].get("pointers", {})
             else:
-                site = distro_source.get("sites", {}).get(distro_ref.get("site"))
-                valid = isinstance(distro_ref.get("field"), str) and isinstance(site, dict) and distro_ref["field"] in site
+                if distro_source.get("unavailable"):
+                    valid = isinstance(distro_ref.get("site"), str) and isinstance(distro_ref.get("field"), str) and bool(distro_ref["site"]) and bool(distro_ref["field"])
+                else:
+                    site = distro_source.get("sites", {}).get(distro_ref.get("site"))
+                    valid = isinstance(distro_ref.get("field"), str) and isinstance(site, dict) and distro_ref["field"] in site
             if not valid:
                 raise CatalogError("environment %s has invalid WSL distro reference" % env_id)
             connection = dict(connection)
-            connection["distro"], _resolution = _agent_value(distro_ref, sources)
-            if not isinstance(connection["distro"], str) or not connection["distro"]:
-                raise CatalogError("environment %s WSL distro reference must resolve to a non-empty string" % env_id)
+            if distro_source.get("unavailable"):
+                connection["distro"] = None
+                connection["distroResolution"] = "unverified: " + distro_source["unavailable"]
+            else:
+                connection["distro"], _resolution = _agent_value(distro_ref, sources)
+                if not isinstance(connection["distro"], str) or not connection["distro"]:
+                    raise CatalogError("environment %s WSL distro reference must resolve to a non-empty string" % env_id)
         descriptors = [agent["descriptor"] for agent in agents]
         if len(descriptors) != len(set(descriptors)) or any(name not in TOOL_CONFIG_HOMES for name in descriptors):
             raise CatalogError("environment %s has duplicate or unknown agent descriptor" % env_id)
@@ -410,7 +442,7 @@ def load_catalog(path, purpose=None, *, probe=False, runner=subprocess.run, envi
             config_root, config_resolution = _agent_value(agent["configRoot"], sources)
             resolved_agents.append({"descriptor": agent["descriptor"], "principal": principal, "configRoot": config_root, "resolution": principal_resolution if principal_resolution != "resolved" else config_resolution})
         allowed, reason = _candidate(state, purposes, purpose)
-        resolved.append({"id": env_id, "purposes": purposes, "state": state, "candidate": allowed, "candidateReason": reason, "refs": resolved_refs, "entrypoint": entrypoint, "connection": connection, "agents": resolved_agents, "observation": {"installed": None, "running": None, "reachable": None, "reason": "unverified: pass --probe for observational state"}})
+        resolved.append({"id": env_id, "purposes": purposes, "state": state, "candidate": allowed, "candidateReason": reason, "capabilities": capabilities, "refs": resolved_refs, "entrypoint": entrypoint, "connection": connection, "agents": resolved_agents, "observation": {"installed": None, "running": None, "reachable": None, "reason": "unverified: pass --probe for observational state"}})
     return catalog, sources, resolved
 
 

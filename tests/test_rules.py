@@ -28,6 +28,13 @@ inventory_result = subprocess.run(
 if inventory_result.returncode:
     raise AssertionError("environment inventory failed\n" + inventory_result.stdout + inventory_result.stderr)
 
+classification_result = subprocess.run(
+    [sys.executable, str(ROOT / "tests" / "test_work_classification.py")],
+    cwd=ROOT, text=True, capture_output=True,
+)
+if classification_result.returncode:
+    raise AssertionError("work classification failed\n" + classification_result.stdout + classification_result.stderr)
+
 # Exercise native Windows junctions as well as POSIX symlinks in the existing
 # cross-platform CI entry point.
 projection = subprocess.run(

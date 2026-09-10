@@ -143,6 +143,29 @@ with tempfile.TemporaryDirectory() as directory:
     else:
         raise AssertionError("invalid placement WSL distro reference was accepted")
 
+    # An observer without a readable legacy WSL source retains the environment
+    # as unverified; inaccessible evidence is not a malformed reference.
+    unreadable_wsl = environment(connection={"transport": "wsl", "distro": {
+        "source": "legacy-runtime", "site": "s4", "field": "host",
+    }})
+    write_catalog(path, {"placement": local_source, "legacy-runtime": unavailable_source}, unreadable_wsl)
+    _catalog, _sources, unreadable_records = inventory.load_catalog(path)
+    assert unreadable_records[0]["connection"]["distro"] is None
+    assert unreadable_records[0]["connection"]["distroResolution"].startswith("unverified:")
+
+    # Capability metadata is catalog data: legacy omission stays valid, but a
+    # malformed declaration is rejected by normal catalog validation too.
+    capability_catalog = environment(capabilities={"gui": {
+        "status": "available", "reason": "fixture", "evidence": [],
+    }})
+    write_catalog(path, {"placement": local_source}, capability_catalog)
+    _catalog, _sources, capability_records = inventory.load_catalog(path)
+    assert capability_records[0]["capabilities"]["gui"]["status"] == "available"
+    capability_catalog["capabilities"]["gui"].pop("evidence")
+    write_catalog(path, {"placement": local_source}, capability_catalog)
+    errors, _records = inventory.check_catalog(path)
+    assert any("capability needs evidence" in error for error in errors), errors
+
     numeric_distro = root / "numeric-distro.json"
     numeric_distro.write_text(json.dumps({"distro": 24}), encoding="utf-8")
     numeric_source = {

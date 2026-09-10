@@ -31,6 +31,9 @@ import tempfile
 import uuid
 from pathlib import Path
 
+# Keep every public command usable from a read-only source checkout.  This is
+# material to classify's read-only contract: local imports must not emit pyc.
+sys.dont_write_bytecode = True
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -44,6 +47,10 @@ spec.loader.exec_module(agent_rules)
 inventory_spec = importlib.util.spec_from_file_location("environment_inventory", HERE / "environment_inventory.py")
 environment_inventory = importlib.util.module_from_spec(inventory_spec)
 inventory_spec.loader.exec_module(environment_inventory)
+
+classification_spec = importlib.util.spec_from_file_location("work_classification", HERE / "work_classification.py")
+work_classification = importlib.util.module_from_spec(classification_spec)
+classification_spec.loader.exec_module(work_classification)
 
 
 class PlacementError(RuntimeError):
@@ -804,6 +811,21 @@ def check_catalog(args):
     return 0 if not errors else 1
 
 
+def classify_work(args):
+    """Classify work without probing or changing any environment."""
+    try:
+        results = work_classification.classify(
+            args.catalog, args.work, args.prefer_environment
+        )
+    except work_classification.WorkClassificationError as exc:
+        raise PlacementError(str(exc)) from None
+    if args.json:
+        print(json.dumps(results, ensure_ascii=False, sort_keys=True))
+    else:
+        print(work_classification.render_table(results))
+    return 0
+
+
 def inventory_preflight(args, context, site_id, *, resolver=shutil.which,
                         mode="normal", constructing_agent=None):
     """Check an explicitly bound local inventory before launching a CLI.
@@ -1286,6 +1308,11 @@ def main(argv):
     list_p.add_argument("--purpose")
     list_p.add_argument("--json", action="store_true")
     list_p.add_argument("--probe", action="store_true")
+    classify_p = sub.add_parser("classify", help="read-only work/environment classification")
+    classify_p.add_argument("--catalog", required=True)
+    classify_p.add_argument("--work", required=True)
+    classify_p.add_argument("--prefer-environment")
+    classify_p.add_argument("--json", action="store_true")
     start_p = sub.add_parser("start")
     start_p.add_argument("--declaration", required=True)
     start_p.add_argument("--rules", action="append")
@@ -1310,6 +1337,8 @@ def main(argv):
             if args.catalog:
                 return list_catalog(args)
             return list_workspaces(args)
+        if args.command == "classify":
+            return classify_work(args)
         if args.command == "start":
             if args.tool_args[:1] == ["--"]:
                 args.tool_args = args.tool_args[1:]

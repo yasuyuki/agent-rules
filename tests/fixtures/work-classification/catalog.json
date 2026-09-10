@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "sources": {
+    "synthetic-placement": {
+      "type": "placement-tsv",
+      "host": "fixture",
+      "paths": {"default": "PLACEMENT.md"}
+    }
+  },
+  "environments": [
+    {
+      "id": "isolated",
+      "purposes": ["normal-development"],
+      "state": "active",
+      "refs": [{"source": "synthetic-placement", "site": "isolated"}],
+      "entrypoint": null,
+      "agents": [],
+      "capabilities": {
+        "source-edit": {"status": "available", "reason": "synthetic source checkout", "evidence": ["fixture"]},
+        "extra-tool": {"status": "preparable", "reason": "synthetic tool is absent", "evidence": ["fixture"], "preparation": "documented synthetic setup"},
+        "windows-gui": {"status": "unavailable", "reason": "Linux fixture has no Windows desktop", "evidence": ["fixture"]}
+      }
+    },
+    {
+      "id": "windows-desktop",
+      "purposes": ["operator"],
+      "state": "active",
+      "refs": [{"source": "synthetic-placement", "site": "windows"}],
+      "entrypoint": null,
+      "agents": [],
+      "capabilities": {
+        "windows-gui": {"status": "available", "reason": "synthetic desktop", "evidence": ["fixture"]}
+      }
+    }
+  ]
+}
