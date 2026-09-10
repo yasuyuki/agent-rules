@@ -257,6 +257,9 @@ def install(args):
         git(repo, 'config', '--local', 'agentBranch.python', state['python'])
         git(repo, 'config', '--local', 'agentBranch.source', state['source'])
         git(repo, 'config', '--local', 'core.hooksPath', str(target))
+        # The hook cannot distinguish loose-ref pruning from branch deletion.
+        git(repo, 'config', '--local', 'maintenance.pack-refs.enabled', 'false')
+        git(repo, 'config', '--local', 'gc.packRefs', 'false')
         assert_install(repo, directory, state)
         state.pop('installing')
         save(directory, state)
@@ -500,10 +503,12 @@ def transaction(repo, directory, state, phase, data):
     if phase == 'prepared':
         checked = []
         for old, new, ref in updates:
+            zero = '0' * len(new)
+            if (new != zero and old in (zero, new)
+                    and git(repo, 'rev-parse', '--verify', ref + '^{commit}', optional=True) == new):
+                continue  # Packing refs changes storage, not the already-visible branch tip.
             name = ref[len('refs/heads/'):]
             _, task = task_for(state, name)
-            if old == new and new == task['tip'] and oid(repo, ref) == new:
-                continue  # Git worktree setup can report an unchanged branch ref.
             permit = state['permits'].get(name)
             if not permit or permit['old'] != old:
                 raise BranchError('unapproved branch update: ' + name + ' (' + old + ' -> ' + new + ')')
