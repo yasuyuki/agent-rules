@@ -263,6 +263,8 @@ class BranchManagementTests(unittest.TestCase):
     def test_retries_a_commit_after_the_preserved_hook_rejects_it(self):
         legacy = self.root / "retry legacy"
         self.command("git", "clone", self.remote, legacy)
+        self.git_at(legacy, "config", "user.name", "Test User")
+        self.git_at(legacy, "config", "user.email", "test@example.invalid")
         original = legacy / ".git" / "hooks" / "prepare-commit-msg"
         original.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
         original.chmod(0o755)
