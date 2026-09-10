@@ -214,7 +214,11 @@ limits the reported target while still rejecting an unknown ID.
 A remote source can declare `probe: {"transport":"ssh","target":"alias",
 "configPaths":{"windows":"C:/config/alias.conf"}}` and its absolute remote
 `path`. The explicit config file is parsed as data: an exact `Host` block with
-hostname, user, port, identity, known-hosts file and connection timeout. Executable
+hostname, user, port, identity, known-hosts file and connection timeout. After
+config values and inline probe fields are combined, `user`, `port`, `identityFile`,
+`knownHosts` and `connectTimeout` must all be explicitly non-empty; missing values
+are rejected before SSH runs. Inline `target` remains the fallback when the
+config omits `HostName`. Executable
 SSH directives and includes are rejected; the probe passes explicit options to
 SSH with user/system config disabled and reads only the declared file. An
 environment's `connection: {"transport":"ssh","source":"source-id"}` reuses

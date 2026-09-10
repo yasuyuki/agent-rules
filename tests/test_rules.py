@@ -387,7 +387,7 @@ artifact\tlocation_id\trequirement\treason
     assert wsl_calls == [["wsl.exe", "--list", "--quiet"], ["wsl.exe", "--list", "--running", "--quiet"]]
 
     ssh_config = root / "probe.conf"
-    ssh_config.write_text("Host remote\n  HostName example.test\n  User agent\n  IdentityFile /tmp/id\n  UserKnownHostsFile /tmp/known\n", encoding="utf-8")
+    ssh_config.write_text("Host remote\n  HostName example.test\n  User agent\n  Port 22\n  IdentityFile /tmp/id\n  UserKnownHostsFile /tmp/known\n  ConnectTimeout 5\n", encoding="utf-8")
     remote_catalog = root / "remote-catalog.json"
     remote_catalog.write_text(json.dumps({"schemaVersion": 1, "sources": {"remote": {
         "type": "placement-tsv", "host": "remote", "path": "/policy/PLACEMENT.md", "paths": {},

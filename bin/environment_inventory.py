@@ -163,9 +163,9 @@ def _explicit_ssh_argv(probe, observer):
     argv = ["ssh", "-F", os.devnull, "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "UpdateHostKeys=no", "-o", "ClearAllForwardings=yes", "-o", "PermitLocalCommand=no", "-o", "ControlMaster=no"]
     for key, option in (("user", "User"), ("port", "Port"), ("identityFile", "IdentityFile"), ("knownHosts", "UserKnownHostsFile"), ("connectTimeout", "ConnectTimeout")):
         value = probe.get(key)
-        if value is not None:
-            if not isinstance(value, (str, int)) or not str(value): raise CatalogError("source probe has invalid %s" % key)
-            argv += ["-o", "%s=%s" % (option, value)]
+        if isinstance(value, bool) or not isinstance(value, (str, int)) or not str(value).strip():
+            raise CatalogError("source probe needs explicit non-empty %s" % key)
+        argv += ["-o", "%s=%s" % (option, value)]
     return argv + ["-o", "IdentitiesOnly=yes", "-o", "ForwardAgent=no", probe["target"]]
 
 

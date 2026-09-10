@@ -253,3 +253,68 @@ Host target
         assert "proxycommand" in str(exc)
     else:
         raise AssertionError("executable SSH config directive was accepted")
+
+    # Missing connection settings must fail before invoking any SSH runner,
+    # both for config files and for inline declarations.
+    fields = {
+        "user": ("User", "agent"),
+        "port": ("Port", 22),
+        "identityFile": ("IdentityFile", "/test/id"),
+        "knownHosts": ("UserKnownHostsFile", "/test/known_hosts"),
+        "connectTimeout": ("ConnectTimeout", 5),
+    }
+
+    def check_probe(declaration):
+        source = {"type": "json-pointer", "host": "remote", "paths": {},
+                  "path": "/test/source.json", "pointers": {"user": "/user"},
+                  "probe": declaration}
+        runner = mock.Mock(return_value=subprocess.CompletedProcess([], 0, '{"user":"agent"}', ""))
+        result = inventory._sources(path, {"sources": {"remote": source}}, probe=True, runner=runner)
+        assert result["remote"]["probed"] is True
+        runner.assert_called_once()
+        return runner.call_args.args[0]
+
+    for mode in ("config", "inline"):
+        for missing in fields:
+            for invalid in (None, "", "   "):
+                declaration = {"transport": "ssh", "target": "target"}
+                values = {key: value for key, (_option, value) in fields.items()}
+                if invalid is None:
+                    del values[missing]
+                else:
+                    values[missing] = invalid
+                if mode == "config":
+                    config.write_text("Host target\n  HostName example.test\n" + "".join(
+                        "  %s %s\n" % (fields[key][0], value) for key, value in values.items()), encoding="utf-8")
+                    declaration["configPaths"] = {"default": str(config)}
+                else:
+                    declaration.update(values)
+                runner = mock.Mock()
+                source = {"type": "json-pointer", "host": "remote", "paths": {},
+                          "path": "/test/source.json", "pointers": {"user": "/user"},
+                          "probe": declaration}
+                try:
+                    inventory._sources(path, {"sources": {"remote": source}}, probe=True, runner=runner)
+                except inventory.CatalogError as exc:
+                    assert missing in str(exc), str(exc)
+                else:
+                    raise AssertionError("missing SSH %s accepted in %s" % (missing, mode))
+                runner.assert_not_called()
+
+    complete = {"transport": "ssh", "target": "example.test",
+                **{key: value for key, (_option, value) in fields.items()}}
+    argv = check_probe(complete)
+    for option, value in fields.values():
+        assert "%s=%s" % (option, value) in argv
+
+    # Validate the merged result: inline values may fill omissions, while
+    # explicitly supplied config values keep their existing precedence.
+    config.write_text("Host target\n  HostName example.test\n  User configured\n", encoding="utf-8")
+    argv = check_probe(dict(complete, target="target", configPaths={"default": str(config)}))
+    assert "User=configured" in argv and "User=agent" not in argv
+    assert argv[-2] == "example.test"
+
+    config.write_text("Host target\n" + "".join(
+        "  %s %s\n" % (option, value) for option, value in fields.values()), encoding="utf-8")
+    argv = check_probe(probe)
+    assert argv[-2] == "target"
