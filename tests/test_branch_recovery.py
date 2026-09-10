@@ -85,6 +85,42 @@ class RecoveryTests(BranchManagementTests):
                     '--branch', 'main', '--worktree', str(clone), '--base', 'HEAD', ok=False)
         self.assertNotIn('wrong', self.read_state()['tasks'])
 
+    def test_retire_completes_when_the_worktree_directory_is_already_gone(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        worktree = self.integrate('source')
+        tip = self.git('rev-parse', 'refs/heads/source').stdout.strip()
+        shutil.rmtree(worktree)  # Crash or manual deletion before the ledger was closed.
+        self.branch('retire', '--task', 'source')
+        checked = json.loads(self.branch('check', '--json').stdout)
+        self.assertTrue(checked['ok'], checked)
+        self.assertNotIn('source', checked['tasks'])
+        self.assertNotIn(str(worktree), self.git('worktree', 'list').stdout)
+        self.assertEqual(self.git('rev-parse', 'refs/heads/source').stdout.strip(), tip)
+
+    def test_retire_refuses_a_checkout_holding_the_registered_hook_source(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        worktree = self.integrate('source')
+        copied = worktree / 'reviewed source'
+        (copied / 'bin').mkdir(parents=True)
+        (copied / 'hooks').mkdir()
+        shutil.copyfile(ROOT / 'bin/branch_management.py', copied / 'bin/branch_management.py')
+        shutil.copyfile(ROOT / 'hooks/branch-hook', copied / 'hooks/branch-hook')
+        state = self.read_state()
+        original = state['source']
+        state['source'] = str(copied)
+        self.write_state(state)
+        self.git('config', '--local', 'agentBranch.source', str(copied))
+        # Retiring this checkout would delete the dispatcher every hook runs.
+        self.assertIn('rebind', self.branch('retire', '--task', 'source', ok=False).stderr)
+        self.assertTrue((copied / 'bin/branch_management.py').exists())
+        state = self.read_state()
+        state['source'] = original
+        self.write_state(state)
+        self.git('config', '--local', 'agentBranch.source', original)
+        shutil.rmtree(copied)
+        self.branch('retire', '--task', 'source')
+        self.assertFalse(worktree.exists())
+
     def test_new_commit_tree_must_equal_actual_prepared_index(self):
         topic = Path(self.begin('feature', branch='feature')['worktree'])
         old = self.git_at(topic, 'rev-parse', 'HEAD').stdout.strip()

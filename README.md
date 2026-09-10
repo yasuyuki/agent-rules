@@ -788,6 +788,33 @@ integration consumes the permission. A failed or interrupted commit preserves
 changes and can be retried; a source reserved by a prepared integration must wait
 for that integration to finish or retry.
 
+Close a finished registration with `branch retire --repo REPO --task ID`. It
+removes the registered worktree and drops the registration; the branch and its
+commits are kept. "Finished" means the ledger's integration receipt, not
+`git branch --merged`: the receipt's source must equal both the registered tip
+and the branch's current commit, and its merge commit must be an ancestor of the
+registered destination. Work integrated into a registered topic is finished even
+though it never reached the default branch, and a branch merged somewhere else is
+not. Retirement is refused for the default-branch registration, the repository's
+own working tree, the checkout the command is run from, a checkout holding the
+registered `agentBranch.source` or `agentBranch.python`, work another
+registration depends on or integrates into, a branch with an outstanding permit,
+prepared integration or cherry-pick exception, and a checkout with uncommitted,
+untracked or ignored files. Ignored files count because a retired checkout can
+contain another repository's registered worktree. Removal uses `git worktree
+remove` without `--force`; nothing is reset, stashed or force-deleted, and a
+refusal leaves both the registration and the files as they are.
+
+The work identifier, branch name and path become available for new work. The
+retained branch is now unregistered, so its future updates are refused like any
+other retained branch; re-register it with `git worktree add PATH BRANCH` and
+`begin --mode adopt`. Branch deletion is not part of this command. An interrupted
+retirement is completed by running the same command again: worktree removal is a
+no-op once the directory is gone, and a stale administrative record is pruned
+(metadata only, never a file, and repository-wide). There is no bulk mode, no age
+or count criterion and no abandonment path; each retirement names one work
+identifier and is justified by that work's own integration receipt.
+
 A user-approved cherry-pick exception is registered in its destination topic with
 `branch allow-cherry-pick --repo PATH --commit SOURCE_SHA --approval USER_REFERENCE
 --reason REASON`. Each permission is pinned to the current destination HEAD and

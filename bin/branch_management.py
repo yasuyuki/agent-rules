@@ -170,6 +170,18 @@ def same_checkout(repo, path, name):
             and common(path).resolve() == common(repo).resolve())
 
 
+def within(child, parent):
+    child, parent = Path(child).resolve(), Path(parent).resolve()
+    return child == parent or parent in child.parents
+
+
+def main_worktree(repo):
+    for line in git(repo, 'worktree', 'list', '--porcelain').splitlines():
+        if line.startswith('worktree '):
+            return str(Path(line[len('worktree '):]).resolve())
+    raise BranchError('repository has no working tree')
+
+
 def default_remote(repo, remote):
     if remote.startswith('-') or remote not in (git(repo, 'remote') or '').splitlines():
         raise BranchError('choose an existing remote explicitly')
@@ -399,6 +411,85 @@ def begin(args):
             current['tasks'][args.task].pop('creating', None)
             save(directory, current)
             output = {'task': args.task, **current['tasks'][args.task]}
+    return output
+
+
+def retirement_checks(repo, state, key):
+    """Everything that must hold before a finished registration is closed.
+
+    Refusal leaves both the registration and the files as they are. The
+    directory checks are skipped once the checkout is gone, so the same
+    conditions can be re-evaluated after removal."""
+    task = state['tasks'].get(key)
+    if task is None:
+        raise BranchError('unregistered work item: ' + key)
+    name, path = task['branch'], task['worktree']
+    if name == state['default']:
+        raise BranchError('the default branch registration is not retired')
+    if Path(path).resolve() == Path(main_worktree(repo)).resolve():
+        raise BranchError('the repository working tree is not retired')
+    if top(repo) == path:
+        raise BranchError('retire from another checkout of this repository')
+    # Removing the registered dispatcher source or runtime would break every
+    # hook, commit and push in each repository installed from it.
+    for label, value in [('source', state['source']), ('python', state['python'])]:
+        if within(value, path):
+            raise BranchError('registered ' + label + ' lives in this checkout; '
+                              'rebind from another reviewed source first')
+    done = task.get('integrated')
+    if not done or done['source'] != task['tip']:
+        raise BranchError('work is not integrated into its registered destination')
+    if oid(repo, 'refs/heads/' + name) != task['tip']:
+        raise BranchError('registered branch tip changed outside enforcement')
+    if not ancestor(repo, done['commit'], 'refs/heads/' + done['destination']):
+        raise BranchError('integration is not present in the destination history')
+    for other, value in state['tasks'].items():
+        if other != key and (value['depends_on'] == key or value['into'] == name):
+            raise BranchError('another registration depends on or integrates into this work: ' + other)
+    if (state['permits'].get(name) or state['merges'].get(name)
+            or any(ticket['task'] == key for ticket in state['merges'].values())
+            or any(pick.startswith(name + ':') for pick in state['picks'])):
+        raise BranchError('in-flight permit or prepared integration; finish or retry it first')
+    if Path(path).exists():
+        if not same_checkout(repo, path, name):
+            raise BranchError('registered worktree has changed')
+        if git(path, 'status', '--porcelain', '--ignored'):
+            raise BranchError('checkout has uncommitted, untracked or ignored files; preserve and inspect')
+    return task
+
+
+def retire(args):
+    """Close a finished registration: remove its worktree, keep its branch.
+
+    The branch and its commits stay, unregistered, so nothing becomes
+    unreachable and no reference transaction is needed. Only the final removal
+    from `tasks` writes the registration, so an interrupted run is completed by
+    running the same command again."""
+    repo = Path(args.repo).resolve()
+    with locked(repo) as (directory, state):
+        assert_install(repo, directory, state)
+        reconcile(repo, state)
+        task = retirement_checks(repo, state, args.task)
+        save(directory, state)
+        name, path = task['branch'], task['worktree']
+        output = {'task': args.task, 'branch': name, 'worktree': path, 'tip': task['tip'],
+                  'destination': task['integrated']['destination'],
+                  'retired': True, 'branch_retained': True}
+    # Outside the lock: Git's own hooks take the same non-reentrant lock.
+    if Path(path).exists():
+        git(repo, 'worktree', 'remove', path)  # never --force
+        if Path(path).exists():
+            raise BranchError('worktree removal left the checkout in place')
+    listed = [str(Path(line[len('worktree '):]).resolve())
+              for line in git(repo, 'worktree', 'list', '--porcelain').splitlines()
+              if line.startswith('worktree ')]
+    if path in listed:
+        # Administrative records only; pruning never removes a file.
+        git(repo, 'worktree', 'prune')
+    with locked(repo) as (directory, current):
+        retirement_checks(repo, current, args.task)
+        current['tasks'].pop(args.task)
+        save(directory, current)
     return output
 
 
@@ -657,7 +748,7 @@ def main(argv=None):
             return hook(argv[1], argv[2:])
         parser = argparse.ArgumentParser(description=__doc__)
         sub = parser.add_subparsers(dest='command', required=True)
-        for name in ('install', 'begin', 'check', 'prepare-merge', 'allow-cherry-pick'):
+        for name in ('install', 'begin', 'check', 'retire', 'prepare-merge', 'allow-cherry-pick'):
             p = sub.add_parser(name)
             p.add_argument('--repo', default='.')
             p.add_argument('--json', action='store_true')
@@ -669,13 +760,13 @@ def main(argv=None):
                 for flag in ('request', 'branch', 'worktree', 'base', 'into', 'depends-on'):
                     p.add_argument('--' + flag)
                 p.add_argument('--sync', action='store_true')
-            elif name == 'prepare-merge':
+            elif name in ('retire', 'prepare-merge'):
                 p.add_argument('--task', required=True)
             elif name == 'allow-cherry-pick':
                 for flag in ('commit', 'approval', 'reason'):
                     p.add_argument('--' + flag, required=True)
         args = parser.parse_args(argv)
-        value = {'install': install, 'begin': begin, 'check': check,
+        value = {'install': install, 'begin': begin, 'check': check, 'retire': retire,
                  'prepare-merge': prepare_merge, 'allow-cherry-pick': allow_pick}[args.command](args)
         if args.command == 'check' and not args.json:
             print('OK: registered worktrees and hooks agree' if value['ok'] else 'FAIL: ' + '; '.join(value['errors']))
