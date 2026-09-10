@@ -101,6 +101,9 @@ class RecoveryTests(BranchManagementTests):
         self.assertEqual(self.git('rev-parse', 'HEAD').stdout.strip(), merged)
 
     def test_push_checks_actual_refs_and_shared_preflight(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        denied = self.git('commit', '--allow-empty', '--no-verify', '-m', 'direct main', ok=False)
+        self.assertIn('integration-only', denied.stderr)
         topic = Path(self.begin('feature', branch='feature')['worktree'])
         self.git_at(topic, 'commit', '--allow-empty', '-m', 'feature')
         management.push_check(topic, 'origin', 'feature')
@@ -119,6 +122,33 @@ class RecoveryTests(BranchManagementTests):
                               '--user-intent', 'push')
         self.assertEqual(json.loads(result.stdout)['decision'], 'hold')
         self.git_at(topic, 'commit', '--allow-empty', '--no-verify', '-m', 'missing hook', ok=False)
+
+
+    def test_previous_push_hook_keeps_stdin_arguments_and_exit_code(self):
+        clone = self.root / 'legacy push'
+        self.command('git', 'clone', self.remote, clone)
+        previous = clone / '.git/hooks/pre-push'
+        previous.write_text(
+            '#!/bin/sh\nprintf "%s\\n" "$@" > previous-args\n'
+            'cat > previous-input\n[ -f deny-push ] && exit 41\nexit 0\n',
+            encoding='utf-8', newline='\n')
+        previous.chmod(0o755)
+        self.branch('install', repo=clone)
+        self.begin('main', 'adopt', repo=clone, branch='main', into='main')
+        topic = Path(self.begin('topic', repo=clone, branch='topic')['worktree'])
+        tip = self.git_at(topic, 'rev-parse', 'HEAD').stdout.strip()
+        payload = f"refs/heads/topic {tip} refs/heads/topic {'0' * len(tip)}\n"
+        args = (sys.executable, str(ROOT / 'bin/branch_management.py'), 'hook',
+                'pre-push', 'origin', str(self.remote))
+        self.command(*args, cwd=topic, input=payload)
+        self.assertEqual((topic / 'previous-args').read_text().splitlines(), ['origin', str(self.remote)])
+        self.assertEqual((topic / 'previous-input').read_text(), payload)
+        (topic / 'deny-push').touch()
+        self.assertEqual(self.command(*args, cwd=topic, input=payload, ok=False).returncode, 41)
+        if os.name != 'nt':
+            hooks = Path(self.git_at(topic, 'config', '--get', 'core.hooksPath').stdout.strip())
+            (hooks / 'pre-push.previous').chmod(0o644)
+            self.branch('check', repo=topic, ok=False)
 
 
 def load_tests(loader, tests, pattern):
