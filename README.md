@@ -805,7 +805,8 @@ Prepare integration in the registered destination with `branch prepare-merge
 --no-commit SOURCE_BRANCH`, run the project's required verification, then commit.
 Both tips and the ordered parents are checked again. A dependent task can be
 integrated only after its parent has been integrated into the destination's
-history. A moved source or destination requires fresh preparation. A successful
+history, or directly into that parent when it is the registered destination
+(its pinned HEAD already supplies the dependency). A moved source or destination requires fresh preparation. A successful
 integration consumes the permission. A failed or interrupted commit preserves
 changes and can be retried; a source reserved by a prepared integration must wait
 for that integration to finish or retry.
@@ -831,6 +832,24 @@ ID against that clone's remote history; never copy local operation permissions.
 The shared push preflight applies the same branch/tip check to installed repos,
 then retains its existing visibility, destination and history-protection policy.
 The actual pre-push hook checks all submitted refs and commits.
+
+To publish an explicitly requested release tag, first create the local tag, then
+register `branch allow-tag-push --repo PATH --remote REMOTE --tag TAG_NAME
+--commit FULL_COMMIT_SHA --approval USER_REFERENCE`. The tag name is relative to
+`refs/tags/`; the commit must be a full object ID. The command requires a
+registered checkout and pins the tag's raw object (including its annotation),
+peeled commit, remote name and URL. Both lightweight and annotated tags work.
+Exactly one fetch URL and one push URL must match the installed remote URL;
+alternate push URLs are not supported by this exception. The remote tag must
+not exist. Publish with `git push REMOTE refs/tags/TAG_NAME`.
+
+The hook admits only creation of that exact tag at that exact destination.
+Changed tags, tag replacement/deletion and unapproved refs in the same push are
+rejected. After the whole batch passes, the hook consumes each tag permission
+before transport, because pre-push cannot observe the server's final result.
+A transport failure or `--dry-run` therefore needs re-registration before a
+retry; reuse the same approval reference only while its scope still applies.
+This does not authorize history rewriting or bypass the existing branch checks.
 
 These are accidental-misuse guards, not an isolation boundary against deliberate
 Git configuration changes. In particular, a missing hook cannot execute itself:

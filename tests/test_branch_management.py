@@ -97,6 +97,112 @@ class BranchManagementTests(unittest.TestCase):
         hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         self.branch("check", repo=legacy, ok=False)
 
+    def approve_tag(self, name="v1", commit=None, **kwargs):
+        commit = commit or self.git("rev-parse", "HEAD").stdout.strip()
+        return self.branch("allow-tag-push", "--remote", "origin", "--tag", name,
+                           "--commit", commit, "--approval", "user-release-request", **kwargs)
+
+    def test_explicit_new_tag_pushes_preserve_raw_object_and_commit(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        commit = self.git("rev-parse", "HEAD").stdout.strip()
+        for name, args in (("v-light", ()), ("v-annotated", ("-a", "-m", "Release"))):
+            self.git("tag", *args, name)
+            self.git("push", "origin", "refs/tags/" + name, ok=False)
+            ticket = json.loads(self.approve_tag(name).stdout)
+            self.assertEqual(ticket["commit"], commit)
+            self.git("push", "origin", "refs/tags/" + name)
+            remote = self.git_at(self.remote, "rev-parse", "refs/tags/" + name).stdout.strip()
+            self.assertEqual(remote, ticket["object"])
+            self.assertEqual(self.git_at(self.remote, "rev-parse", name + "^{commit}").stdout.strip(), commit)
+            self.approve_tag(name, ok=False)  # No remote replacement permission.
+            self.git("push", "origin", ":refs/tags/" + name, ok=False)
+        self.branch("check")
+
+    def test_tag_approval_rejects_noncanonical_or_wrong_commit(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        self.git("tag", "v1")
+        self.approve_tag(commit="HEAD", ok=False)
+        self.approve_tag("refs/tags/v1", ok=False)
+        self.approve_tag("missing", ok=False)
+        self.approve_tag("bad..name", ok=False)
+        self.branch("allow-tag-push", "--remote", "origin", "--tag", "v1", "--commit",
+                    self.git("rev-parse", "HEAD").stdout.strip(), "--approval", " ", ok=False)
+        topic = Path(self.begin("feature", branch="feature")["worktree"])
+        (topic / "change").write_text("changed\n", encoding="utf-8")
+        self.git_at(topic, "add", "change")
+        self.git_at(topic, "commit", "-m", "change")
+        self.approve_tag(commit=self.git_at(topic, "rev-parse", "HEAD").stdout.strip(), ok=False)
+
+    def test_tag_batch_rejection_preserves_exact_permission(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        self.git("tag", "-a", "v1", "-m", "approved annotation")
+        raw = self.git("rev-parse", "refs/tags/v1").stdout.strip()
+        self.git("tag", "v2")
+        self.approve_tag()
+        self.git("push", "origin", "refs/tags/v1", "refs/tags/v2", ok=False)
+        self.assertEqual(self.git("ls-remote", "--tags", "origin").stdout, "")
+        # Even another annotation at the same commit is a different artifact.
+        self.git("tag", "-f", "-a", "v1", "-m", "unapproved annotation")
+        self.git("push", "origin", "refs/tags/v1", ok=False)
+        self.git("update-ref", "refs/tags/v1", raw)
+        self.git("push", "origin", "HEAD:refs/tags/v1", ok=False)
+        self.git("push", "origin", "refs/tags/v1:refs/tags/renamed", ok=False)
+        self.git("push", "origin", "refs/tags/v1")
+
+    def test_tag_destination_is_pinned_at_approval_and_push(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        self.git("tag", "v1")
+        other = self.root / "other.git"
+        self.command("git", "clone", "--bare", self.remote, other)
+        self.git("remote", "add", "other", str(other))
+        self.approve_tag()
+        self.git("push", "other", "refs/tags/v1", ok=False)
+        self.git("remote", "set-url", "--push", "origin", str(other))
+        self.approve_tag(ok=False)
+        self.git("push", "origin", "refs/tags/v1", ok=False)
+        self.git("config", "--unset-all", "remote.origin.pushurl")
+        self.git("config", "--add", "remote.origin.url", str(other))
+        self.approve_tag(ok=False)
+        self.git("push", "origin", "refs/tags/v1", ok=False)
+        self.git("config", "--unset-all", "remote.origin.url")
+        self.git("config", "remote.origin.url", str(self.remote))
+        raw = self.git("rev-parse", "refs/tags/v1").stdout.strip()
+        row = "refs/tags/v1 %s refs/tags/v1 %s\n" % (raw, "0" * len(raw))
+        hook = Path(self.git("config", "--get", "core.hooksPath").stdout.strip()) / "pre-push"
+        shell = "sh"
+        if os.name == "nt":
+            exec_path = Path(self.git("--exec-path").stdout.strip())
+            shell = next(str(parent / "usr/bin/sh.exe") for parent in exec_path.parents
+                         if (parent / "usr/bin/sh.exe").is_file())
+        # Exercise the actual hook with an inconsistent transport URL and a
+        # duplicate batch, neither of which Git normally emits itself.
+        denied = self.command(shell, str(hook), "origin", str(other), cwd=self.repo, input=row, ok=False)
+        self.assertIn("tag push destination differs", denied.stderr)
+        denied = self.command(shell, str(hook), "origin", str(self.remote), cwd=self.repo, input=row + row, ok=False)
+        self.assertIn("duplicate tag push destination", denied.stderr)
+        self.git("push", "origin", "refs/tags/v1")
+        self.assertEqual(self.git_at(other, "show-ref", "--tags", ok=False).stdout, "")
+
+    def test_failed_transport_consumes_tag_ticket_and_remote_race_cannot_replace(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        self.git("tag", "-a", "v1", "-m", "release")
+        self.approve_tag()
+        reject = self.remote / "hooks" / "pre-receive"
+        reject.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8", newline="\n")
+        reject.chmod(0o755)
+        self.git("push", "origin", "refs/tags/v1", ok=False)
+        reject.unlink()
+        denied = self.git("push", "origin", "refs/tags/v1", ok=False)
+        self.assertIn("tag push needs", denied.stderr)
+        self.approve_tag()
+        # Another publisher creates the tag after approval. Even an explicit
+        # --force cannot spend this ticket to replace the remote tag.
+        original = self.git_at(self.remote, "rev-parse", "HEAD").stdout.strip()
+        self.git_at(self.remote, "tag", "v1", original)
+        self.git("push", "--force", "origin", "refs/tags/v1", ok=False)
+        self.git("push", "origin", ":refs/tags/v1", ok=False)
+        self.assertEqual(self.git_at(self.remote, "rev-parse", "refs/tags/v1").stdout.strip(), original)
+
     def test_new_adopt_continue_and_child_ordering(self):
         adopted = self.begin("integration", "adopt", branch="main", into="main")
         self.assertIsInstance(adopted, dict)
@@ -202,6 +308,23 @@ class BranchManagementTests(unittest.TestCase):
         self.git("commit", "-m", "unprepared merge", ok=False)
         self.branch("prepare-merge", "--task", "source")
         self.git("commit", "-m", "merge source")
+
+    def test_child_can_merge_into_its_own_registered_parent(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        parent = Path(self.begin("parent", branch="parent")["worktree"])
+        child = Path(self.begin("child", branch="child", depends_on="parent", into="parent")["worktree"])
+        (child / "child-change").write_text("child\n", encoding="utf-8")
+        self.git_at(child, "add", "child-change")
+        self.git_at(child, "commit", "-m", "child change")
+        parent_tip = self.git_at(parent, "rev-parse", "HEAD").stdout.strip()
+        child_tip = self.git_at(child, "rev-parse", "HEAD").stdout.strip()
+        self.branch("prepare-merge", "--task", "child", ok=False)  # Wrong destination.
+        self.branch("prepare-merge", "--task", "child", repo=parent)
+        self.git_at(parent, "merge", "--no-ff", "--no-commit", "child")
+        self.git_at(parent, "commit", "-m", "merge child into parent")
+        self.assertEqual(self.git_at(parent, "show", "-s", "--format=%P", "HEAD").stdout.strip(),
+                         parent_tip + " " + child_tip)
+        self.branch("check", repo=parent)
 
     def test_cherry_pick_authorization_is_single_use(self):
         self.begin("integration", "adopt", branch="main", into="main")
