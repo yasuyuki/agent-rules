@@ -30,7 +30,7 @@ class VerificationSkillTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         result, evidence = verify.run(repo, temporary.name, doctor_only)
-        self.assertEqual(evidence.parent, Path(temporary.name))
+        self.assertEqual(evidence.parent, Path(temporary.name).resolve())
         self.assertTrue((evidence / "result.json").is_file())
         self.assertEqual(json.loads((evidence / "result.json").read_text(encoding="utf-8")), result)
         return result, evidence
