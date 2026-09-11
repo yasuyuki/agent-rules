@@ -195,6 +195,16 @@ class RecoveryTests(BranchManagementTests):
         self.assertNotIn('retirement_guarded', self.read_state()['tasks']['legacy'])
         self.branch('check')
 
+    def test_missing_locked_worktree_keeps_its_registration(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        worktree = self.integrate('locked')
+        self.git('worktree', 'lock', '--reason', 'dependency', str(worktree))
+        shutil.rmtree(worktree)
+        self.assertIn('metadata remains', self.branch('retire', '--task', 'locked', ok=False).stderr)
+        self.assertIn('locked', self.read_state()['tasks'])
+        self.assertIn(str(worktree).replace(chr(92), '/'),
+                      self.git('worktree', 'list', '--porcelain').stdout.replace(chr(92), '/'))
+
     def test_new_commit_tree_must_equal_actual_prepared_index(self):
         topic = Path(self.begin('feature', branch='feature')['worktree'])
         old = self.git_at(topic, 'rev-parse', 'HEAD').stdout.strip()

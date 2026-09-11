@@ -537,8 +537,10 @@ def retire(args):
                   if line.startswith('worktree ')]
         if path in listed:
             git(repo, 'worktree', 'prune')  # metadata only, never files
-            remaining = git(repo, 'worktree', 'list', '--porcelain').splitlines()
-            if 'worktree ' + path in remaining:
+            remaining = [str(Path(line[len('worktree '):]).resolve())
+                         for line in git(repo, 'worktree', 'list', '--porcelain').splitlines()
+                         if line.startswith('worktree ')]
+            if path in remaining:
                 raise BranchError('worktree metadata remains; preserve registration and inspect its lock')
         state['tasks'].pop(args.task)
         save(directory, state)
