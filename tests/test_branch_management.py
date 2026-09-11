@@ -176,9 +176,9 @@ class BranchManagementTests(unittest.TestCase):
                          if (parent / "usr/bin/sh.exe").is_file())
         # Exercise the actual hook with an inconsistent transport URL and a
         # duplicate batch, neither of which Git normally emits itself.
-        denied = self.command(shell, str(hook), "origin", str(other), cwd=self.repo, input=row, ok=False)
+        denied = self.command(shell, hook.as_posix(), "origin", str(other), cwd=self.repo, input=row, ok=False)
         self.assertIn("tag push destination differs", denied.stderr)
-        denied = self.command(shell, str(hook), "origin", str(self.remote), cwd=self.repo, input=row + row, ok=False)
+        denied = self.command(shell, hook.as_posix(), "origin", str(self.remote), cwd=self.repo, input=row + row, ok=False)
         self.assertIn("duplicate tag push destination", denied.stderr)
         self.git("push", "origin", "refs/tags/v1")
         self.assertEqual(self.git_at(other, "show-ref", "--tags", ok=False).stdout, "")
