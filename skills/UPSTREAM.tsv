@@ -1,2 +1,3 @@
 id	repo	ref	path	tree_sha	license
 grilling	mattpocock/skills	refs/heads/main	skills/productivity/grilling	f0732035b8b1b60ae39454e4191caef32fa91903	MIT
+create-verification-skill	cursor/plugins	f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d	pstack/skills/create-verification-skill	38a3e016bb42ba7ba6f66315e04ef64242937660	MIT
