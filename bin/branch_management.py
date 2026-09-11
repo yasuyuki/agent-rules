@@ -437,7 +437,8 @@ def merge_valid(repo, state, name, ticket):
     if dependency:
         parent = state['tasks'][dependency]
         done = parent.get('integrated')
-        if not done or done['source'] != oid(repo, 'refs/heads/' + parent['branch']) or not ancestor(repo, done['commit'], ticket['old']):
+        if parent is not target and (not done or done['source'] != oid(repo, 'refs/heads/' + parent['branch'])
+                                     or not ancestor(repo, done['commit'], ticket['old'])):
             raise BranchError('dependency must be integrated first into destination history')
 
 
@@ -579,12 +580,66 @@ def transaction(repo, directory, state, phase, data):
         save(directory, state)
 
 
-def validate_push(repo, directory, state, rows, remote):
+def tag_destination(repo, state, remote):
+    if remote != state['remote']:
+        raise BranchError('tag push remote differs from registration')
+    fetch = git(repo, 'remote', 'get-url', '--all', remote).splitlines()
+    push = git(repo, 'remote', 'get-url', '--push', '--all', remote).splitlines()
+    if fetch != [state['remote_url']] or push != fetch:
+        raise BranchError('tag push requires one fetch and push URL matching registration')
+    return push[0]
+
+
+def allow_tag_push(args):
+    if not args.approval.strip():
+        raise BranchError('explicit user approval reference is required')
+    if args.tag.startswith('refs/'):
+        raise BranchError('--tag requires a tag name, not a full ref')
+    ref = 'refs/tags/' + args.tag
+    git(args.repo, 'check-ref-format', ref)
+    with locked(args.repo) as (directory, state):
+        assert_install(args.repo, directory, state)
+        checkout(args.repo, state)
+        destination = tag_destination(args.repo, state, args.remote)
+        commit = oid(args.repo, args.commit)
+        if args.commit != commit:
+            raise BranchError('tag approval requires a full commit object ID')
+        if oid(args.repo, ref) != commit:
+            raise BranchError('tag target differs from approved commit')
+        value = git(args.repo, 'rev-parse', '--verify', ref)
+        if git(args.repo, 'ls-remote', '--refs', args.remote, ref):
+            raise BranchError('release tag already exists on remote; replacement is not authorized')
+        ticket = {'object': value, 'commit': commit, 'remote': args.remote,
+                  'destination': destination, 'approval': args.approval}
+        state.setdefault('tag_pushes', {})[ref] = ticket
+        save(directory, state)
+        return {'ref': ref, **ticket}
+
+
+def validate_push(repo, directory, state, rows, remote, destination=None):
     assert_install(repo, directory, state)
     if remote != state['remote']:
         raise BranchError('push remote differs from registration')
     reconcile(repo, state)
+    tags = []
     for local, value, target, previous in rows:
+        if target.startswith('refs/tags/'):
+            ticket = state.get('tag_pushes', {}).get(target)
+            if not ticket:
+                raise BranchError('tag push needs an exact user-approved exception')
+            if target in tags:
+                raise BranchError('duplicate tag push destination')
+            if set(value) == {'0'} or set(previous) != {'0'}:
+                raise BranchError('tag replacement or deletion is not authorized')
+            if (local != target or value != ticket['object']
+                    or git(repo, 'rev-parse', '--verify', target, optional=True) != value
+                    or oid(repo, target) != ticket['commit']):
+                raise BranchError('tag object or target differs from authorization')
+            if (remote != ticket['remote'] or destination != ticket['destination']
+                    or tag_destination(repo, state, remote) != destination):
+                raise BranchError('tag push destination differs from authorization')
+            tags.append(target)
+            continue
         if not target.startswith('refs/heads/') or set(value) == {'0'}:
             raise BranchError('only registered branch pushes are authorized')
         name = target[len('refs/heads/'):]
@@ -595,6 +650,7 @@ def validate_push(repo, directory, state, rows, remote):
             raise BranchError('push source differs from registered branch')
         if set(previous) != {'0'} and not ancestor(repo, previous, value):
             raise BranchError('push would rewrite remote history')
+    return tags
 
 
 def push_check(repo, remote, destination):
@@ -643,7 +699,11 @@ def hook(name, args):
             rows = [line.split() for line in data.decode().splitlines()]
             if any(len(row) != 4 for row in rows):
                 raise BranchError('invalid push input')
-            validate_push(repo, directory, state, rows, args[0])
+            tags = validate_push(repo, directory, state, rows, args[0], args[1])
+            # pre-push cannot observe transport success. Consume only after the
+            # entire batch passes; a transport failure needs fresh authorization.
+            for ref in tags:
+                state['tag_pushes'].pop(ref, None)
             save(directory, state)
         else:
             raise BranchError('unknown hook')
@@ -677,7 +737,7 @@ def main(argv=None):
             return hook(argv[1], argv[2:])
         parser = argparse.ArgumentParser(description=__doc__)
         sub = parser.add_subparsers(dest='command', required=True)
-        for name in ('install', 'begin', 'check', 'prepare-merge', 'allow-cherry-pick'):
+        for name in ('install', 'begin', 'check', 'prepare-merge', 'allow-cherry-pick', 'allow-tag-push'):
             p = sub.add_parser(name)
             p.add_argument('--repo', default='.')
             p.add_argument('--json', action='store_true')
@@ -694,9 +754,13 @@ def main(argv=None):
             elif name == 'allow-cherry-pick':
                 for flag in ('commit', 'approval', 'reason'):
                     p.add_argument('--' + flag, required=True)
+            elif name == 'allow-tag-push':
+                for flag in ('remote', 'tag', 'commit', 'approval'):
+                    p.add_argument('--' + flag, required=True)
         args = parser.parse_args(argv)
         value = {'install': install, 'begin': begin, 'check': check,
-                 'prepare-merge': prepare_merge, 'allow-cherry-pick': allow_pick}[args.command](args)
+                 'prepare-merge': prepare_merge, 'allow-cherry-pick': allow_pick,
+                 'allow-tag-push': allow_tag_push}[args.command](args)
         if args.command == 'check' and not args.json:
             print('OK: registered worktrees and hooks agree' if value['ok'] else 'FAIL: ' + '; '.join(value['errors']))
         else:
