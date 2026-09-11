@@ -588,7 +588,9 @@ The workflow is agent-neutral and reuses the project's own operation tools.
 `skills/verify-agent-rules/SKILL.md` is the demonstrated output for this project.
 It drives public declaration-based apply/check against disposable inputs, checks
 actual generated contents and hand-written-file preservation, and retains evidence
-after cleanup. See [MVP acceptance and limitations](docs/verification-skill.md).
+after cleanup. Its optional `--environment-repo` profile also proves composition
+with agent-environment's synthetic input and disposable agent-skills mirror output.
+See [acceptance and limitations](docs/verification-skill.md).
 From this checkout root:
 
 ```console

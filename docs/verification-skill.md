@@ -1,4 +1,4 @@
-# Verification skill MVP
+# Verification skill acceptance
 
 The deliverables are the common
 [`create-verification-skill`](../skills/create-verification-skill/SKILL.md) and
@@ -81,6 +81,37 @@ failure: missing required EXCEPTIONS table, subsequently corrected),
 actual target revision/dirty state and public-input/helper hashes; earlier runs
 do not stand in for current evidence. Runtime records and filesystem snapshots
 remain outside Git. The operator's completion report links their retained location.
+
+## Dependency profile
+
+The optional dependency profile was added and exercised on 2026-09-11 using
+Linux, Python 3.14.4 and Codex. Read the verifier's
+[dependency recipe](../skills/verify-agent-rules/features/dependencies.md) for the
+repository roles and exact input boundary. It reuses the existing helper and
+public CLI; no installer or private runtime dependency was added.
+
+The profile selects agent-environment's synthetic example rule by an explicit
+checkout argument, supplies it alongside a second source via repeated `--rules`,
+and proves both initial and updated output while preserving the original input.
+The mirror proof uses a disposable agent-skills destination, independently checks
+non-vendored bytes/execute bits, rejects deliberately corrupted output and repairs
+it. The mirror owns its `skills/` subtree; root notes are preserved. work-records'
+additional-source role is synthetic here, and its dispatch/live bindings are not-run.
+
+The lead run and a fresh Codex session each passed 71 assertions across 15 real
+CLI operations. The fresh session also exercised Doctor; an initial incorrect
+shell variable assignment was blocked before Drive, then corrected without source
+or permission changes. All attempts retained their own records. An independent
+exit-zero/wrong-mirror-output challenge failed as expected and retained the wrong
+bytes after removing scratch. Missing dependency input was blocked; Doctor-only
+was not-run. The ten detector regressions and existing `tests/test_rules.py`
+passed. Per-feature states, agent identity, input hashes, source-preservation
+checks and initial/corrupt/repaired mirror snapshots are retained in `result.json`.
+
+This extends functional coverage of configuration composition and mirror output,
+not live dependent-repository deployment or native agent loading. A source-topic
+or generated mirror-topic being verified does not mean it has been integrated;
+deployment state belongs in the controller handoff and completion report.
 
 ## Limits
 
