@@ -77,6 +77,18 @@ class BranchManagementTests(unittest.TestCase):
         self.git("commit", "-m", name)
         return self.git("rev-parse", "HEAD").stdout.strip()
 
+    def integrate(self, task, name=None, contents=None, **extra):
+        """Register a topic, commit one file in it and merge it into adopted main."""
+        worktree = Path(self.begin(task, branch=task, **extra)["worktree"])
+        name = name or task + "-change"
+        (worktree / name).write_text(contents or task + "\n", encoding="utf-8")
+        self.git_at(worktree, "add", name)
+        self.git_at(worktree, "commit", "-m", name)
+        self.branch("prepare-merge", "--task", task)
+        self.git("merge", "--no-ff", "--no-commit", task)
+        self.git("commit", "-m", "merge " + task)
+        return worktree
+
     def test_install_preserves_an_existing_hook_and_detects_tampering(self):
         # Reinstall over a real hook: its args, stdin and exit status must survive.
         legacy = self.root / "legacy checkout"
@@ -295,6 +307,68 @@ class BranchManagementTests(unittest.TestCase):
         self.git_at(feature, "checkout", "--detach", recorded, ok=False)
         self.git_at(feature, "checkout", "feature")
         self.assertEqual(self.branch("check", repo=feature).returncode, 0)
+
+
+    def test_retire_releases_an_integrated_checkout_and_keeps_its_branch(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        worktree = self.integrate("source")
+        tip = self.git("rev-parse", "refs/heads/source").stdout.strip()
+        base = self.git("rev-parse", "refs/heads/source~1").stdout.strip()
+        retired = json.loads(self.branch("retire", "--task", "source").stdout)
+        self.assertTrue(retired["branch_retained"])
+        self.assertFalse(worktree.exists())
+        self.assertNotIn(str(worktree), self.git("worktree", "list").stdout)
+        checked = json.loads(self.branch("check", "--json").stdout)
+        self.assertTrue(checked["ok"], checked)
+        self.assertNotIn("source", checked["tasks"])
+        self.assertEqual(self.git("rev-parse", "refs/heads/source").stdout.strip(), tip)
+        # The branch is retained but unregistered, so its updates are refused.
+        tree = self.git("rev-parse", "refs/heads/source^{tree}").stdout.strip()
+        outside = self.git("commit-tree", tree, "-p", tip, "-m", "outside").stdout.strip()
+        self.git("update-ref", "refs/heads/source", outside, tip, ok=False)
+        self.assertEqual(self.git("rev-parse", "refs/heads/source").stdout.strip(), tip)
+        # The identifier, branch name and path are free for work again.
+        self.git("worktree", "add", str(worktree), "source")
+        self.begin("source", "adopt", branch="source", worktree=worktree, base=base)
+        self.assertTrue(json.loads(self.branch("check", "--json").stdout)["ok"])
+
+    def test_retire_refuses_unfinished_dependent_and_dirty_work(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        live = Path(self.begin("live", branch="live")["worktree"])
+        self.assertIn("not integrated", self.branch("retire", "--task", "live", ok=False).stderr)
+        self.assertTrue(live.exists())
+
+        parent = self.integrate("parent")
+        self.begin("child", branch="child", depends_on="parent")
+        self.assertIn("depends on", self.branch("retire", "--task", "parent", ok=False).stderr)
+        self.assertTrue(parent.exists())
+
+        untracked = self.integrate("untracked")
+        (untracked / "left behind").write_text("keep\n", encoding="utf-8")
+        self.assertIn("preserve and inspect",
+                      self.branch("retire", "--task", "untracked", ok=False).stderr)
+        self.assertTrue((untracked / "left behind").exists())
+        (untracked / "left behind").unlink()
+        self.branch("retire", "--task", "untracked")
+
+        # Ignored content is exactly what Git cannot restore, and a retired
+        # checkout can hold another repository's registered worktree.
+        ignored = self.integrate("ignored", name=".gitignore", contents="junk/\n")
+        (ignored / "junk").mkdir()
+        (ignored / "junk/thing").write_text("thing\n", encoding="utf-8")
+        self.assertEqual(self.git_at(ignored, "status", "--porcelain").stdout, "")
+        self.assertIn("preserve and inspect",
+                      self.branch("retire", "--task", "ignored", ok=False).stderr)
+        self.assertTrue((ignored / "junk/thing").exists())
+
+    def test_retire_refuses_the_primary_checkout_and_the_default_branch(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        worktree = self.integrate("source")
+        self.branch("retire", "--task", "integration", ok=False)
+        self.assertTrue((self.repo / "README").exists())
+        self.branch("retire", "--task", "source", repo=worktree, ok=False)
+        self.assertTrue(worktree.exists())
+        self.assertTrue(json.loads(self.branch("check", "--json").stdout)["ok"])
 
     def test_prepare_merge_requires_the_registered_source_and_allows_no_ff_merge(self):
         self.begin("integration", "adopt", branch="main", into="main")

@@ -767,6 +767,14 @@ supplies its own hooks, rebind from a separate reviewed source so its source has
 remains stable during the merge. A changed dispatcher needs a separately reviewed
 hook migration; it is never silently overwritten.
 
+Installation protects linked worktrees containing the source or Python runtime
+with Git's native worktree lock before pinning bytes. Existing locks are kept;
+rebind never unlocks an old dependency because other repositories may still use
+it. Legacy installations using an unlocked linked dependency must reinstall the
+reviewed source before acceptance. Dependency decommissioning is explicit
+maintenance after its consumers have moved, not part of ordinary task retirement.
+Primary checkouts are already excluded from retirement.
+
 Installation disables automatic reference packing in this repository with
 `maintenance.pack-refs.enabled=false` and `gc.packRefs=false`; other maintenance
 remains enabled. Git's hook interface cannot distinguish pruning a loose reference
@@ -810,6 +818,53 @@ history, or directly into that parent when it is the registered destination
 integration consumes the permission. A failed or interrupted commit preserves
 changes and can be retried; a source reserved by a prepared integration must wait
 for that integration to finish or retry.
+
+Transparent normal operation is a design and acceptance requirement for this
+branch workflow, as explicitly requested for this work. Setup inventories,
+migration checks and incident repair must not become routine prerequisites for
+starting, resuming or finishing work. The owning layer resolves routine targets,
+checks consistency and records state using existing registrations and entry
+points. Keep safety checks at the protected operation and revalidate after
+relevant state changes; do not require repeated history reconstruction, complex
+argument assembly, explanations or duplicate records. Verify affected normal
+paths with representative operations, without adding per-task reports. This
+requirement does not extend this tool's responsibility or authority boundaries.
+
+Retirement is enabled only for work created by the dependency-protecting version
+of `begin --mode new`. Existing and adopted registrations are retained: older
+consumers may not have locked their source or runtime worktrees. Reinstallation
+alone does not certify their migration, and continuation does not silently lift
+this restriction. Resolving those legacy dependencies is separate migration work;
+do not unlock dependencies or edit registration state to bypass it. An interrupted
+or failed installation may leave its newly acquired dependency lock in place;
+this is deliberate preservation until explicit maintenance resolves its consumers.
+
+Close a finished registration with `branch retire --repo REPO --task ID`. It
+removes the registered worktree and drops the registration; the branch and its
+commits are kept. "Finished" means the ledger's integration receipt, not
+`git branch --merged`: the receipt's source must equal both the registered tip
+and the branch's current commit, and its merge commit must be an ancestor of the
+registered destination. Work integrated into a registered topic is finished even
+though it never reached the default branch, and a branch merged somewhere else is
+not. Retirement is refused for the default-branch registration, the repository's
+own working tree, the checkout the command is run from, a checkout holding the
+registered `agentBranch.source` or `agentBranch.python`, work another
+registration depends on or integrates into, a branch with an outstanding permit,
+prepared integration or cherry-pick exception, and a checkout with uncommitted,
+untracked or ignored files. Ignored files count because a retired checkout can
+contain another repository's registered worktree. Removal uses `git worktree
+remove` without `--force`; nothing is reset, stashed or force-deleted, and a
+refusal leaves both the registration and the files as they are.
+
+The work identifier, branch name and path become available for new work. The
+retained branch is now unregistered, so its future updates are refused like any
+other retained branch; re-register it with `git worktree add PATH BRANCH` and
+`begin --mode adopt`. Branch deletion is not part of this command. An interrupted
+retirement is completed by running the same command again: worktree removal is a
+no-op once the directory is gone, and a stale administrative record is pruned
+(metadata only, never a file, and repository-wide). There is no bulk mode, no age
+or count criterion and no abandonment path; each retirement names one work
+identifier and is justified by that work's own integration receipt.
 
 A user-approved cherry-pick exception is registered in its destination topic with
 `branch allow-cherry-pick --repo PATH --commit SOURCE_SHA --approval USER_REFERENCE

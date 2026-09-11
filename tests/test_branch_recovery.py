@@ -85,6 +85,116 @@ class RecoveryTests(BranchManagementTests):
                     '--branch', 'main', '--worktree', str(clone), '--base', 'HEAD', ok=False)
         self.assertNotIn('wrong', self.read_state()['tasks'])
 
+    def test_retire_completes_when_the_worktree_directory_is_already_gone(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        worktree = self.integrate('source')
+        tip = self.git('rev-parse', 'refs/heads/source').stdout.strip()
+        shutil.rmtree(worktree)  # Crash or manual deletion before the ledger was closed.
+        self.branch('retire', '--task', 'source')
+        checked = json.loads(self.branch('check', '--json').stdout)
+        self.assertTrue(checked['ok'], checked)
+        self.assertNotIn('source', checked['tasks'])
+        self.assertNotIn(str(worktree), self.git('worktree', 'list').stdout)
+        self.assertEqual(self.git('rev-parse', 'refs/heads/source').stdout.strip(), tip)
+
+    def test_retire_refuses_a_checkout_holding_the_registered_hook_source(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        worktree = self.integrate('source')
+        copied = worktree / 'reviewed source'
+        (copied / 'bin').mkdir(parents=True)
+        (copied / 'hooks').mkdir()
+        shutil.copyfile(ROOT / 'bin/branch_management.py', copied / 'bin/branch_management.py')
+        shutil.copyfile(ROOT / 'hooks/branch-hook', copied / 'hooks/branch-hook')
+        state = self.read_state()
+        original = state['source']
+        state['source'] = str(copied)
+        self.write_state(state)
+        self.git('config', '--local', 'agentBranch.source', str(copied))
+        # Retiring this checkout would delete the dispatcher every hook runs.
+        self.assertIn('reinstall reviewed source', self.branch('retire', '--task', 'source', ok=False).stderr)
+        self.assertTrue((copied / 'bin/branch_management.py').exists())
+        state = self.read_state()
+        state['source'] = original
+        self.write_state(state)
+        self.git('config', '--local', 'agentBranch.source', original)
+        shutil.rmtree(copied)
+        self.branch('retire', '--task', 'source')
+        self.assertFalse(worktree.exists())
+
+    def test_retire_preserves_a_different_repositories_hook_source(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        worktree = Path(self.begin('supplier', branch='supplier')['worktree'])
+        for relative in ('bin/branch_management.py', 'hooks/branch-hook'):
+            target = worktree / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / relative, target)
+        self.git_at(worktree, 'add', 'bin', 'hooks')
+        self.git_at(worktree, 'commit', '-m', 'source')
+        self.branch('prepare-merge', '--task', 'supplier')
+        self.git('merge', '--no-ff', '--no-commit', 'supplier')
+        self.git('commit', '-m', 'integrate supplier')
+        consumer = self.root / 'consumer'
+        self.command('git', 'clone', self.remote, consumer)
+        entry = worktree / 'bin/branch_management.py'
+        self.command(sys.executable, str(entry), 'install', '--repo', str(consumer), '--remote', 'origin')
+        self.begin('consumer-main', 'adopt', repo=consumer, branch='main', into='main')
+        self.assertIn('locked', self.branch('retire', '--task', 'supplier', ok=False).stderr)
+        self.assertTrue(entry.exists())
+        self.command(sys.executable, str(entry), 'check', '--repo', str(consumer))
+        # Rebinding cannot establish that every other consumer is gone.
+        self.branch('install', repo=consumer)
+        self.assertIn('locked', self.branch('retire', '--task', 'supplier', ok=False).stderr)
+        # Simulate an old, unlocked installation and require explicit reinstallation.
+        self.git('worktree', 'unlock', str(worktree))
+        self.command(sys.executable, str(entry), 'install', '--repo', str(consumer), '--remote', 'origin')
+        self.git('worktree', 'unlock', str(worktree))
+        result = self.command(sys.executable, str(entry), 'check', '--repo', str(consumer), ok=False)
+        self.assertIn('unprotected dependency worktree', result.stdout)
+        self.command(sys.executable, str(entry), 'install', '--repo', str(consumer), '--remote', 'origin')
+        self.assertIn('locked', self.branch('retire', '--task', 'supplier', ok=False).stderr)
+
+    def test_retire_serializes_a_new_dependency_until_removal_finishes(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        worktree = self.integrate('source')
+        args = type('Args', (), {'repo': str(self.repo), 'task': 'source'})()
+        real_git = management.git
+        children = []
+        def interleave(repo, *argv, **kwargs):
+            if argv[:2] == ('worktree', 'remove'):
+                child = subprocess.Popen([sys.executable, str(ROOT / 'bin/place.py'),
+                    'branch', 'begin', '--repo', str(self.repo), '--mode', 'new',
+                    '--task', 'late', '--request', 'late', '--branch', 'late',
+                    '--worktree', str(self.root / 'late'), '--depends-on', 'source'],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                children.append(child)
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    child.communicate(timeout=1)
+            return real_git(repo, *argv, **kwargs)
+        try:
+            with patch.object(management, 'git', side_effect=interleave):
+                management.retire(args)
+        finally:
+            for child in children:
+                out, err = child.communicate(timeout=30)
+        self.assertNotEqual(child.returncode, 0, out + err)
+        self.assertFalse(worktree.exists())
+        state = self.read_state()
+        self.assertNotIn('late', state['tasks'])
+        self.assertNotIn('source', state['tasks'])
+        self.branch('check')
+
+    def test_legacy_registration_is_not_removed_without_dependency_migration(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        worktree = self.integrate('legacy')
+        state = self.read_state()
+        state['tasks']['legacy'].pop('retirement_guarded')
+        self.write_state(state)
+        self.assertIn('dependency migration', self.branch('retire', '--task', 'legacy', ok=False).stderr)
+        self.assertTrue(worktree.exists())
+        self.branch('begin', '--mode', 'continue', '--task', 'legacy')
+        self.assertNotIn('retirement_guarded', self.read_state()['tasks']['legacy'])
+        self.branch('check')
+
     def test_new_commit_tree_must_equal_actual_prepared_index(self):
         topic = Path(self.begin('feature', branch='feature')['worktree'])
         old = self.git_at(topic, 'rev-parse', 'HEAD').stdout.strip()
