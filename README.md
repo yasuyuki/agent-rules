@@ -580,6 +580,28 @@ python3 tests/test_push_preflight.py
 
 ## Skills
 
+`skills/create-verification-skill/SKILL.md` creates a project-specific verification
+skill when generation or revision is requested. Read it by path and name the
+target checkout; ordinary verification requests use the existing generated skill.
+The workflow is agent-neutral and reuses the project's own operation tools.
+
+`skills/verify-agent-rules/SKILL.md` is the demonstrated output for this project.
+It drives public declaration-based apply/check against disposable inputs, checks
+actual generated contents and hand-written-file preservation, and retains evidence
+after cleanup. See [MVP acceptance and limitations](docs/verification-skill.md).
+From this checkout root:
+
+```console
+python3 skills/verify-agent-rules/scripts/verify.py --repo .
+python3 tests/test_verification_skill.py
+```
+
+The adapted generator retains pstack's MIT notice and a pinned `UPSTREAM.tsv`
+entry. Existing `place.py apply/check` distributes both skills. The existing
+authorship-filtered `mirror` excludes that adapted third-party generator and
+publishes the original project verifier; use the generator's canonical source
+here. Neither skill requires this repository's private environment bindings.
+
 Rules and skills are the two managed kinds. A rule is always-on text projected
 into every tool's rule convention; a skill is a directory the agent loads on
 demand. Both are copied from this repository and compared byte for byte, so a
