@@ -84,10 +84,17 @@ remain outside Git. The operator's completion report links their retained locati
 
 ## Limits
 
-The initial Claude attempt was blocked before reading the generator because the
-development worktree and evidence directory were outside that session's allowed
-workspace. It did not generate or execute a candidate, and permissions were not
-changed. This is separate from the successful Codex replay and format checks.
+Claude Code 2.1.268 was also started through the environment's existing public
+entry point. The initial attempt could not read paths outside its allowed
+workspace. After source integration, a new session read the same canonical
+generator and verifier, applied the generator twice to an isolated existing
+candidate, and chose reuse because the owned files were already sufficient.
+The hand-written addition and original source stayed byte-identical. Execution
+and writing a result were rejected by its existing tool permissions, before
+Doctor could start. Thus generator reading/reapplication is observed, but a
+Claude functional run is **blocked**, with the feature **not-run**. Permissions
+were not relaxed. This is separate from Codex's successful fresh-session replay
+and the format checks; placement alone was never counted as execution.
 
 Package CLI, other placement file conventions, other OSes, UI/API applications,
 remote systems, full feature inventory, maintenance scheduling and native skill
