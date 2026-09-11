@@ -788,6 +788,17 @@ integration consumes the permission. A failed or interrupted commit preserves
 changes and can be retried; a source reserved by a prepared integration must wait
 for that integration to finish or retry.
 
+Transparent normal operation is a design and acceptance requirement for this
+branch workflow, as explicitly requested for this work. Setup inventories,
+migration checks and incident repair must not become routine prerequisites for
+starting, resuming or finishing work. The owning layer resolves routine targets,
+checks consistency and records state using existing registrations and entry
+points. Keep safety checks at the protected operation and revalidate after
+relevant state changes; do not require repeated history reconstruction, complex
+argument assembly, explanations or duplicate records. Verify affected normal
+paths with representative operations, without adding per-task reports. This
+requirement does not extend this tool's responsibility or authority boundaries.
+
 Close a finished registration with `branch retire --repo REPO --task ID`. It
 removes the registered worktree and drops the registration; the branch and its
 commits are kept. "Finished" means the ledger's integration receipt, not
