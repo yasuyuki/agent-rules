@@ -114,6 +114,65 @@ class BranchManagementTests(unittest.TestCase):
         return self.branch("allow-tag-push", "--remote", "origin", "--tag", name,
                            "--commit", commit, "--approval", "user-release-request", **kwargs)
 
+    def preflight(self):
+        result = self.command(sys.executable, str(PLACE.with_name("push_preflight.py")),
+                              str(self.repo), "--user-intent", "push")
+        return json.loads(result.stdout)
+
+    def test_branch_transport_destination_and_shared_preflight(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        self.repo = Path(self.begin("transport", branch="transport")["worktree"])
+        tip = self.commit("transport-change")
+        other = self.root / "unregistered.git"
+        self.command("git", "clone", "--bare", self.remote, other)
+        self.git("remote", "add", "other", str(other))
+        before = self.git_at(self.remote, "show-ref").stdout
+        other_before = self.git_at(other, "show-ref").stdout
+        self.assertEqual(self.preflight()["decision"], "push")
+        self.git("push", "other", "HEAD:refs/heads/transport", ok=False)
+        self.git("remote", "set-url", "--push", "origin", str(other))
+        self.assertNotEqual(self.preflight()["decision"], "push")
+        self.git("push", "origin", "HEAD:refs/heads/transport", ok=False)
+        self.git("config", "--unset-all", "remote.origin.pushurl")
+        self.git("config", "--add", "remote.origin.pushurl", str(self.remote))
+        self.git("config", "--add", "remote.origin.pushurl", str(other))
+        self.assertNotEqual(self.preflight()["decision"], "push")
+        self.git("push", "origin", "HEAD:refs/heads/transport", ok=False)
+        self.assertEqual(self.git_at(self.remote, "show-ref").stdout, before)
+        self.assertEqual(self.git_at(other, "show-ref").stdout, other_before)
+        self.git("config", "--unset-all", "remote.origin.pushurl")
+        # Real read/write URL separation to the same local repository, with
+        # spaces encoded in the file URI; neither endpoint is a production host.
+        self.git("remote", "set-url", "--push", "origin", self.remote.as_uri())
+        self.assertEqual(self.preflight()["decision"], "push")
+        self.git("push", "origin", "HEAD:refs/heads/transport")
+        self.assertEqual(self.git_at(self.remote, "rev-parse", "transport").stdout.strip(), tip)
+        self.git("tag", "v-split")
+        self.approve_tag("v-split")
+        # A stale tag ticket cannot survive even a same-repository URL change.
+        self.git("remote", "set-url", "--push", "origin", str(self.remote))
+        self.git("push", "origin", "refs/tags/v-split", ok=False)
+        self.assertEqual(self.git_at(self.remote, "show-ref", "--tags", ok=False).stdout, "")
+        self.git("remote", "set-url", "--push", "origin", self.remote.as_uri())
+        self.approve_tag("v-split")
+        self.git("push", "origin", "refs/tags/v-split")
+
+    def test_branch_hook_rejects_inconsistent_transport_argument(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        self.repo = Path(self.begin("transport", branch="transport")["worktree"])
+        tip = self.git("rev-parse", "HEAD").stdout.strip()
+        row = "HEAD %s refs/heads/transport %s\n" % (tip, "0" * len(tip))
+        hook = Path(self.git("config", "--get", "core.hooksPath").stdout.strip()) / "pre-push"
+        shell = "sh"
+        if os.name == "nt":
+            exec_path = Path(self.git("--exec-path").stdout.strip())
+            shell = next(str(parent / "usr/bin/sh.exe") for parent in exec_path.parents
+                         if (parent / "usr/bin/sh.exe").is_file())
+        denied = self.command(shell, hook.as_posix(), "origin", str(self.root / "wrong.git"),
+                              cwd=self.repo, input=row, ok=False)
+        self.assertIn("push destination differs", denied.stderr)
+        self.assertEqual(self.git_at(self.remote, "show-ref", "--verify", "refs/heads/transport", ok=False).stdout, "")
+
     def test_explicit_new_tag_pushes_preserve_raw_object_and_commit(self):
         self.begin("integration", "adopt", branch="main", into="main")
         commit = self.git("rev-parse", "HEAD").stdout.strip()
@@ -189,7 +248,7 @@ class BranchManagementTests(unittest.TestCase):
         # Exercise the actual hook with an inconsistent transport URL and a
         # duplicate batch, neither of which Git normally emits itself.
         denied = self.command(shell, hook.as_posix(), "origin", str(other), cwd=self.repo, input=row, ok=False)
-        self.assertIn("tag push destination differs", denied.stderr)
+        self.assertIn("push destination differs", denied.stderr)
         denied = self.command(shell, hook.as_posix(), "origin", str(self.remote), cwd=self.repo, input=row + row, ok=False)
         self.assertIn("duplicate tag push destination", denied.stderr)
         self.git("push", "origin", "refs/tags/v1")

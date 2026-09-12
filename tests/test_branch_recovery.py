@@ -124,7 +124,7 @@ class RecoveryTests(BranchManagementTests):
     def test_retire_preserves_a_different_repositories_hook_source(self):
         self.begin('integration', 'adopt', branch='main', into='main')
         worktree = Path(self.begin('supplier', branch='supplier')['worktree'])
-        for relative in ('bin/branch_management.py', 'hooks/branch-hook'):
+        for relative in ('bin/branch_management.py', 'bin/push_preflight.py', 'hooks/branch-hook'):
             target = worktree / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / relative, target)

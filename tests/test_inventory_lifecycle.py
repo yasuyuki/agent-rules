@@ -327,6 +327,70 @@ with tempfile.TemporaryDirectory() as directory:
     else:
         raise AssertionError("legacy four-column binding was accepted")
 
+# A saved start choice is the only implicit input: it resolves its paths from
+# its own directory, checks only the selected CLI, and gives the child the
+# inventory host without leaking it into the caller.
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory); home = root / "home"; (home / "work").mkdir(parents=True)
+    decl = root / "placement.md"; decl.write_text(declaration(home), encoding="utf-8")
+    data = root / "catalog.json"; catalog(data, decl)
+    ctx = context(decl)
+    place.apply_projection(ctx[1], ctx[0], list(ctx[4].values()), ctx[5], ctx[2], ctx[3], ctx[7])
+    # A different registered CLI is broken, but it is not part of this launch.
+    (home / ".claude" / "skills" / "maintain-environment-inventory" / place.agent_rules.SKILL_MARKER).unlink()
+    config = root / "placement-start.json"
+    config.write_text(json.dumps({"version": 1, "declaration": "placement.md",
+                                  "inventory_host": "inventory.test"}), encoding="utf-8")
+    calls = []
+    old_cwd = os.getcwd(); old_host = os.environ.get("ENVIRONMENT_INVENTORY_HOST")
+    old_runtime, old_context = place.current_runtime, place.load_context
+    place.current_runtime = lambda _context: {
+        "user": __import__("getpass").getuser(), "home": str(home),
+        "host": platform.system(), "platform": platform.system(),
+        "configRoots": {name: tool["configHome"]["default"].replace("$HOME", str(home))
+                        for name, tool in ctx[0]["tools"].items()},
+    }
+    place.load_context = lambda _args: ctx
+    os.environ.pop("ENVIRONMENT_INVENTORY_HOST", None)
+    try:
+        os.chdir(root)
+        result = place.main(["start", "w1", "codex", "--version"],
+                            runner=lambda argv, **kwargs: (calls.append((argv, kwargs)) or SimpleNamespace(returncode=0)),
+                            resolver=lambda name: "/bin/" + name)
+        assert result == 0 and calls[-1][0] == ["/bin/codex", "--version"]
+        assert calls[-1][1]["cwd"] == str(home / "work")
+        assert calls[-1][1]["env"]["ENVIRONMENT_INVENTORY_HOST"] == "inventory.test"
+        assert "ENVIRONMENT_INVENTORY_HOST" not in os.environ
+        assert place.main(["start", "--config", str(config), "w1", "codex", "--resume"],
+                          runner=lambda argv, **kwargs: (calls.append((argv, kwargs)) or SimpleNamespace(returncode=0)),
+                          resolver=lambda name: "/bin/" + name) == 0
+        assert calls[-1][0] == ["/bin/codex", "--resume"]
+        assert place.main(["start", "--config", str(config), "--declaration", str(decl), "w1", "codex"],
+                          resolver=lambda _name: None) == 1
+        assert place.main(["start", "--rules", "extra-rules", "w1", "codex"],
+                          resolver=lambda _name: None) == 1
+        os.environ["ENVIRONMENT_INVENTORY_HOST"] = "other.inventory"
+        assert place.main(["start", "w1", "codex"], resolver=lambda _name: None) == 1
+        os.environ.pop("ENVIRONMENT_INVENTORY_HOST", None)
+        config.write_text("[]", encoding="utf-8")
+        assert place.main(["start", "w1", "codex"], resolver=lambda _name: None) == 1
+        config.write_text(json.dumps({"version": 1, "declaration": "placement.md", "rules": None}), encoding="utf-8")
+        assert place.main(["start", "w1", "codex"], resolver=lambda _name: None) == 1
+        config.write_bytes(b"\xff")
+        assert place.main(["start", "w1", "codex"], resolver=lambda _name: None) == 1
+        # An explicit declaration retains its established behavior and ignores
+        # a malformed implicit config in the current directory.
+        assert place.main(["start", "--declaration", str(decl), "w1", "codex"],
+                          runner=lambda *_a, **_k: SimpleNamespace(returncode=0),
+                          resolver=lambda name: "/bin/" + name) == 0
+    finally:
+        place.current_runtime = old_runtime
+        place.load_context = old_context
+        os.chdir(old_cwd)
+        if old_host is None: os.environ.pop("ENVIRONMENT_INVENTORY_HOST", None)
+        else: os.environ["ENVIRONMENT_INVENTORY_HOST"] = old_host
+
+
 for argv in (
     ["check", "--declaration", "unused", "--readiness"],
     ["check", "--catalog", "unused", "--site", "s1", "--readiness"],

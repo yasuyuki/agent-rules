@@ -161,6 +161,29 @@ python3 bin/place.py list --declaration PLACEMENT.md
 python3 bin/place.py start --declaration PLACEMENT.md <workspace> <tool> -- <tool arguments>
 ```
 
+For repeated local starts, save the selected inputs once in `placement-start.json`
+in the directory from which you launch:
+
+```json
+{
+  "version": 1,
+  "declaration": "PLACEMENT.md",
+  "rules": ["private-rules"],
+  "skills": ["private-skills"]
+}
+```
+
+Then use `python3 bin/place.py start <workspace> <tool>` and append native CLI
+arguments after `--`, including the CLI's own resume command. Paths in this file
+are relative to its directory. `rules` and `skills` may be omitted; the public
+sources remain included. An optional `inventory_host` selects the catalog's
+existing observer and must agree with an already set `ENVIRONMENT_INVENTORY_HOST`.
+`--config PATH` explicitly selects a different file. No parent directory or HOME
+is searched. A full `--declaration` invocation ignores the default file; mixing
+config inputs and explicit source arguments is rejected. Configuration does not
+apply placement or adopt sources: start still checks the selected workspace/CLI
+and current managed bytes before launching it.
+
 ## Environment catalog
 
 OpenCode skill placement uses `.opencode/skills` in a project and
@@ -886,7 +909,12 @@ writes serialize registry changes. On another clone/host, register the same work
 ID against that clone's remote history; never copy local operation permissions.
 The shared push preflight applies the same branch/tip check to installed repos,
 then retains its existing visibility, destination and history-protection policy.
-The actual pre-push hook checks all submitted refs and commits.
+The actual pre-push hook checks all submitted refs and commits, and compares its
+transport URL with the single effective push URL for the registered remote.
+Both branch and tag pushes require the registered fetch repository identity.
+Read/write URL separation is supported for equivalent GitHub transports and
+native absolute paths/local file URLs; unknown transports remain exact matches.
+Different repositories, remote names and multiple destinations are rejected.
 
 To publish an explicitly requested release tag, first create the local tag, then
 register `branch allow-tag-push --repo PATH --remote REMOTE --tag TAG_NAME
@@ -894,8 +922,8 @@ register `branch allow-tag-push --repo PATH --remote REMOTE --tag TAG_NAME
 `refs/tags/`; the commit must be a full object ID. The command requires a
 registered checkout and pins the tag's raw object (including its annotation),
 peeled commit, remote name and URL. Both lightweight and annotated tags work.
-Exactly one fetch URL and one push URL must match the installed remote URL;
-alternate push URLs are not supported by this exception. The remote tag must
+Exactly one fetch URL and one push URL must identify the registered repository;
+the approval additionally pins the exact effective push URL. The remote tag must
 not exist. Publish with `git push REMOTE refs/tags/TAG_NAME`.
 
 The hook admits only creation of that exact tag at that exact destination.
