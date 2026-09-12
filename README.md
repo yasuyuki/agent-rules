@@ -198,16 +198,68 @@ Use an already registered worktree and native resume arguments after `--`.
 The placement entry does not enable Grok's worktree creation or automatic approvals.
 
 For an additional CLI, first add its reviewed descriptor and declaration
-locations. On the target runtime, use the semantic inventory operation before
-installation or placement:
+locations. To publish the missing agent registration, run the declaration operation
+from the registered topic checkout that tracks both `PLACEMENT.md` and its
+catalog. It validates the selected site, tool, locations, and catalog source,
+then adds only that registration and sets the environment to `pending`:
 
 ```console
-python3 bin/place.py inventory prepare-agent --declaration PLACEMENT.md --site SITE --tool grok
-python3 bin/place.py apply --declaration PLACEMENT.md --site SITE
-python3 bin/place.py inventory activate --declaration PLACEMENT.md --site SITE
+python3 bin/place.py inventory declare-agent --declaration PLACEMENT.md --site SITE --tool grok
 ```
 
-Pass the same additional `--rules` and `--skills` sources to these operations
+Its JSON result records the registered base revision, task, catalog path,
+environment, tool, and whether bytes changed. It does not inspect a target
+runtime, install or project files, stage, commit, or perform Git operations.
+The declaration and catalog must initially match the registered `HEAD`; an
+exact prior uncommitted result of this same operation is the sole idempotent
+exception. Save, integrate, and push that declared change through the normal
+registered branch workflow. This operation does not certify other consumers;
+update affected consumers before publishing a descriptor they cannot read.
+
+On the selected runtime, use its existing untracked saved launch inputs:
+
+```console
+python3 bin/place.py inventory adopt --config placement-start.json --site SITE
+```
+
+`adopt` verifies the catalog against its repository's `HEAD`, records pending in
+that existing config, applies the selected site, checks every registered CLI's
+readiness, and inspects Grok discovery in the declared direct workspaces without
+running a model or changing trust. Only success records active. Failure retains
+pending and the catalog is never rewritten. An exact active repeat verifies
+readiness/discovery without repeating projection or writing the config. Stale
+inputs, a failed check, or changed Git HEAD prevent normal config-based startup.
+The config becomes version 2 with one adoption member; no catalog copy or receipt
+registry is created. Tracked start configs cannot store runtime adoption.
+Like the existing user-owned catalog and public startup code, this detects stale
+or incomplete operations; it is not tamper-proof attestation against that same
+user editing their state or code. It grants no root or transport authority.
+
+`--source-ref REVISION` explicitly selects the **catalog** repository revision
+when a retained runtime HEAD is older. The catalog must match that revision's
+checkout representation, including Git EOL rules. An in-repository declaration
+must match it too. An explicitly configured external runtime policy, such as a
+root-owned deployed declaration, is recorded separately by path and digest;
+`sourceScope: catalog` does not claim that policy is a Git blob. The runtime HEAD
+and committed catalog revision are both reported. Other dirty files are preserved
+and are not attributed to this operation. Normal Git synchronization is still
+required to migrate any remaining unrelated legacy state.
+
+The existing `start --config` (or implicit `placement-start.json`) checks the
+adoption's exact environment, site, catalog, policy, source inputs, runtime identity
+and HEAD. A pending catalog requires this saved adoption; explicit declaration-only
+startup cannot infer it. Catalog listing remains declaration-only and does not
+claim another runtime's active state. A host bootstrap that previously used only
+an explicit declaration must be updated to consume the same saved inputs before
+adopting this path. Legacy active catalogs and `prepare-agent`/`activate` remain
+compatible for consumers not yet migrated; they still mutate the catalog and are
+not the normal versioned declaration workflow.
+
+The returned `commandElapsedSeconds` measures only this command. The 60/120 second
+application targets also include controller preparation, Git/shared saving, and
+result return. No target-time success or model behavior follows from command success.
+
+Pass the same additional `--rules` and `--skills` sources to declaration operations
 when the declaration uses private inputs. `prepare-agent` resolves the catalog,
 environment, principal, and config root from the site's `INVENTORY` binding; it
 registers the CLI and writes `pending` together. It does not install or start a CLI.
@@ -805,6 +857,8 @@ and Linux, along with the existing regression checks:
 ```console
 python3 tests/test_rules.py
 python3 tests/test_push_preflight.py
+python3 tests/test_inventory_adoption.py
+python3 tests/test_inventory_inspection.py
 ```
 
 The test renders and verifies a temporary workspace, confirms that drift is

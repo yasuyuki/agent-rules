@@ -42,8 +42,21 @@ host, user, HOME, workspace, executor, or runsRoot values. Keep outer transport
 and inner runtime principal distinct. Preserve unknown or retained environments
 as explicit rows instead of dropping them.
 
-When adding a CLI to an existing environment, review its descriptor and placement
-locations first, then run `place.py inventory prepare-agent --declaration <D>
+For a versioned catalog and a runtime using saved launch inputs, review the CLI's
+descriptor and locations, then use `place.py inventory declare-agent --declaration
+<D> --site <S> --tool <CLI>` in the registered source topic. Commit/integrate/push
+the declaration through the existing branch workflow before runtime adoption.
+Use `place.py inventory adopt --config <existing-start-config> --site <S>` on the
+target runtime. It applies the site, checks all registered CLI readiness and Grok
+discovery, and records pending/active only in that existing untracked start config.
+Do not copy runtime JSON back to another clone or add a receipt registry. A retained
+runtime may select the exact committed catalog with `--source-ref <revision>`;
+this does not attribute unrelated dirt or an external policy to that commit.
+The host's bootstrap must consume the same saved inputs before adopting this path.
+Catalog listing reports the declaration state, not a remote runtime's adoption.
+
+For legacy consumers not yet using that path, review locations first and run
+`place.py inventory prepare-agent --declaration <D>
 --site <S> --tool <CLI>` on the target runtime, with its existing rule/skill inputs.
 The operation resolves the catalog and principal from the site's INVENTORY binding,
 registers the CLI and writes pending together. Do not assemble operational JSON
@@ -72,7 +85,10 @@ managed bytes, and visible supported CLIs that are not registered. Do not pair
 `--readiness` with a workspace or scope restriction. Use ordinary `check` for
 partial placement work.
 
-After repair, run `place.py inventory activate --declaration <D> --site <S>` with
+For the saved-input path, resume `inventory adopt` with the same config/site/ref.
+It never changes trust automatically; fix only the explicitly authorized folder
+using the CLI's official operation when inspection reports it missing.
+For legacy consumers, run `place.py inventory activate --declaration <D> --site <S>` with
 the same inputs. It rechecks full readiness and refuses changed inputs before
 saving active; failure leaves pending. Do not edit state to bypass that check.
 Only mark construction `active` after repair and readiness pass. `active` means

@@ -114,7 +114,7 @@ def validate_lifecycle(catalog_path, placement_context, environment_id, mode="re
                        place_module, resolver=shutil.which, current_principal=None,
                        required_skill_id=DEFAULT_SKILL, required_binding_id=DEFAULT_BINDING,
                        declaration_path=None, constructing_agent=None, target_agent=None,
-                       required_site=None):
+                       required_site=None, runtime_state=None):
     """Validate one environment's placement readiness or one normal CLI start.
 
     Resolver is called only for a local runtime agent and receives its placement
@@ -134,6 +134,11 @@ def validate_lifecycle(catalog_path, placement_context, environment_id, mode="re
         return errors, records[0] if records else None
     record = records[0]
     state = record["state"]
+    if runtime_state is not None:
+        if runtime_state not in {'pending', 'active'}:
+            raise ValueError('invalid runtime adoption state')
+        if state in {'pending', 'active'}:
+            state = runtime_state
     if mode == "normal" and state != "active":
         errors.append("%s: normal lifecycle requires active state (found %s)" % (environment_id, state))
     if mode in {"readiness", "construction"} and state not in {"pending", "active"}:

@@ -28,6 +28,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -51,6 +52,14 @@ inventory_spec.loader.exec_module(environment_inventory)
 classification_spec = importlib.util.spec_from_file_location("work_classification", HERE / "work_classification.py")
 work_classification = importlib.util.module_from_spec(classification_spec)
 classification_spec.loader.exec_module(work_classification)
+
+adoption_spec = importlib.util.spec_from_file_location("inventory_adoption", HERE / "inventory_adoption.py")
+inventory_adoption = importlib.util.module_from_spec(adoption_spec)
+adoption_spec.loader.exec_module(inventory_adoption)
+
+inspection_spec = importlib.util.spec_from_file_location("inventory_inspection", HERE / "inventory_inspection.py")
+inventory_inspection = importlib.util.module_from_spec(inspection_spec)
+inspection_spec.loader.exec_module(inventory_inspection)
 
 
 class PlacementError(RuntimeError):
@@ -750,7 +759,7 @@ def check(args, *, context=None):
     return 0 if not errors else 1
 
 
-def apply(args, *, context=None):
+def apply(args, *, context=None, announce=True):
     placement, rules, sites, workspaces, locations, exceptions, selected, skills = context if context is not None else load_context(args)
     files, sections = expected_writes(rules, placement, selected, exceptions, sites, workspaces, skills)
     targets = affected_targets(files, sections, selected, placement, sites, workspaces)
@@ -773,7 +782,8 @@ def apply(args, *, context=None):
     except (Exception, KeyboardInterrupt, SystemExit):
         restore(shots)
         raise
-    print("place: applied")
+    if announce:
+        print("place: applied")
     return 0
 
 
@@ -894,12 +904,14 @@ def inventory_preflight(args, context, site_id, *, resolver=shutil.which,
     lifecycle_spec = importlib.util.spec_from_file_location("inventory_lifecycle", HERE / "inventory_lifecycle.py")
     lifecycle = importlib.util.module_from_spec(lifecycle_spec)
     lifecycle_spec.loader.exec_module(lifecycle)
+    active = inventory_adoption.effective_active(SimpleNamespace(**globals()), args, context, site_id)
     errors, _record = lifecycle.validate_lifecycle(
         catalog, context, environment,
         place_module=SimpleNamespace(**globals()), resolver=resolver,
         current_principal=current_runtime(context), declaration_path=declaration,
         mode=mode, constructing_agent=constructing_agent, target_agent=target_tool,
         required_site=site_id,
+        runtime_state=None if active is None else ('active' if active else 'pending'),
     )
     if errors:
         raise PlacementError("inventory lifecycle check failed: " + "; ".join(errors))
@@ -1035,6 +1047,128 @@ def _registered_agent(tool, source_id, site_id):
     }
 
 
+def _head_tracked_bytes(branch_management, repo, relative, label):
+    """Return a regular tracked file's bytes from the registered checkout HEAD."""
+    relative = Path(relative)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise PlacementError("%s is outside the registered checkout" % label)
+    name = relative.as_posix()
+    if branch_management.git(repo, "ls-files", "--error-unmatch", "--", name,
+                             optional=True) is None:
+        raise PlacementError("%s is not tracked in the registered checkout" % label)
+    value = branch_management.git_bytes(repo, "cat-file", "--filters", "HEAD:" + name, optional=True)
+    if value is None:
+        raise PlacementError("%s is not present at registered HEAD" % label)
+    return value
+
+
+def _declared_catalog_update(head_catalog, environment_id, agent):
+    """Derive the sole permitted uncommitted declaration from HEAD bytes."""
+    try:
+        document = json.loads(head_catalog)
+    except (TypeError, ValueError) as exc:
+        raise PlacementError("catalog at registered HEAD is invalid") from exc
+    environments = [item for item in document.get("environments", [])
+                    if isinstance(item, dict) and item.get("id") == environment_id]
+    if len(environments) != 1 or not isinstance(environments[0].get("agents"), list):
+        raise PlacementError("catalog at registered HEAD cannot prove declaration provenance")
+    environment = environments[0]
+    existing = [item for item in environment["agents"]
+                if isinstance(item, dict) and item.get("descriptor") == agent["descriptor"]]
+    if existing:
+        raise PlacementError("catalog at registered HEAD cannot prove declaration provenance")
+    environment["agents"].append(agent)
+    environment["state"] = "pending"
+    return (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def inventory_declare_agent(args):
+    """Declare one missing agent in the registered source checkout.
+
+    This deliberately has no target-runtime checks or placement side effects.
+    It is the catalog declaration half of the lifecycle only.
+    """
+    try:
+        initial_snapshots = environment_inventory.snapshot_inputs(_inventory_source_paths(args))
+        initial_loaders = _inventory_loader_inputs(args)
+    except environment_inventory.CatalogError as exc:
+        raise PlacementError(str(exc)) from None
+    context = load_context(args)
+    try:
+        environment_inventory._assert_snapshots(initial_snapshots)
+        environment_inventory._assert_loader_inputs(initial_loaders)
+    except environment_inventory.CatalogError as exc:
+        raise PlacementError(str(exc)) from None
+    if not args.site or args.site not in context[2]:
+        raise PlacementError("unknown site")
+    if args.tool not in context[0]["tools"]:
+        raise PlacementError("unknown tool: " + args.tool)
+    _inventory_locations(context, args.site, args.tool)
+    binding = inventory_binding(args, context, args.site)
+    if binding is None:
+        raise PlacementError("inventory declare-agent requires an INVENTORY binding")
+    declaration, catalog, environment_id = binding
+    if not catalog.is_file():
+        raise PlacementError("catalog is not a regular file")
+    try:
+        branch_spec = importlib.util.spec_from_file_location(
+            "branch_management", HERE / "branch_management.py"
+        )
+        branch_management = importlib.util.module_from_spec(branch_spec)
+        branch_spec.loader.exec_module(branch_management)
+        repo = Path(branch_management.top(declaration.parent)).resolve()
+        declaration_relative = declaration.resolve().relative_to(repo)
+        catalog_relative = catalog.resolve().relative_to(repo)
+    except (branch_management.BranchError, ValueError) as exc:
+        raise PlacementError("declaration and catalog must share a registered checkout") from exc
+    try:
+        with branch_management.registered_checkout(repo) as registration:
+            with environment_inventory.locked_catalog(
+                    catalog, "declaration:" + registration["task"] + ":" + environment_id) as (catalog_path, raw, document):
+                head_declaration = _head_tracked_bytes(branch_management, repo, declaration_relative, "declaration")
+                head_catalog = _head_tracked_bytes(branch_management, repo, catalog_relative, "catalog")
+                if declaration.read_bytes() != head_declaration:
+                    raise PlacementError("declaration differs from registered HEAD; refuse source dirt")
+                environment_inventory.load_catalog(catalog_path, environment_id=environment_id)
+                environment, source_id = _catalog_placement_source(
+                    document, catalog_path, declaration, args.site, environment_id
+                )
+                agent = _registered_agent(args.tool, source_id, args.site)
+                existing = [item for item in environment.get("agents", [])
+                            if isinstance(item, dict) and item.get("descriptor") == args.tool]
+                if existing and (len(existing) != 1 or existing[0] != agent):
+                    raise PlacementError("catalog has a conflicting registered agent")
+                if existing:
+                    if raw != head_catalog:
+                        expected = _declared_catalog_update(head_catalog, environment_id, agent)
+                        if raw != expected:
+                            raise PlacementError("catalog differs from registered HEAD; refuse target dirt")
+                    print(json.dumps({"baseRevision": registration["tip"], "task": registration["task"],
+                                      "catalog": catalog_relative.as_posix(), "environment": environment_id,
+                                      "tool": args.tool, "changed": False}, sort_keys=True))
+                    return 0
+                if raw != head_catalog:
+                    raise PlacementError("catalog differs from registered HEAD; refuse target dirt")
+                if not isinstance(environment.get("agents"), list):
+                    raise PlacementError("catalog environment agents is invalid")
+                environment["agents"].append(agent)
+                environment["state"] = "pending"
+                environment_inventory._assert_snapshots(initial_snapshots)
+                environment_inventory._assert_loader_inputs(initial_loaders)
+                if (declaration.read_bytes() != head_declaration or
+                        catalog_path.read_bytes() != raw or
+                        branch_management.oid(repo, "HEAD") != registration["tip"] or
+                        branch_management.oid(repo, "refs/heads/" + registration["branch"]) != registration["tip"]):
+                    raise PlacementError("registered source changed; retry the operation")
+                environment_inventory.replace_catalog(catalog_path, raw, document, initial_snapshots, initial_loaders)
+                print(json.dumps({"baseRevision": registration["tip"], "task": registration["task"],
+                                  "catalog": catalog_relative.as_posix(), "environment": environment_id,
+                                  "tool": args.tool, "changed": True}, sort_keys=True))
+                return 0
+    except (environment_inventory.CatalogError, branch_management.BranchError, ValueError) as exc:
+        raise PlacementError(str(exc)) from None
+
+
 def inventory_prepare_agent(args):
     try:
         initial_snapshots = environment_inventory.snapshot_inputs(_inventory_source_paths(args))
@@ -1148,6 +1282,112 @@ def inventory_activate(args, *, resolver=shutil.which):
     return 0
 
 
+def inspect_registered_agents(context, site, *, resolver=shutil.which, runner=subprocess.run):
+    """Inspect discovery in declared direct workspaces before any model job."""
+    placement, rules, sites, workspaces, locations, exceptions, _selected, skills = context
+    grok = [loc for loc in locations.values()
+            if loc['tool'] == 'grok' and site_of(loc, workspaces) == site]
+    if not grok:
+        return []
+    executable = resolver(placement['tools']['grok']['entrypoint'])
+    if executable is None:
+        raise PlacementError('Grok is unavailable for discovery inspection')
+    results = []
+    for workspace_id, workspace in workspaces.items():
+        if workspace['site'] != site or workspace.get('kind') != 'direct':
+            continue
+        selected = [loc for loc in grok if loc['scope'] == 'home' or
+                    (loc['scope'] == 'workspace' and loc['anchor'] == workspace_id)]
+        if not selected:
+            continue
+        files, sections = expected_writes(rules, placement, selected, exceptions, sites, workspaces, skills)
+        instructions = [path for path in sections if path.name == 'AGENTS.md']
+        skill_paths = [path for path in files if path.name == 'SKILL.md' and
+                       path.parent.name == 'maintain-environment-inventory']
+        results.append(inventory_inspection.inspect_grok(
+            executable=executable, cwd=workspace['path'], instruction_paths=instructions,
+            skill_paths=skill_paths, runner=runner))
+    if not results:
+        raise PlacementError('Grok inspection needs a declared direct workspace on selected site')
+    return results
+
+
+def inventory_adopt(args, *, resolver=shutil.which, runner=subprocess.run):
+    """Apply a committed catalog's runtime inputs and save adoption in launch config."""
+    from types import SimpleNamespace
+    started = time.monotonic()
+    host = start_config(args)
+    previous_host = os.environ.get('ENVIRONMENT_INVENTORY_HOST')
+    if host and previous_host and host != previous_host:
+        raise PlacementError('start config inventory_host conflicts with ENVIRONMENT_INVENTORY_HOST')
+    if host:
+        os.environ['ENVIRONMENT_INVENTORY_HOST'] = host
+    try:
+        input_snapshot = environment_inventory.snapshot_inputs(_inventory_source_paths(args))
+        loader_snapshot = _inventory_loader_inputs(args)
+        context = load_context(args)
+        environment_inventory._assert_snapshots(input_snapshot)
+        environment_inventory._assert_loader_inputs(loader_snapshot)
+        if args.site not in context[2]:
+            raise PlacementError('unknown site')
+        _inventory_site_runtime(context, args.site)
+        binding = inventory_binding(args, context, args.site)
+        if binding is None:
+            raise PlacementError('runtime adoption requires an INVENTORY binding')
+        declaration, catalog, environment = binding
+        public = SimpleNamespace(**globals())
+        config = args._start_config_path
+        with environment_inventory.locked_catalog(
+                catalog, _inventory_claim_scope(context, args.site, environment)) as (catalog_path, raw, document):
+            environment_inventory.load_catalog(catalog_path, environment_id=environment)
+            facts = inventory_adoption.identity(public, args, context, args.site, args.source_ref)
+            config_raw, config_document = args._start_config_raw, args._start_document
+            # A matching active generation need not churn its config, but is
+            # still checked for current readiness/discovery below.
+            already_active = config_document.get('adoption') == dict(facts, state='active')
+            if not already_active:
+                config_raw, config_document = inventory_adoption.write_state(
+                    public, config, config_raw, config_document, facts, 'pending')
+            args._start_document = config_document
+            selected = filter_locations(context[4], context[3], site=args.site)
+            if not already_active:
+                apply(args, context=(*context[:6], selected, context[7]), announce=False)
+            try:
+                outputs = environment_inventory.snapshot_inputs(_inventory_output_paths(context, selected))
+                # Full readiness remains separate from Grok's official discovery.
+                inventory_preflight(args, context, args.site, mode='readiness', resolver=resolver)
+                inspections = inspect_registered_agents(context, args.site, resolver=resolver, runner=runner)
+                environment_inventory._assert_snapshots(input_snapshot)
+                environment_inventory._assert_loader_inputs(loader_snapshot)
+                if inventory_adoption.identity(public, args, context, args.site, facts['sourceRevision']) != facts:
+                    raise PlacementError('runtime inputs changed during adoption; preserve pending state and retry')
+                environment_inventory._assert_snapshots(outputs)
+                if catalog_path.read_bytes() != raw:
+                    raise PlacementError('catalog changed during adoption; preserve it and retry')
+            except BaseException:
+                if already_active and config.read_bytes() == config_raw:
+                    inventory_adoption.write_state(public, config, config_raw, config_document, facts, 'pending')
+                raise
+            inventory_adoption.write_state(public, config, config_raw, config_document, facts, 'active')
+        print(json.dumps({'environment': environment, 'state': 'active',
+                          'sourceRevision': facts['sourceRevision'], 'runtimeHead': facts['runtimeHead'],
+                          'sourceScope': facts['sourceScope'],
+                          'declarationSource': facts['declarationSource'],
+                          'declarationDigest': facts['declarationDigest'],
+                          'catalogChanged': False, 'inspections': inspections,
+                          'commandElapsedSeconds': time.monotonic() - started,
+                          'measurementScope': 'command-only; preparation and return must be measured separately'}, sort_keys=True))
+        return 0
+    except (ValueError, OSError, environment_inventory.CatalogError) as exc:
+        raise PlacementError(str(exc)) from None
+    finally:
+        if host:
+            if previous_host is None:
+                os.environ.pop('ENVIRONMENT_INVENTORY_HOST', None)
+            else:
+                os.environ['ENVIRONMENT_INVENTORY_HOST'] = previous_host
+
+
 def save_start_config(args):
     """Save validated launch inputs once, without replacing existing settings."""
     context = load_context(args)
@@ -1183,7 +1423,10 @@ def save_start_config(args):
             existing = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError):
             raise PlacementError("existing start config cannot be replaced; preserve and inspect it") from None
-        if existing != document:
+        compared = {key: value for key, value in existing.items() if key != 'adoption'} if isinstance(existing, dict) else existing
+        if isinstance(compared, dict) and compared.get('version') == 2:
+            compared['version'] = 1
+        if compared != document:
             raise PlacementError("existing start config differs; refusing to replace saved inputs")
     if path.exists():
         existing_matches()
@@ -1226,22 +1469,31 @@ def start_config(args):
     if rules or skills:
         raise PlacementError("--rules and --skills cannot be combined with an implicit start config")
     path = Path(explicit) if explicit else Path.cwd() / "placement-start.json"
+    try:
+        environment_inventory.snapshot_inputs([path])
+    except environment_inventory.CatalogError as exc:
+        raise PlacementError(str(exc)) from None
     if not path.is_file():
         if explicit:
             raise PlacementError("start config does not exist: %s" % path)
         raise PlacementError("--declaration is required when %s is absent" % path)
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        config_raw = path.read_bytes()
+        document = json.loads(config_raw)
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise PlacementError("invalid start config %s: %s" % (path, exc)) from None
     if not isinstance(document, dict):
         raise PlacementError("start config must be a JSON object")
-    allowed = {"version", "declaration", "rules", "skills", "inventory_host"}
+    allowed = {"version", "declaration", "rules", "skills", "inventory_host", "adoption"}
     unknown = set(document) - allowed
     if unknown:
         raise PlacementError("start config has unknown keys: %s" % ", ".join(sorted(unknown)))
-    if type(document.get("version")) is not int or document["version"] != 1:
-        raise PlacementError("start config version must be 1")
+    if type(document.get("version")) is not int or document["version"] not in (1, 2):
+        raise PlacementError("start config version must be 1 or 2")
+    if document['version'] == 1 and 'adoption' in document:
+        raise PlacementError('adoption requires start config version 2')
+    if document['version'] == 2 and not isinstance(document.get('adoption'), dict):
+        raise PlacementError('start config version 2 requires adoption state')
     if not isinstance(document.get("declaration"), str) or not document["declaration"].strip():
         raise PlacementError("start config declaration must be a non-empty string")
     for key in ("rules", "skills"):
@@ -1260,6 +1512,9 @@ def start_config(args):
     args.declaration = resolve(document["declaration"])
     args.rules = [resolve(value) for value in document.get("rules", [])]
     args.skills = [resolve(value) for value in document.get("skills", [])]
+    args._start_config_path = path.absolute()
+    args._start_config_raw = config_raw
+    args._start_document = document
     return host
 
 
@@ -1695,13 +1950,17 @@ def main(argv, *, runner=subprocess.run, resolver=shutil.which):
     classify_p.add_argument("--json", action="store_true")
     inventory_p = sub.add_parser("inventory", help="bounded environment catalog operations")
     inventory_sub = inventory_p.add_subparsers(dest="inventory_command", required=True)
-    for name in ("prepare-agent", "activate"):
+    adopt_p = inventory_sub.add_parser('adopt', help='apply a committed catalog using saved runtime inputs')
+    adopt_p.add_argument('--config', default='placement-start.json')
+    adopt_p.add_argument('--site', required=True)
+    adopt_p.add_argument('--source-ref', default='HEAD', help='catalog repository revision whose catalog bytes are adopted')
+    for name in ("declare-agent", "prepare-agent", "activate"):
         operation = inventory_sub.add_parser(name)
         operation.add_argument("--declaration", required=True)
         operation.add_argument("--site", required=True)
         operation.add_argument("--rules", action="append")
         operation.add_argument("--skills", action="append")
-        if name == "prepare-agent":
+        if name in {"declare-agent", "prepare-agent"}:
             operation.add_argument("--tool", required=True)
     save_p = sub.add_parser("save-start-config", help="save validated launch inputs without replacing existing settings")
     save_p.add_argument("--config", default="placement-start.json")
@@ -1742,6 +2001,10 @@ def main(argv, *, runner=subprocess.run, resolver=shutil.which):
         if args.command == "classify":
             return classify_work(args)
         if args.command == "inventory":
+            if args.inventory_command == 'adopt':
+                return inventory_adopt(args, resolver=resolver, runner=runner)
+            if args.inventory_command == "declare-agent":
+                return inventory_declare_agent(args)
             if args.inventory_command == "prepare-agent":
                 return inventory_prepare_agent(args)
             return inventory_activate(args, resolver=resolver)

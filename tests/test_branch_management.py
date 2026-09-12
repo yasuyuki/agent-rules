@@ -109,6 +109,86 @@ class BranchManagementTests(unittest.TestCase):
         hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         self.branch("check", repo=legacy, ok=False)
 
+    def test_declare_agent_updates_only_a_registered_source_catalog(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        source = Path(self.begin("declaration", branch="declaration")["worktree"])
+        declaration = source / "PLACEMENT.md"
+        catalog = source / "catalog.json"
+        declaration.write_text("""<!-- BEGIN SITES TSV -->
+```tsv
+id\thost\tuser\thome\treach\tlaunch
+s1\tcontroller\towner\t/tmp/owner\tlocal\t
+```
+<!-- END SITES TSV -->
+<!-- BEGIN WORKSPACES TSV -->
+```tsv
+id\tsite\tkind\tpath\textra
+w1\ts1\tdirect\t/tmp/owner/work\t
+```
+<!-- END WORKSPACES TSV -->
+<!-- BEGIN LOCATIONS TSV -->
+```tsv
+id\tscope\tanchor\ttool\trequirement\treason\tlegacy\tpath\tkind
+g1\thome\ts1\tgrok\trequired\t\t\t\tskills
+g2\thome\ts1\tgrok\trequired\t\t\t\trules
+```
+<!-- END LOCATIONS TSV -->
+<!-- BEGIN EXCEPTIONS TSV -->
+```tsv
+artifact\tlocation_id\trequirement\treason
+```
+<!-- END EXCEPTIONS TSV -->
+<!-- BEGIN INVENTORY TSV -->
+```tsv
+site\tcatalog\tenvironment
+s1\tcatalog.json\tenv
+```
+<!-- END INVENTORY TSV -->
+""", encoding="utf-8")
+        catalog.write_text(json.dumps({"schemaVersion": 1,
+            "sources": {"p": {"type": "placement-tsv", "host": "test", "paths": {"default": str(declaration)}}},
+            "environments": [{"id": "env", "purposes": ["normal-development"], "state": "active",
+                "refs": [{"source": "p", "site": "s1", "workspace": "w1"}], "agents": [],
+                "unknown": {"keep": True}}], "unknown": ["keep"]}), encoding="utf-8")
+        self.git_at(source, "add", "PLACEMENT.md", "catalog.json")
+        self.git_at(source, "commit", "-m", "add declaration inputs")
+        declaration.write_text(declaration.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        source_dirty = self.command(sys.executable, str(PLACE), "inventory", "declare-agent",
+                                    "--declaration", str(declaration), "--site", "s1", "--tool", "grok", ok=False)
+        self.assertIn("refuse source dirt", source_dirty.stderr)
+        self.git_at(source, "checkout", "--", "PLACEMENT.md")
+        integration_declaration = self.repo / "default.md"
+        integration_catalog = self.repo / "catalog.json"
+        integration_declaration.write_bytes(declaration.read_bytes())
+        integration_catalog.write_bytes(catalog.read_bytes())
+        default_checkout = self.command(sys.executable, str(PLACE), "inventory", "declare-agent",
+                                        "--declaration", str(integration_declaration), "--site", "s1", "--tool", "grok", ok=False)
+        self.assertIn("registered topic checkout", default_checkout.stderr)
+        unrelated = source / "unrelated.txt"; unrelated.write_text("keep\n", encoding="utf-8")
+        result = self.command(sys.executable, str(PLACE), "inventory", "declare-agent",
+                              "--declaration", str(declaration), "--site", "s1", "--tool", "grok")
+        output = json.loads(result.stdout)
+        self.assertTrue(output["changed"])
+        self.assertEqual(output["task"], "declaration")
+        self.assertEqual(output["catalog"], "catalog.json")
+        updated = json.loads(catalog.read_text(encoding="utf-8"))
+        self.assertEqual(updated["environments"][0]["state"], "pending")
+        self.assertEqual(updated["unknown"], ["keep"])
+        self.assertEqual(unrelated.read_text(encoding="utf-8"), "keep\n")
+        repeated = self.command(sys.executable, str(PLACE), "inventory", "declare-agent",
+                                "--declaration", str(declaration), "--site", "s1", "--tool", "grok")
+        self.assertFalse(json.loads(repeated.stdout)["changed"])
+        pending_catalog = catalog.read_text(encoding="utf-8")
+        invalid = json.loads(pending_catalog); invalid["environments"][0]["agents"] = "invalid"
+        catalog.write_text(json.dumps(invalid), encoding="utf-8")
+        invalid_catalog = self.command(sys.executable, str(PLACE), "inventory", "declare-agent",
+                                       "--declaration", str(declaration), "--site", "s1", "--tool", "grok", ok=False)
+        self.assertIn("agents", invalid_catalog.stderr)
+        catalog.write_text(pending_catalog + " ", encoding="utf-8")
+        refused = self.command(sys.executable, str(PLACE), "inventory", "declare-agent",
+                               "--declaration", str(declaration), "--site", "s1", "--tool", "grok", ok=False)
+        self.assertIn("refuse target dirt", refused.stderr)
+
     def approve_tag(self, name="v1", commit=None, **kwargs):
         commit = commit or self.git("rev-parse", "HEAD").stdout.strip()
         return self.branch("allow-tag-push", "--remote", "origin", "--tag", name,

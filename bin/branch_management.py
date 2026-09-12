@@ -34,6 +34,15 @@ def git(repo, *args, optional=False, env=None):
     return p.stdout.strip() if p.returncode == 0 else None
 
 
+def git_bytes(repo, *args, optional=False):
+    """Read an exact Git object without text decoding or newline stripping."""
+    p = subprocess.run(['git', '-C', str(repo), *args], stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE)
+    if p.returncode and not optional:
+        raise BranchError(p.stderr.decode('utf-8', 'replace').strip() or 'git failed: ' + ' '.join(args))
+    return p.stdout if p.returncode == 0 else None
+
+
 def oid(repo, ref):
     value = git(repo, 'rev-parse', '--verify', ref + '^{commit}', optional=True)
     if not value:
@@ -190,6 +199,31 @@ def checkout(repo, state):
     if task['worktree'] != top(repo):
         raise BranchError('checkout does not match registered worktree: ' + name)
     return key, task
+
+
+@contextmanager
+def registered_checkout(repo):
+    """Hold a registered checkout stable for a bounded source edit.
+
+    Callers which edit a tracked input use this instead of reconstructing the
+    branch registration.  The registration lock covers the caller's atomic
+    replacement, and both the recorded branch ref and HEAD must remain the
+    registered tip.
+    """
+    repo = Path(repo).resolve()
+    with locked(repo) as (directory, state):
+        assert_install(repo, directory, state)
+        task_id, task = checkout(repo, state)
+        if task['branch'] == state['default'] or task['branch'] == task['into']:
+            raise BranchError('bounded source edits require a registered topic checkout')
+        head = oid(repo, 'HEAD')
+        if task['tip'] != head or oid(repo, 'refs/heads/' + task['branch']) != head:
+            raise BranchError('registered branch tip differs from checkout HEAD')
+        yield {'task': task_id, 'branch': task['branch'], 'tip': head,
+               'worktree': task['worktree']}
+        if (task['tip'] != head or oid(repo, 'HEAD') != head or
+                oid(repo, 'refs/heads/' + task['branch']) != head):
+            raise BranchError('registered branch tip changed during bounded operation')
 
 
 def same_checkout(repo, path, name):
