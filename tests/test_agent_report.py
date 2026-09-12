@@ -123,15 +123,24 @@ def get_platforms(): return [Adapter()]
         with tempfile.TemporaryDirectory() as raw:
             directory = Path(raw); target = directory / "target"; target.mkdir()
             standalone = directory / "agent_report.py"; shutil.copy2(SOURCE, standalone)
+            instructions = target / "AGENTS.md"; instructions.write_text("instruction marker", encoding="utf-8")
+            rules = target / ".cursor" / "rules"; rules.mkdir(parents=True)
+            rule = rules / "report.rule.md"; rule.write_text("rule marker", encoding="utf-8")
             runner = self.make_runner(directory)
             config = directory / "launch.json"
             config.write_text(json.dumps({"cursor": [sys.executable, str(runner), "bad", str(target)]}), encoding="utf-8")
+            protected = {path: path.read_bytes() for path in (instructions, rule, config)}
             output = directory / "report.html"
             result = self.invoke(standalone, target, output, config, "--platform", "cursor")
             self.assertEqual(1, result.returncode, result.stdout + result.stderr)
             self.assertEqual("cursor: response conversion failed (envelope: malformed)\n", result.stdout)
             self.assertNotIn("SECRET_RESPONSE", result.stdout + result.stderr)
-            self.assertNotIn("SECRET_RESPONSE", output.read_text(encoding="utf-8"))
+            page = output.read_bytes()
+            self.assertNotIn(b"SECRET_RESPONSE", page)
+            self.assertEqual(protected, {path: path.read_bytes() for path in protected})
+            same_output = self.invoke(standalone, target, output, config, "--platform", "cursor")
+            self.assertEqual(2, same_output.returncode)
+            self.assertEqual(page, output.read_bytes())
 
     def test_plugin_load_failures_happen_before_cli_invocation(self):
         with tempfile.TemporaryDirectory() as raw:
