@@ -42,7 +42,7 @@ if marker == 'codex':
     print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': payload}}))
     print(json.dumps({'type': 'turn.completed'}))
 elif marker == 'bad':
-    print('not json')
+    print('SECRET_RESPONSE not json')
 elif marker == 'auth':
     print('do not reveal this stderr', file=sys.stderr)
     sys.exit(9)
@@ -118,6 +118,29 @@ def get_platforms(): return [Adapter()]
             self.assertIn("External", page)
             self.assertIn("trusted test adapter", page)
             self.assertIn("&lt;unsafe&gt;", page)
+
+    def test_builtin_response_diagnostic_is_safe_and_preserves_failure_exit(self):
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw); target = directory / "target"; target.mkdir()
+            standalone = directory / "agent_report.py"; shutil.copy2(SOURCE, standalone)
+            instructions = target / "AGENTS.md"; instructions.write_text("instruction marker", encoding="utf-8")
+            rules = target / ".cursor" / "rules"; rules.mkdir(parents=True)
+            rule = rules / "report.rule.md"; rule.write_text("rule marker", encoding="utf-8")
+            runner = self.make_runner(directory)
+            config = directory / "launch.json"
+            config.write_text(json.dumps({"cursor": [sys.executable, str(runner), "bad", str(target)]}), encoding="utf-8")
+            protected = {path: path.read_bytes() for path in (instructions, rule, config)}
+            output = directory / "report.html"
+            result = self.invoke(standalone, target, output, config, "--platform", "cursor")
+            self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+            self.assertEqual("cursor: response conversion failed (envelope: malformed)\n", result.stdout)
+            self.assertNotIn("SECRET_RESPONSE", result.stdout + result.stderr)
+            page = output.read_bytes()
+            self.assertNotIn(b"SECRET_RESPONSE", page)
+            self.assertEqual(protected, {path: path.read_bytes() for path in protected})
+            same_output = self.invoke(standalone, target, output, config, "--platform", "cursor")
+            self.assertEqual(2, same_output.returncode)
+            self.assertEqual(page, output.read_bytes())
 
     def test_plugin_load_failures_happen_before_cli_invocation(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -221,23 +244,46 @@ def get_platforms(): return [A()]
         with tempfile.TemporaryDirectory() as raw, mock.patch.object(report.shutil, "which", side_effect=lambda x: None if x in ("missing", "absent-launcher") else x), mock.patch.object(report, "run", side_effect=responses):
             got = report.collect(registry, list(registry), {"missing": ["absent-launcher"]}, Path(raw))
         self.assertEqual(["collected", "query failed (exit 7)", "response conversion failed", "partial", "launcher not found"], [x["status"] for x in got])
+        self.assertEqual({"stage": "processing", "code": "unexpected-error"}, got[2]["diagnostic"])
         page = report.render(got, Path("/target"))
         self.assertNotIn("sensitive stderr", page)
 
-    def test_response_error_envelopes_invalid_schema_and_incomplete_codex_turn_fail(self):
+    def test_response_diagnostics_distinguish_envelope_metadata_schema_and_processing(self):
         claude = report.Builtin("claude", "Claude", ["claude"], "r")
         codex = report.Builtin("codex", "Codex", ["codex"], "r")
         with self.assertRaises(ValueError):
             claude.parse_response(json.dumps({"type": "result", "is_error": True, "result": "{}"}))
         with self.assertRaises(ValueError):
             codex.parse_response(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "{}"}}))
+
+        def entry(adapter):
+            return {"adapter": adapter, "plugin": "builtin" if isinstance(adapter, report.Builtin) else "external.py",
+                    "name": adapter.name, "restrictions": adapter.restrictions, "cli_candidates": adapter.cli_candidates,
+                    "version_args": ["--version"], "query_args": ["query"]}
+
+        def collect_one(adapter, stdout):
+            with tempfile.TemporaryDirectory() as raw, mock.patch.object(report.shutil, "which", return_value=adapter.id), mock.patch.object(report, "run", side_effect=[subprocess.CompletedProcess([], 0, "1.0", ""), subprocess.CompletedProcess([], 0, stdout, "")]):
+                return report.collect({adapter.id: entry(adapter)}, [adapter.id], {}, Path(raw))[0]
+
+        envelope = collect_one(claude, "SECRET_RESPONSE not json")
+        self.assertEqual({"stage": "envelope", "code": "malformed"}, envelope["diagnostic"])
+        metadata = collect_one(claude, json.dumps({"type": "result", "result": "SECRET_RESPONSE not json"}))
+        self.assertEqual({"stage": "metadata", "code": "malformed-json"}, metadata["diagnostic"])
+
         class SchemaAdapter:
             id = "schema"; name = "schema"; restrictions = "r"; cli_candidates = ["schema"]
             def parse_response(self, text): return {"files": [{"name": True}], "skills": [], "unknowns": []}
-        entry = {"adapter": SchemaAdapter(), "plugin": "external.py", "name": "schema", "restrictions": "r", "cli_candidates": ["schema"], "version_args": ["--version"], "query_args": ["query"]}
-        replies = [subprocess.CompletedProcess([], 0, "1.0", ""), subprocess.CompletedProcess([], 0, "ignored", "")]
-        with tempfile.TemporaryDirectory() as raw, mock.patch.object(report.shutil, "which", return_value="schema"), mock.patch.object(report, "run", side_effect=replies):
-            self.assertEqual("response conversion failed", report.collect({"schema": entry}, ["schema"], {}, Path(raw))[0]["status"])
+        schema = collect_one(SchemaAdapter(), "ignored")
+        self.assertEqual({"stage": "schema", "code": "missing-name"}, schema["diagnostic"])
+
+        class ExplodingAdapter:
+            id = "exploding"; name = "exploding"; restrictions = "r"; cli_candidates = ["exploding"]
+            def parse_response(self, text): raise RuntimeError("SECRET_EXCEPTION")
+        processing = collect_one(ExplodingAdapter(), "ignored")
+        self.assertEqual({"stage": "processing", "code": "unexpected-error"}, processing["diagnostic"])
+        page = report.render([envelope, metadata, schema, processing], Path("/target"))
+        self.assertNotIn("SECRET_RESPONSE", page)
+        self.assertNotIn("SECRET_EXCEPTION", page)
 
     def test_timeout_launch_error_and_existing_output_do_not_write_or_overwrite(self):
         adapter = report.Builtin("codex", "Codex", ["codex"], "r")

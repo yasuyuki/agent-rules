@@ -21,6 +21,41 @@ PLUGIN_API_VERSION = 1
 CATEGORIES = ("files", "skills", "unknowns")
 FIELDS = ("name", "path", "source", "role", "scope", "state")
 STATES = ("loaded", "available", "applicable", "inactive", "unavailable", "unknown")
+DIAGNOSTIC_CODES = {
+    "envelope": ("malformed", "failed-result", "incomplete"),
+    "metadata": ("malformed-json", "missing-json"),
+    "schema": ("invalid-report", "invalid-category", "invalid-item", "missing-name",
+               "invalid-field", "invalid-state"),
+    "processing": ("unexpected-error",),
+}
+
+
+class ResponseFailure(ValueError):
+    """A safe, allowlisted failure while parsing a built-in CLI response."""
+
+    def __init__(self, stage, code):
+        if code not in DIAGNOSTIC_CODES.get(stage, ()):
+            raise ValueError("Invalid response diagnostic")
+        self.stage = stage
+        self.code = code
+        super().__init__(f"{stage}:{code}")
+
+
+class SchemaFailure(ValueError):
+    """A safe, allowlisted failure while validating response metadata."""
+
+    def __init__(self, code):
+        if code not in DIAGNOSTIC_CODES["schema"]:
+            raise ValueError("Invalid schema diagnostic")
+        self.code = code
+        super().__init__(code)
+
+
+def response_object(text, stage, code):
+    try:
+        return json_object(text)
+    except (AttributeError, TypeError, ValueError):
+        raise ResponseFailure(stage, code) from None
 
 
 def prompt(target: Path) -> str:
@@ -85,23 +120,30 @@ class Builtin:
             messages = []
             completed = False
             for line in stdout.splitlines():
-                event = json_object(line)
+                event = response_object(line, "envelope", "malformed")
                 if event.get("type") in ("error", "turn.failed"):
-                    raise ValueError("Failed turn")
+                    raise ResponseFailure("envelope", "failed-result")
                 if event.get("type") == "turn.completed":
                     completed = True
                 item = event.get("item", {})
-                if event.get("type") == "item.completed" and item.get("type") == "agent_message":
-                    messages.append(item["text"])
+                if event.get("type") == "item.completed":
+                    if not isinstance(item, dict):
+                        raise ResponseFailure("envelope", "malformed")
+                    if item.get("type") == "agent_message":
+                        if not isinstance(item.get("text"), str):
+                            raise ResponseFailure("envelope", "malformed")
+                        messages.append(item["text"])
             if not completed or not messages:
-                raise ValueError("Missing completed response")
-            return json_object(messages[-1])
-        envelope = json_object(stdout)
+                raise ResponseFailure("envelope", "incomplete")
+            return response_object(messages[-1], "metadata", "malformed-json")
+        envelope = response_object(stdout, "envelope", "malformed")
         if envelope.get("type") != "result" or envelope.get("is_error") is True:
-            raise ValueError("Failed result")
+            raise ResponseFailure("envelope", "failed-result")
         if envelope.get("subtype", "success") != "success":
-            raise ValueError("Failed result subtype")
-        return json_object(envelope["result"])
+            raise ResponseFailure("envelope", "failed-result")
+        if not isinstance(envelope.get("result"), str):
+            raise ResponseFailure("metadata", "missing-json")
+        return response_object(envelope["result"], "metadata", "malformed-json")
 
 
 def get_platforms():
@@ -177,7 +219,7 @@ def load_platforms(directories, target):
 
 def validate_data(value):
     if not isinstance(value, dict) or set(value) - set(CATEGORIES):
-        raise ValueError("Invalid report object")
+        raise SchemaFailure("invalid-report")
     clean = {category: [] for category in CATEGORIES}
     for category in CATEGORIES:
         if category not in value:
@@ -185,17 +227,17 @@ def validate_data(value):
                                            role="Category omitted from response", scope="session", state="unknown"))
             continue
         if not isinstance(value[category], list):
-            raise ValueError("Invalid category")
+            raise SchemaFailure("invalid-category")
         for item in value[category]:
             if not isinstance(item, dict) or set(item) - set(FIELDS):
-                raise ValueError("Invalid metadata item")
+                raise SchemaFailure("invalid-item")
             if not isinstance(item.get("name"), str) or not item["name"].strip():
-                raise ValueError("Missing item name")
+                raise SchemaFailure("missing-name")
             if any(not isinstance(v, str) for v in item.values()):
-                raise ValueError("Non-string metadata")
+                raise SchemaFailure("invalid-field")
             normalized = {key: item.get(key, "unknown" if key in ("state", "role", "scope") else "") for key in FIELDS}
             if normalized["state"] not in STATES:
-                raise ValueError("Invalid reported state")
+                raise SchemaFailure("invalid-state")
             clean[category].append(normalized)
     return clean
 
@@ -241,7 +283,8 @@ def collect(registry, selected, launch, target, timeout=None):
         report = dict(id=identifier, name=entry["name"], plugin=entry["plugin"],
                       restrictions=entry["restrictions"], cli=cli or "not found on PATH",
                       launcher=launcher or "not found on PATH", version="unknown",
-                      version_status="not collected", status="not installed", data=None)
+                      version_status="not collected", status="not installed", data=None,
+                      diagnostic=None)
         reports.append(report)
         if not launcher:
             if prefix:
@@ -271,13 +314,33 @@ def collect(registry, selected, launch, target, timeout=None):
             report["status"] = f"query failed (exit {response.returncode})"
             continue
         try:
-            data = validate_data(adapter.parse_response(response.stdout))
+            parsed = adapter.parse_response(response.stdout)
+        except ResponseFailure as exc:
+            report["diagnostic"] = {"stage": exc.stage, "code": exc.code}
+            report["status"] = "response conversion failed"
+            continue
+        except Exception:
+            report["diagnostic"] = {"stage": "processing", "code": "unexpected-error"}
+            report["status"] = "response conversion failed"
+            continue
+        try:
+            data = validate_data(parsed)
+        except SchemaFailure as exc:
+            report["diagnostic"] = {"stage": "schema", "code": exc.code}
+            report["status"] = "response conversion failed"
+            continue
+        except Exception:
+            report["diagnostic"] = {"stage": "processing", "code": "unexpected-error"}
+            report["status"] = "response conversion failed"
+            continue
+        try:
             for items in data.values():
                 for item in items:
                     item["existence"] = path_status(item["path"], target)
             report["data"] = data
             report["status"] = "partial" if data["unknowns"] else "collected"
         except Exception:
+            report["diagnostic"] = {"stage": "processing", "code": "unexpected-error"}
             report["status"] = "response conversion failed"
     return reports
 
@@ -311,6 +374,9 @@ def render(reports, target):
         parts.append(f'<section><h2>{escape(report["name"])}</h2><dl>')
         for key in ("id", "plugin", "cli", "launcher", "version", "version_status", "restrictions", "status"):
             parts.append(f'<dt>{key}</dt><dd>{escape(report[key])}</dd>')
+        if report["diagnostic"] is not None:
+            parts.append(f'<dt>response stage</dt><dd>{escape(report["diagnostic"]["stage"])}</dd>')
+            parts.append(f'<dt>response code</dt><dd>{escape(report["diagnostic"]["code"])}</dd>')
         parts.append('</dl>')
         if report["data"] is None:
             parts.append('<p>No inventory collected.</p>')
@@ -371,7 +437,9 @@ def main():
         print("Cannot write report", file=sys.stderr)
         return 2
     for report in reports:
-        print(f'{report["id"]}: {report["status"]}')
+        diagnostic = report["diagnostic"]
+        suffix = f' ({diagnostic["stage"]}: {diagnostic["code"]})' if diagnostic else ""
+        print(f'{report["id"]}: {report["status"]}{suffix}')
     return 0 if all(r["status"] in ("collected", "partial") or
                     (args.platform is None and r["status"] == "not installed") for r in reports) else 1
 

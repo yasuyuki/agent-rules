@@ -21,6 +21,8 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python tests/test_handoff.py
       - run: python tests/test_rules.py
+      - run: python tests/test_grok_placement.py
+      - run: python tests/test_start_config.py
       - run: python tests/test_push_preflight.py
       - run: python tests/test_agent_report.py
       - run: python tests/test_branch_management.py
