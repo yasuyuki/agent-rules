@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -258,7 +259,7 @@ def install(args):
                     raise BranchError('dispatcher version differs; explicit hook migration is required')
                 state['source'] = str(ROOT)
                 state['python'] = sys.executable
-                state['source_hashes'] = {name: digest(ROOT / name) for name in ('bin/branch_management.py', 'hooks/branch-hook')}
+                state['source_hashes'] = {name: digest(ROOT / name) for name in ('bin/branch_management.py', 'bin/push_preflight.py', 'hooks/branch-hook')}
                 # Rebinding to a reviewed public source is itself an installation.
                 state['installing'] = {name: {'source': str(target / name), 'sha256': expected,
                     'executable': state['hook_executable'][name]} for name, expected in state['hook_hashes'].items()}
@@ -281,7 +282,7 @@ def install(args):
                      'remote_url': git(repo, 'remote', 'get-url', args.remote),
                      'source': str(ROOT), 'python': sys.executable,
                      'dispatcher_hash': digest(dispatcher),
-                     'source_hashes': {name: digest(ROOT / name) for name in ('bin/branch_management.py', 'hooks/branch-hook')},
+                     'source_hashes': {name: digest(ROOT / name) for name in ('bin/branch_management.py', 'bin/push_preflight.py', 'hooks/branch-hook')},
                      'hook_hashes': {name: item['sha256'] for name, item in files.items()},
                      'hook_executable': {name: item['executable'] for name, item in files.items()},
                      'tasks': {}, 'permits': {}, 'merges': {}, 'picks': {}, 'installing': files}
@@ -708,13 +709,21 @@ def transaction(repo, directory, state, phase, data):
         save(directory, state)
 
 
-def tag_destination(repo, state, remote):
+def push_destination(repo, state, remote):
     if remote != state['remote']:
-        raise BranchError('tag push remote differs from registration')
+        raise BranchError('push remote differs from registration')
     fetch = git(repo, 'remote', 'get-url', '--all', remote).splitlines()
     push = git(repo, 'remote', 'get-url', '--push', '--all', remote).splitlines()
-    if fetch != [state['remote_url']] or push != fetch:
-        raise BranchError('tag push requires one fetch and push URL matching registration')
+    if fetch != [state['remote_url']] or len(push) != 1:
+        raise BranchError('push requires one registered fetch and one push URL')
+    # Share the preflight's conservative repository identity, including supported
+    # read/write transports. Pin this executable dependency with the hook source.
+    spec = importlib.util.spec_from_file_location('push_identity', ROOT / 'bin/push_preflight.py')
+    identity = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(identity)
+    registered = identity.repo_identity(state['remote_url'])
+    if registered is None or identity.repo_identity(push[0]) != registered:
+        raise BranchError('push repository differs from registration')
     return push[0]
 
 
@@ -728,7 +737,7 @@ def allow_tag_push(args):
     with locked(args.repo) as (directory, state):
         assert_install(args.repo, directory, state)
         checkout(args.repo, state)
-        destination = tag_destination(args.repo, state, args.remote)
+        destination = push_destination(args.repo, state, args.remote)
         commit = oid(args.repo, args.commit)
         if args.commit != commit:
             raise BranchError('tag approval requires a full commit object ID')
@@ -746,8 +755,9 @@ def allow_tag_push(args):
 
 def validate_push(repo, directory, state, rows, remote, destination=None):
     assert_install(repo, directory, state)
-    if remote != state['remote']:
-        raise BranchError('push remote differs from registration')
+    expected = push_destination(repo, state, remote)
+    if destination != expected:
+        raise BranchError('push destination differs from registration')
     reconcile(repo, state)
     tags = []
     for local, value, target, previous in rows:
@@ -764,7 +774,7 @@ def validate_push(repo, directory, state, rows, remote, destination=None):
                     or oid(repo, target) != ticket['commit']):
                 raise BranchError('tag object or target differs from authorization')
             if (remote != ticket['remote'] or destination != ticket['destination']
-                    or tag_destination(repo, state, remote) != destination):
+                    or expected != destination):
                 raise BranchError('tag push destination differs from authorization')
             tags.append(target)
             continue
@@ -788,7 +798,8 @@ def push_check(repo, remote, destination):
         return
     with locked(repo) as (directory, state):
         validate_push(repo, directory, state,
-                      [('HEAD', oid(repo, 'HEAD'), 'refs/heads/' + destination, '0' * len(oid(repo, 'HEAD')))], remote)
+                      [('HEAD', oid(repo, 'HEAD'), 'refs/heads/' + destination, '0' * len(oid(repo, 'HEAD')))],
+                      remote, push_destination(repo, state, remote))
 
 
 def hook(name, args):
