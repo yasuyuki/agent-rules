@@ -56,7 +56,7 @@ s1\tcatalog.json\tenv
 def context(decl):
     placement = place.load_placement()
     rules = place.agent_rules.load_rule_dirs(placement, [str(ROOT / "rules")])
-    rules.append(({"id": "environment-inventory-required", "title": "Inventory", "tools": ["codex", "claude"], "summary": "inventory"}, "inventory binding\n", {}))
+    rules.append(({"id": "environment-inventory-required", "title": "Inventory", "tools": ["codex", "claude", "grok"], "summary": "inventory"}, "inventory binding\n", {}))
     skills = place.agent_rules.load_skill_dirs([str(ROOT / "skills")])
     sites, workspaces, locations, exceptions = place.parse_declaration(decl)
     return placement, rules, sites, workspaces, locations, exceptions, [], skills
@@ -402,3 +402,126 @@ for argv in (
     ["check", "--declaration", "unused", "--site", "s1", "--readiness", "--environment", "env"],
 ):
     assert place.main(argv) == 1, argv
+
+
+# The bounded update commands derive the agent's runtime references from the
+# selected declaration.  They neither install a CLI nor turn a failed
+# readiness check into an active catalog record.
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory); home = root / "home"; (home / "work").mkdir(parents=True)
+    decl = root / "placement.md"
+    declaration_text = declaration(home).replace(
+        "c2\thome\ts1\tclaude\trequired\t\t\t\trules\n",
+        "c2\thome\ts1\tclaude\trequired\t\t\t\trules\n"
+        "g1\thome\ts1\tgrok\trequired\t\t\t\tskills\n"
+        "g2\thome\ts1\tgrok\trequired\t\t\t\trules\n",
+    )
+    decl.write_text(declaration_text, encoding="utf-8")
+    data = root / "catalog.json"; catalog(data, decl, state="active")
+    document = json.loads(data.read_text(encoding="utf-8"))
+    document["preserved"] = {"outside": True}
+    document["environments"][0]["preserved"] = "value"
+    data.write_text(json.dumps(document), encoding="utf-8")
+    ctx = context(decl)
+    ctx = (ctx[0], [rule for rule in ctx[1] if rule[0].get("id") != "environment-inventory-required"] +
+           [({"id": "environment-inventory-required", "title": "Inventory", "tools": ["codex", "claude", "grok"], "summary": "inventory"}, "inventory binding\n", {})],
+           *ctx[2:])
+    roots = {name: tool["configHome"]["default"].replace("$HOME", str(home))
+             for name, tool in ctx[0]["tools"].items()}
+    runtime = {"user": __import__("getpass").getuser(), "home": str(home),
+               "host": platform.system(), "platform": platform.system(), "configRoots": roots}
+    args = SimpleNamespace(declaration=str(decl), site="s1", tool="grok", rules=None, skills=None)
+    old_runtime = place.current_runtime
+    old_context = place.load_context
+    try:
+        place.load_context = lambda _args: ctx
+        place.current_runtime = lambda _context: runtime
+        before = data.read_bytes()
+        unknown = SimpleNamespace(**vars(args)); unknown.tool = "unknown"
+        try:
+            place.inventory_prepare_agent(unknown)
+        except place.PlacementError:
+            pass
+        else:
+            raise AssertionError("unknown tool was registered")
+        assert data.read_bytes() == before
+        conflicting = json.loads(before)
+        conflicting["environments"][0]["agents"].append({
+            "descriptor": "grok", "principal": {"source": "p", "site": "s1", "field": "user"},
+            "configRoot": {"source": "p", "site": "s1", "field": "home"},
+        })
+        data.write_text(json.dumps(conflicting), encoding="utf-8")
+        conflict_bytes = data.read_bytes()
+        try:
+            place.inventory_prepare_agent(args)
+        except place.PlacementError:
+            pass
+        else:
+            raise AssertionError("conflicting agent was replaced")
+        assert data.read_bytes() == conflict_bytes
+        data.write_bytes(before)
+        wrong_runtime = dict(runtime, configRoots=dict(runtime["configRoots"], grok=str(home / "wrong")))
+        place.current_runtime = lambda _context: wrong_runtime
+        try:
+            place.inventory_prepare_agent(args)
+        except place.PlacementError:
+            pass
+        else:
+            raise AssertionError("wrong config root was registered")
+        assert data.read_bytes() == before
+        def changed_context(_args):
+            decl.write_text(decl.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+            return ctx
+        place.load_context = changed_context
+        try:
+            place.inventory_prepare_agent(args)
+        except place.PlacementError as exc:
+            assert "inputs changed" in str(exc)
+        else:
+            raise AssertionError("declaration change during context load was accepted")
+        assert data.read_bytes() == before
+        place.load_context = lambda _args: ctx
+        place.current_runtime = lambda _context: runtime
+        assert place.inventory_prepare_agent(args) == 0
+        prepared = json.loads(data.read_text(encoding="utf-8"))
+        environment = prepared["environments"][0]
+        assert environment["state"] == "pending"
+        assert environment["preserved"] == "value" and prepared["preserved"] == {"outside": True}
+        grok = [agent for agent in environment["agents"] if agent["descriptor"] == "grok"]
+        assert grok == [{"descriptor": "grok", "principal": {"source": "p", "site": "s1", "field": "user"},
+                         "configRoot": {"source": "p", "site": "s1", "tool": "grok"}}]
+        prepared_bytes = data.read_bytes()
+        assert place.inventory_prepare_agent(args) == 0
+        assert data.read_bytes() == prepared_bytes
+        # No projection yet: activation reports failure and leaves pending.
+        try:
+            place.inventory_activate(args, resolver=lambda name: "/bin/" + name if name in {"codex", "claude", "grok"} else None)
+        except place.PlacementError:
+            pass
+        else:
+            raise AssertionError("activation accepted missing managed outputs")
+        assert json.loads(data.read_text(encoding="utf-8"))["environments"][0]["state"] == "pending"
+        place.apply_projection(ctx[1], ctx[0], list(ctx[4].values()), ctx[5], ctx[2], ctx[3], ctx[7])
+        original_replace = place.environment_inventory.replace_catalog
+        def stale_replace(*values):
+            decl.write_text(decl.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+            return original_replace(*values)
+        place.environment_inventory.replace_catalog = stale_replace
+        try:
+            place.inventory_activate(args, resolver=lambda name: "/bin/" + name if name in {"codex", "claude", "grok"} else None)
+        except place.PlacementError as exc:
+            assert "inputs changed" in str(exc)
+        else:
+            raise AssertionError("activation published after a stale declaration change")
+        finally:
+            place.environment_inventory.replace_catalog = original_replace
+        assert json.loads(data.read_text(encoding="utf-8"))["environments"][0]["state"] == "pending"
+        assert place.main(["inventory", "activate", "--declaration", str(decl), "--site", "s1"],
+                          resolver=lambda name: "/bin/" + name if name in {"codex", "claude", "grok"} else None) == 0
+        assert json.loads(data.read_text(encoding="utf-8"))["environments"][0]["state"] == "active"
+    finally:
+        place.current_runtime = old_runtime
+        place.load_context = old_context
+
+
+print("test_inventory_lifecycle: OK")
