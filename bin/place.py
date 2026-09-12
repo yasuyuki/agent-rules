@@ -854,7 +854,7 @@ def inventory_bindings(args, context):
     declaration = Path(args.declaration).resolve()
     text = declaration.read_text(encoding="utf-8")
     if "<!-- BEGIN INVENTORY TSV -->" not in text:
-        return []
+        return None
     rows = markdown_tsv(declaration, "INVENTORY", text)
     required = {"site", "catalog", "environment"}
     if any(set(row) != required for row in rows):
@@ -870,7 +870,7 @@ def inventory_binding(args, context, site_id):
     """Resolve one site's three-column inventory binding."""
     declaration = Path(args.declaration).resolve()
     rows = inventory_bindings(args, context)
-    if not rows:
+    if rows is None:
         return None
     binding = next((row for row in rows if row["site"] == site_id), None)
     if binding is None:
@@ -1338,7 +1338,7 @@ def inventory_adopt(args, *, resolver=shutil.which, runner=subprocess.run):
         environment_inventory._assert_snapshots(input_snapshot)
         environment_inventory._assert_loader_inputs(loader_snapshot)
         if args.environment:
-            sites = [row['site'] for row in inventory_bindings(args, context)
+            sites = [row['site'] for row in (inventory_bindings(args, context) or [])
                      if row['environment'] == args.environment]
             if len(sites) != 1:
                 raise PlacementError('environment must have exactly one saved runtime binding: ' + args.environment)
