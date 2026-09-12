@@ -78,7 +78,8 @@ def snapshot_inputs(paths):
                     if child.is_dir():
                         entries.append((str(child.relative_to(path)), "dir", b""))
                     elif child.is_file():
-                        entries.append((str(child.relative_to(path)), "file", child.read_bytes()))
+                        entries.append((str(child.relative_to(path)), "file", child.read_bytes(),
+                                        child.stat().st_mode & 0o111 if os.name == "posix" else None))
                     else:
                         raise CatalogError("inventory input has an unsafe entry")
             except OSError as exc:
@@ -87,7 +88,8 @@ def snapshot_inputs(paths):
         else:
             safe = _safe_existing_path(path, "inventory input")
             try:
-                result[path] = ("file", safe.read_bytes())
+                result[path] = ("file", safe.read_bytes(),
+                                safe.stat().st_mode & 0o111 if os.name == "posix" else None)
             except OSError as exc:
                 raise CatalogError("inventory input cannot be read") from exc
     return result
@@ -96,6 +98,52 @@ def snapshot_inputs(paths):
 def _assert_snapshots(snapshots):
     current = snapshot_inputs(snapshots)
     if current != snapshots:
+        raise CatalogError("inventory inputs changed; retry the operation")
+
+
+def snapshot_loader_inputs(rule_dirs, skill_dirs):
+    """Snapshot precisely the source entries the public rule/skill loaders read."""
+    def directory(path):
+        path = Path(path).absolute()
+        if _is_link(path) or any(_is_link(parent) for parent in path.parents) or not path.is_dir():
+            raise CatalogError("inventory source directory is unsafe")
+        return path
+
+    rules = []
+    for value in rule_dirs:
+        root = directory(value)
+        entries = []
+        try:
+            for child in sorted(root.iterdir(), key=lambda item: item.name):
+                if child.name.endswith(".rule.md"):
+                    safe = _safe_existing_path(child, "inventory rule input")
+                    entries.append((child.name, safe.read_bytes()))
+        except OSError as exc:
+            raise CatalogError("inventory rule input cannot be read") from exc
+        rules.append((root, tuple(entries)))
+
+    skills = []
+    for value in skill_dirs:
+        root = directory(value)
+        entries = []
+        try:
+            for child in sorted(root.iterdir(), key=lambda item: item.name):
+                if child.is_dir():
+                    if _is_link(child):
+                        raise CatalogError("inventory skill input is a link")
+                    entries.append((child.name, snapshot_inputs([child])[child.absolute()]))
+        except OSError as exc:
+            raise CatalogError("inventory skill input cannot be read") from exc
+        skills.append((root, tuple(entries)))
+    return {"rules": tuple(rules), "skills": tuple(skills)}
+
+
+def _assert_loader_inputs(snapshot):
+    current = snapshot_loader_inputs(
+        [path for path, _entries in snapshot["rules"]],
+        [path for path, _entries in snapshot["skills"]],
+    )
+    if current != snapshot:
         raise CatalogError("inventory inputs changed; retry the operation")
 
 
@@ -207,11 +255,13 @@ def locked_catalog(path, owner_scope):
                 fcntl.flock(stream, fcntl.LOCK_UN)
 
 
-def replace_catalog(catalog, expected_bytes, document, snapshots):
+def replace_catalog(catalog, expected_bytes, document, snapshots, loader_inputs=None):
     """Atomically save a checked catalog, preserving unrelated JSON members."""
     try:
         catalog = _safe_existing_path(catalog, "catalog")
         _assert_snapshots(snapshots)
+        if loader_inputs is not None:
+            _assert_loader_inputs(loader_inputs)
         if catalog.read_bytes() != expected_bytes:
             raise CatalogError("catalog changed; retry the operation")
         data = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
@@ -230,6 +280,8 @@ def replace_catalog(catalog, expected_bytes, document, snapshots):
         # The previous checks are intentionally repeated after the durable temp
         # file is ready: a long fsync must not widen the stale-input window.
         _assert_snapshots(snapshots)
+        if loader_inputs is not None:
+            _assert_loader_inputs(loader_inputs)
         if catalog.read_bytes() != expected_bytes:
             raise CatalogError("catalog changed; retry the operation")
         os.replace(temporary, catalog)

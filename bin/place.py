@@ -973,9 +973,14 @@ def _inventory_output_paths(context, locations):
 
 
 def _inventory_source_paths(args):
-    return [Path(args.declaration), PLACEMENT,
-            *source_dirs(ROOT / "rules", getattr(args, "rules", None)),
-            *source_dirs(ROOT / "skills", getattr(args, "skills", None))]
+    return [Path(args.declaration), PLACEMENT]
+
+
+def _inventory_loader_inputs(args):
+    return environment_inventory.snapshot_loader_inputs(
+        source_dirs(ROOT / "rules", getattr(args, "rules", None)),
+        source_dirs(ROOT / "skills", getattr(args, "skills", None)),
+    )
 
 
 def _catalog_placement_source(document, catalog_path, declaration, site_id, environment_id):
@@ -1033,11 +1038,13 @@ def _registered_agent(tool, source_id, site_id):
 def inventory_prepare_agent(args):
     try:
         initial_snapshots = environment_inventory.snapshot_inputs(_inventory_source_paths(args))
+        initial_loaders = _inventory_loader_inputs(args)
     except environment_inventory.CatalogError as exc:
         raise PlacementError(str(exc)) from None
     context = load_context(args)
     try:
         environment_inventory._assert_snapshots(initial_snapshots)
+        environment_inventory._assert_loader_inputs(initial_loaders)
     except environment_inventory.CatalogError as exc:
         raise PlacementError(str(exc)) from None
     if not args.site or args.site not in context[2]:
@@ -1074,7 +1081,7 @@ def inventory_prepare_agent(args):
                     raise PlacementError("catalog environment agents is invalid")
                 environment["agents"].append(agent)
             environment["state"] = "pending"
-            environment_inventory.replace_catalog(catalog_path, raw, document, snapshots)
+            environment_inventory.replace_catalog(catalog_path, raw, document, snapshots, initial_loaders)
     except environment_inventory.CatalogError as exc:
         raise PlacementError(str(exc)) from None
     print("inventory: agent pending")
@@ -1084,11 +1091,13 @@ def inventory_prepare_agent(args):
 def inventory_activate(args, *, resolver=shutil.which):
     try:
         initial_snapshots = environment_inventory.snapshot_inputs(_inventory_source_paths(args))
+        initial_loaders = _inventory_loader_inputs(args)
     except environment_inventory.CatalogError as exc:
         raise PlacementError(str(exc)) from None
     context = load_context(args)
     try:
         environment_inventory._assert_snapshots(initial_snapshots)
+        environment_inventory._assert_loader_inputs(initial_loaders)
     except environment_inventory.CatalogError as exc:
         raise PlacementError(str(exc)) from None
     if not args.site or args.site not in context[2]:
@@ -1126,12 +1135,13 @@ def inventory_activate(args, *, resolver=shutil.which):
                 raise PlacementError("inventory readiness failed: " + "; ".join(errors))
             if environment["state"] == "active":
                 environment_inventory._assert_snapshots(snapshots)
+                environment_inventory._assert_loader_inputs(initial_loaders)
                 if catalog_path.read_bytes() != raw:
                     raise PlacementError("catalog changed; retry the operation")
                 print("inventory: already active")
                 return 0
             environment["state"] = "active"
-            environment_inventory.replace_catalog(catalog_path, raw, document, snapshots)
+            environment_inventory.replace_catalog(catalog_path, raw, document, snapshots, initial_loaders)
     except environment_inventory.CatalogError as exc:
         raise PlacementError(str(exc)) from None
     print("inventory: active")

@@ -409,7 +409,8 @@ for argv in (
 # readiness check into an active catalog record.
 with tempfile.TemporaryDirectory() as directory:
     root = Path(directory); home = root / "home"; (home / "work").mkdir(parents=True)
-    decl = root / "placement.md"
+    inputs = root / "inputs"; inputs.mkdir()
+    decl = inputs / "placement.md"
     declaration_text = declaration(home).replace(
         "c2\thome\ts1\tclaude\trequired\t\t\t\trules\n",
         "c2\thome\ts1\tclaude\trequired\t\t\t\trules\n"
@@ -417,7 +418,11 @@ with tempfile.TemporaryDirectory() as directory:
         "g2\thome\ts1\tgrok\trequired\t\t\t\trules\n",
     )
     decl.write_text(declaration_text, encoding="utf-8")
-    data = root / "catalog.json"; catalog(data, decl, state="active")
+    data = inputs / "catalog.json"; catalog(data, decl, state="active")
+    sibling = inputs / "unrelated.json"; sibling.write_bytes(b'{"keep": true}\n')
+    sibling_bytes = sibling.read_bytes()
+    rule = inputs / "colocated-inventory-test.rule.md"
+    rule.write_text("---\nid: colocated-inventory-test\ntitle: Colocated inventory test\nsummary: Tests selected rule inputs.\ntools:\n  - grok\n---\n\nRule input.\n", encoding="utf-8")
     document = json.loads(data.read_text(encoding="utf-8"))
     document["preserved"] = {"outside": True}
     document["environments"][0]["preserved"] = "value"
@@ -430,7 +435,7 @@ with tempfile.TemporaryDirectory() as directory:
              for name, tool in ctx[0]["tools"].items()}
     runtime = {"user": __import__("getpass").getuser(), "home": str(home),
                "host": platform.system(), "platform": platform.system(), "configRoots": roots}
-    args = SimpleNamespace(declaration=str(decl), site="s1", tool="grok", rules=None, skills=None)
+    args = SimpleNamespace(declaration=str(decl), site="s1", tool="grok", rules=[str(inputs)], skills=None)
     old_runtime = place.current_runtime
     old_context = place.load_context
     try:
@@ -469,6 +474,32 @@ with tempfile.TemporaryDirectory() as directory:
         else:
             raise AssertionError("wrong config root was registered")
         assert data.read_bytes() == before
+        original_rule = rule.read_bytes()
+        def changed_rule_context(_args):
+            rule.write_bytes(original_rule + b"\nChanged during context load.\n")
+            return ctx
+        place.load_context = changed_rule_context
+        try:
+            place.inventory_prepare_agent(args)
+        except place.PlacementError as exc:
+            assert "inputs changed" in str(exc)
+        else:
+            raise AssertionError("changed rule during context load was accepted")
+        assert data.read_bytes() == before
+        rule.write_bytes(original_rule)
+        added_rule = inputs / "new-rule-input.rule.md"
+        def added_rule_context(_args):
+            added_rule.write_bytes(original_rule.replace(b"colocated-inventory-test", b"new-rule-input"))
+            return ctx
+        place.load_context = added_rule_context
+        try:
+            place.inventory_prepare_agent(args)
+        except place.PlacementError as exc:
+            assert "inputs changed" in str(exc)
+        else:
+            raise AssertionError("new rule during context load was accepted")
+        assert data.read_bytes() == before
+        added_rule.unlink()
         def changed_context(_args):
             decl.write_text(decl.read_text(encoding="utf-8") + "\n", encoding="utf-8")
             return ctx
@@ -487,6 +518,7 @@ with tempfile.TemporaryDirectory() as directory:
         environment = prepared["environments"][0]
         assert environment["state"] == "pending"
         assert environment["preserved"] == "value" and prepared["preserved"] == {"outside": True}
+        assert sibling.read_bytes() == sibling_bytes
         grok = [agent for agent in environment["agents"] if agent["descriptor"] == "grok"]
         assert grok == [{"descriptor": "grok", "principal": {"source": "p", "site": "s1", "field": "user"},
                          "configRoot": {"source": "p", "site": "s1", "tool": "grok"}}]
@@ -519,6 +551,7 @@ with tempfile.TemporaryDirectory() as directory:
         assert place.main(["inventory", "activate", "--declaration", str(decl), "--site", "s1"],
                           resolver=lambda name: "/bin/" + name if name in {"codex", "claude", "grok"} else None) == 0
         assert json.loads(data.read_text(encoding="utf-8"))["environments"][0]["state"] == "active"
+        assert sibling.read_bytes() == sibling_bytes
     finally:
         place.current_runtime = old_runtime
         place.load_context = old_context
