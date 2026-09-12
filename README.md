@@ -383,6 +383,16 @@ and trusted adapters must obey the metadata-only contract, and filenames or
 metadata can themselves be private. Review HTML before sharing; never commit
 real-environment reports to this public repository.
 
+When a successful query cannot be converted, its existing `response conversion
+failed` status remains a failure and the report/console add one fixed diagnostic
+stage and code. Built-in envelope failures use `envelope` with `malformed`,
+`failed-result`, or `incomplete`; metadata JSON failures use `metadata` with
+`malformed-json` or `missing-json`; schema failures use `schema` with a fixed
+validation code; other adapter or local processing failures use
+`processing: unexpected-error`. These labels contain no response, stderr,
+exception text, payload, or traceback. They describe that one query only and
+do not save it or trigger a retry.
+
 ### Existing launch entry points
 
 `--launch-config FILE` accepts a JSON object mapping platform IDs to nonempty
