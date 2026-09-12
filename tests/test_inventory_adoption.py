@@ -120,6 +120,12 @@ class InventoryAdoptionTests(unittest.TestCase):
         self.assertEqual(result["site"], "s1")
         self.assertEqual(self.catalog.read_bytes(), self.catalog_bytes)
 
+    def test_empty_explicit_inventory_does_not_become_an_unbound_legacy_site(self):
+        self.declaration.write_text(declaration(self.home).replace("s1\tcatalog.json\tenv\n", ""), encoding="utf-8")
+        with self.assertRaisesRegex(place.PlacementError, "no binding for selected site"):
+            place.inventory_binding(SimpleNamespace(declaration=self.declaration),
+                                    (None, None, {"s1": {}}), "s1")
+
     def test_adopt_keeps_catalog_and_allows_exact_pending_start(self):
         self.assertEqual(self.adopt(), 0)
         self.assertEqual(self.catalog.read_bytes(), self.catalog_bytes)
