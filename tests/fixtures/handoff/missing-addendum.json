@@ -1,0 +1,41 @@
+{
+  "id": "missing-addendum",
+  "receiver_uses_sender_payload": true,
+  "sender_prompt": "Task H-104 originally refers to addendum A-104, which is unavailable to the receiver and has no shared location. Sender can read the original: Objective: inspect synthetic://artifacts/a-104. Allowed: inspect only. Acceptance: return digest to synthetic://relay/specs. Include this complete original instruction in a relay payload; do not merely refer to A-104. Relay: synthetic://relay/specs. Receiving environment: synthetic-ops.",
+  "receiver_prompt": "Receiver is starting fresh for H-104. The runner will append the sender's literal relay payload after this prompt. Sender-local addendum A-104 is inaccessible; use only the appended payload and return through synthetic://relay/specs.",
+  "expect": {
+    "sender": {
+      "handoff_status": "relay-request-presented",
+      "overall_status": [
+        "not-delivered",
+        "pending-receiver"
+      ],
+      "facts": [
+        "A-104",
+        "unavailable",
+        "relay/specs"
+      ],
+      "final_response_contains": [
+        "synthetic://artifacts/a-104",
+        "inspect only",
+        "return digest",
+        "synthetic://relay/specs",
+        "synthetic-ops"
+      ],
+      "forbid_final_response_prefix": ">"
+    },
+    "receiver": {
+      "handoff_status": "received",
+      "overall_status": [
+        "pending-acceptance",
+        "not-complete"
+      ],
+      "facts": [
+        "H-104",
+        "synthetic://artifacts/a-104",
+        "only",
+        "digest"
+      ]
+    }
+  }
+}
