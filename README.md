@@ -161,6 +161,29 @@ python3 bin/place.py list --declaration PLACEMENT.md
 python3 bin/place.py start --declaration PLACEMENT.md <workspace> <tool> -- <tool arguments>
 ```
 
+For repeated local starts, save the selected inputs once in `placement-start.json`
+in the directory from which you launch:
+
+```json
+{
+  "version": 1,
+  "declaration": "PLACEMENT.md",
+  "rules": ["private-rules"],
+  "skills": ["private-skills"]
+}
+```
+
+Then use `python3 bin/place.py start <workspace> <tool>` and append native CLI
+arguments after `--`, including the CLI's own resume command. Paths in this file
+are relative to its directory. `rules` and `skills` may be omitted; the public
+sources remain included. An optional `inventory_host` selects the catalog's
+existing observer and must agree with an already set `ENVIRONMENT_INVENTORY_HOST`.
+`--config PATH` explicitly selects a different file. No parent directory or HOME
+is searched. A full `--declaration` invocation ignores the default file; mixing
+config inputs and explicit source arguments is rejected. Configuration does not
+apply placement or adopt sources: start still checks the selected workspace/CLI
+and current managed bytes before launching it.
+
 ## Environment catalog
 
 OpenCode skill placement uses `.opencode/skills` in a project and
@@ -214,7 +237,11 @@ limits the reported target while still rejecting an unknown ID.
 A remote source can declare `probe: {"transport":"ssh","target":"alias",
 "configPaths":{"windows":"C:/config/alias.conf"}}` and its absolute remote
 `path`. The explicit config file is parsed as data: an exact `Host` block with
-hostname, user, port, identity, known-hosts file and connection timeout. Executable
+hostname, user, port, identity, known-hosts file and connection timeout. After
+config values and inline probe fields are combined, `user`, `port`, `identityFile`,
+`knownHosts` and `connectTimeout` must all be explicitly non-empty; missing values
+are rejected before SSH runs. Inline `target` remains the fallback when the
+config omits `HostName`. Executable
 SSH directives and includes are rejected; the probe passes explicit options to
 SSH with user/system config disabled and reads only the declared file. An
 environment's `connection: {"transport":"ssh","source":"source-id"}` reuses
@@ -230,9 +257,11 @@ placement or JSON source, its SSH connection may carry an optional
 is excluded from the full Windows `unregisteredDistros` diagnostic; it does not
 replace the SSH target, inner runtime principal, or config root.
 
-`start` accepts only a local `kind=direct` workspace. It verifies every managed
-location on that site before resolving the declared tool entry point, then
-preserves the child process's standard streams and exit status. For a remote
+`start` accepts only a local `kind=direct` workspace. When the site has an
+inventory binding, it requires an active environment and verifies the selected
+CLI's registration, runtime identity, effective config root, and required
+placement. A broken placement for another registered CLI does not block this
+normal start. For a remote
 workspace, run this same public command on the target host. Transport, GUI,
 authentication probes, generated wrappers, and environment-specific session
 bookkeeping are not launcher functions.
@@ -241,6 +270,53 @@ Unrelated rule files and root instructions are outside that namespace and are
 left untouched. A malformed unmatched managed marker fails closed; repair that
 marker before rendering so the tool never guesses how much local text to
 remove.
+
+## Work classification
+
+Classify declared work without probing, launching, installing, connecting, or
+writing to an environment:
+
+```console
+python3 bin/place.py classify --catalog tests/fixtures/work-classification/catalog.json --work tests/fixtures/work-classification/work.json --prefer-environment isolated --json
+```
+
+Those fixture files are synthetic and runnable from this checkout; private
+catalogs and work inputs belong outside the public repository.
+
+The work document has `schemaVersion: 1` and a `work` array. Each ordinary item
+has a stable `id`, a source-record `reference`, and one or more phases. A phase
+requires `id`, `summary`, `purpose`, `requires`, and `executor`; it may include
+`environment`, `prerequisites`, `acceptance`, and `handoffs`, which default to
+empty values. `purpose` uses the catalog purposes; `requires` is an array of
+capability IDs; and `environment` is
+`{"ids":["optional-host-lock"],"mode":"normal|construction|repair"}`.
+An explicit ID permits a retained environment; a pending environment is usable
+only for construction or repair. Retired and unclassified environments are
+never eligible. `executor` is
+`{"kind":"agent|human|ci|external","state":"ready|hold|waiting|unspecified"}`
+and may include boolean `required`. The last three fields are arrays of strings.
+An excluded item instead has `id`, `reference`, and `excludedReason`; it has no
+phases. This preserves why old or completed records did not become work.
+
+Catalog environments may add a `capabilities` object. Each capability ID maps
+to `status` (`available`, `preparable`, `unavailable`, or `unknown`), `reason`,
+required string-array `evidence`, and, for `preparable`, a `preparation` route.
+Omitted capability data means unknown; it never means unavailable. The result
+lists every environment candidate, technical classification, preparation,
+unmet conditions, and readiness separately. An executor hold or an unreadable
+source therefore does not change a declared technical capability into an
+unavailable one. A `--prefer-environment` sorts that environment first but
+never relaxes a phase's purpose, state, host lock, or capability requirements.
+With `--prefer-environment`, a phase's top-level `classification` is relative
+to that preferred environment; `proposedEnvironment` is separately selected
+only from available or preparable eligible candidates. Unknown candidates stay
+visible but never become a positive proposal. Each assessment includes the
+capability evidence used for its reasons.
+
+An observer that cannot read a referenced WSL source retains that environment
+as unverified. A malformed reference remains an error when its source is
+readable. This lets another environment still be listed while making the
+missing evidence visible to classification and catalog checks.
 
 ## Agent configuration report
 
@@ -527,6 +603,30 @@ python3 tests/test_push_preflight.py
 
 ## Skills
 
+`skills/create-verification-skill/SKILL.md` creates a project-specific verification
+skill when generation or revision is requested. Read it by path and name the
+target checkout; ordinary verification requests use the existing generated skill.
+The workflow is agent-neutral and reuses the project's own operation tools.
+
+`skills/verify-agent-rules/SKILL.md` is the demonstrated output for this project.
+It drives public declaration-based apply/check against disposable inputs, checks
+actual generated contents and hand-written-file preservation, and retains evidence
+after cleanup. Its optional `--environment-repo` profile also proves composition
+with agent-environment's synthetic input and disposable agent-skills mirror output.
+See [acceptance and limitations](docs/verification-skill.md).
+From this checkout root:
+
+```console
+python3 skills/verify-agent-rules/scripts/verify.py --repo .
+python3 tests/test_verification_skill.py
+```
+
+The adapted generator retains pstack's MIT notice and a pinned `UPSTREAM.tsv`
+entry. Existing `place.py apply/check` distributes both skills. The existing
+authorship-filtered `mirror` excludes that adapted third-party generator and
+publishes the original project verifier; use the generator's canonical source
+here. Neither skill requires this repository's private environment bindings.
+
 Rules and skills are the two managed kinds. A rule is always-on text projected
 into every tool's rule convention; a skill is a directory the agent loads on
 demand. Both are copied from this repository and compared byte for byte, so a
@@ -566,39 +666,41 @@ lists nothing: publishing stops when it is missing, has lost the header, or
 names a skill this repository no longer holds, because a manifest that cannot
 be read would otherwise pass for one that reports no vendored work.
 
-## Inventory checks at normal start
+## Inventory readiness and normal start
 
 An environment owner can bind a declaration's sites to inventory validation.
-Add an `INVENTORY` TSV section with `site`, `catalog`, `environment`, and
-`evidence` columns. Paths are relative to the declaration, unless absolute.
-For example, a row `local`, `environments.json`, `development`,
-`session-evidence.json` binds the `local` site to that catalog environment.
+Add an `INVENTORY` TSV section with exactly `site`, `catalog`, and `environment`
+columns. Paths are relative to the declaration, unless absolute. For example,
+a row `local`, `environments.json`, `development` binds the `local` site to
+that catalog environment.
 Every site started from a declaration containing this table needs a binding.
 
-`place.py start` checks the binding before invoking the CLI. It requires an
-active environment, registered installed tools, the management skill and reading
-binding, unchanged managed placement, matching runtime identity/config roots,
-and external initial-reading evidence. Missing evidence and pending state reject
-normal start. There is no normal-start bypass option. Existing check/apply remain
-available for repair.
+Use readiness after changing a CLI, placement, connection, or environment
+declaration:
 
-Setup integrations call the same public
+```console
+python3 bin/place.py check --declaration PLACEMENT.md --site local --readiness
+```
+
+Readiness is read-only. It resolves catalog and environment from the selected
+`INVENTORY` row and checks pending or active environments across every registered
+CLI: principal, config root, referenced site, required placement, managed bytes,
+and visible supported CLIs missing from registration. It rejects `--workspace`
+and `--scope` because it is an environment-wide check. It does not launch a CLI
+or update state. The normal transition is `pending` → repair → readiness passes
+→ `active` → behavioral acceptance through the ordinary CLI entry point.
+
+`place.py start` checks only the selected CLI's active binding and required
+placement before invoking it. It does not read session evidence or compare
+historical hashes, and another CLI's placement defect is reported by readiness
+rather than blocking the selected CLI.
+
+Setup integrations may call the same public
 `inventory_lifecycle.validate_lifecycle` function in construction mode, passing
 the constructing agent, explicit declaration, placement context, and actual
-runtime identity. Pending construction may lack initial-reading evidence but
-must have the constructing agent's skill and binding. This helper does not
+runtime identity. Pending construction must have the constructing agent's skill
+and binding. This helper does not
 perform a state transition or launch anything.
-
-Evidence is an external JSON array. Each entry identifies the descriptor,
-`session` (`continuing` or `startup`), ISO `observedAt`, `skillId`, observed
-`condition`, `applied: true`, `environmentId`, `declarationSha256`, runtime
-`principal` and `configRoot`, and the
-SHA-256 values `skillSha256`, `bindingSha256`, and `recordSha256`. `record` points
-to an actual session observation record; relative paths resolve against the
-evidence file. The skill hash covers SKILL.md source bytes; the binding hash
-covers the parsed rule body. Keep real session records outside version control.
-These references make stale or missing evidence detectable; they do not prove
-the truth of an observation or enforce subsequent model behavior.
 
 Deploy a binding only through the environment's existing setup and reviewed
 adoption flow. An unbound declaration retains the independent project's normal
@@ -667,6 +769,187 @@ with Twine, verify the installed version from PyPI in a clean environment,
 and update the publication-status paragraph above. Do not add tokens to this
 repository or automatically publish on pushes. This change does not create
 tags, GitHub Releases or PyPI releases.
+
+## Registered work and branch enforcement
+
+`python3 bin/place.py branch --help` exposes the local Git integration. It uses
+only this public source, the selected Python runtime and repository-local Git
+configuration; no private launcher or personal path is required. Git must support
+`reference-transaction` hooks and `rev-parse --path-format` (Git 2.31 or newer).
+The runtime needs Python 3.10 or newer. Git for Windows supplies the shell used
+by the fixed dispatcher. Keep the public source available after installation.
+
+Install with `branch install --repo REPO --remote REMOTE`. This verifies the
+remote default via `ls-remote --symref`, preserves existing hooks and installs the
+fixed `hooks/branch-hook` bytes for `prepare-commit-msg`, `reference-transaction`
+and `pre-push`. `agentBranch.python`, `agentBranch.source` and `core.hooksPath`
+are explicit local configuration. Existing hooks retain arguments, input and
+exit status. A collision that cannot be preserved is rejected. Install can retry
+an interrupted owned installation; unknown files are never overwritten. Re-running
+install from a reviewed public checkout rebinds the Python source and runtime
+while preserving registrations and hook bytes. Before updating the checkout that
+supplies its own hooks, rebind from a separate reviewed source so its source hash
+remains stable during the merge. A changed dispatcher needs a separately reviewed
+hook migration; it is never silently overwritten.
+
+Installation protects linked worktrees containing the source or Python runtime
+with Git's native worktree lock before pinning bytes. Existing locks are kept;
+rebind never unlocks an old dependency because other repositories may still use
+it. Legacy installations using an unlocked linked dependency must reinstall the
+reviewed source before acceptance. Dependency decommissioning is explicit
+maintenance after its consumers have moved, not part of ordinary task retirement.
+Primary checkouts are already excluded from retirement.
+
+Installation disables automatic reference packing in this repository with
+`maintenance.pack-refs.enabled=false` and `gc.packRefs=false`; other maintenance
+remains enabled. Git's hook interface cannot distinguish pruning a loose reference
+from deleting the branch itself. `git pack-refs --all --no-prune` is supported;
+reference pruning remains rejected. This preserves branch-deletion protection
+without a maintenance wrapper or a hook bypass.
+
+Register existing integration and topic checkouts with `branch begin --mode
+adopt --repo REPO --task ID --request REQUEST --branch BRANCH --worktree PATH
+--base COMMIT --into DESTINATION`. Paths are absolute. `REQUEST` references the
+existing user requirement or issue; it is not a duplicate progress ledger.
+`COMMIT` is the explicitly reviewed historical starting point and must agree
+with the remote history. The default branch is registered with itself as its
+integration destination. No historical commits before adoption are retroactively
+classified as violations. Unregistered retained branches remain untouched; their
+future updates are refused.
+
+For independent work use `branch begin --mode new --repo REPO --task ID
+--request REQUEST --branch TOPIC --worktree NEW_PATH`. Fetch the remote default
+first; the command verifies that the fetched commit still agrees with the remote.
+It creates a new topic and worktree using standard Git. `--into BRANCH` defaults
+to the verified remote default. For dependent work add `--depends-on PARENT_ID`;
+the parent tip becomes the starting point. Reuse existing work with `branch begin
+--mode continue --repo REPO --task ID`. A mismatched branch, path or common Git
+directory is rejected. Interrupted worktree creation is resumed without reset,
+stash or automatic removal. Each worktree has one lead performing Git updates.
+
+A fetched update of the **same** remote branch can be admitted with `begin
+--mode continue --task ID --repo REPO --sync`, then `git merge --ff-only
+REMOTE/BRANCH` in its registered worktree. The one-use import is pinned to the
+old and fetched new commits; unrelated fast-forwards are rejected. This does not
+identify which Git command produced the same reference transition.
+
+Prepare integration in the registered destination with `branch prepare-merge
+--repo DESTINATION_PATH --task SOURCE_ID`. Merge with `git merge --no-ff
+--no-commit SOURCE_BRANCH`, run the project's required verification, then commit.
+Both tips and the ordered parents are checked again. A dependent task can be
+integrated only after its parent has been integrated into the destination's
+history, or directly into that parent when it is the registered destination
+(its pinned HEAD already supplies the dependency). A moved source or destination requires fresh preparation. A successful
+integration consumes the permission. A failed or interrupted commit preserves
+changes and can be retried; a source reserved by a prepared integration must wait
+for that integration to finish or retry.
+
+Transparent normal operation is a design and acceptance requirement for this
+branch workflow, as explicitly requested for this work. Setup inventories,
+migration checks and incident repair must not become routine prerequisites for
+starting, resuming or finishing work. The owning layer resolves routine targets,
+checks consistency and records state using existing registrations and entry
+points. Keep safety checks at the protected operation and revalidate after
+relevant state changes; do not require repeated history reconstruction, complex
+argument assembly, explanations or duplicate records. Verify affected normal
+paths with representative operations, without adding per-task reports. This
+requirement does not extend this tool's responsibility or authority boundaries.
+
+Retirement is enabled only for work created by the dependency-protecting version
+of `begin --mode new`. Existing and adopted registrations are retained: older
+consumers may not have locked their source or runtime worktrees. Reinstallation
+alone does not certify their migration, and continuation does not silently lift
+this restriction. Resolving those legacy dependencies is separate migration work;
+do not unlock dependencies or edit registration state to bypass it. An interrupted
+or failed installation may leave its newly acquired dependency lock in place;
+this is deliberate preservation until explicit maintenance resolves its consumers.
+
+Close a finished registration with `branch retire --repo REPO --task ID`. It
+removes the registered worktree and drops the registration; the branch and its
+commits are kept. "Finished" means the ledger's integration receipt, not
+`git branch --merged`: the receipt's source must equal both the registered tip
+and the branch's current commit, and its merge commit must be an ancestor of the
+registered destination. Work integrated into a registered topic is finished even
+though it never reached the default branch, and a branch merged somewhere else is
+not. Retirement is refused for the default-branch registration, the repository's
+own working tree, the checkout the command is run from, a checkout holding the
+registered `agentBranch.source` or `agentBranch.python`, work another
+registration depends on or integrates into, a branch with an outstanding permit,
+prepared integration or cherry-pick exception, and a checkout with uncommitted,
+untracked or ignored files. Ignored files count because a retired checkout can
+contain another repository's registered worktree. Removal uses `git worktree
+remove` without `--force`; nothing is reset, stashed or force-deleted, and a
+refusal leaves both the registration and the files as they are.
+
+The work identifier, branch name and path become available for new work. The
+retained branch is now unregistered, so its future updates are refused like any
+other retained branch; re-register it with `git worktree add PATH BRANCH` and
+`begin --mode adopt`. Branch deletion is not part of this command. An interrupted
+retirement is completed by running the same command again: worktree removal is a
+no-op once the directory is gone, and a stale administrative record is pruned
+(metadata only, never a file, and repository-wide). There is no bulk mode, no age
+or count criterion and no abandonment path; each retirement names one work
+identifier and is justified by that work's own integration receipt.
+
+A user-approved cherry-pick exception is registered in its destination topic with
+`branch allow-cherry-pick --repo PATH --commit SOURCE_SHA --approval USER_REFERENCE
+--reason REASON`. Each permission is pinned to the current destination HEAD and
+one source commit, and is consumed after success. For a sequence, each current
+source needs its own applicable exception; a rejected later pick preserves
+already committed earlier picks. Conflict resolution does not broaden approval.
+Default-branch ordinary commits, unregistered reference updates, unrelated merges,
+amend and unauthorized fast-forwards fail before the reference is committed,
+including `git commit --no-verify`. Existing approval requirements for history
+rewrites remain in force; this interface does not grant rewrite permission.
+
+`branch check --repo PATH` explains inconsistencies and exits nonzero; `--json`
+provides machine output. It checks worktree ownership, tips, dependencies, public
+source and installed hook bytes and executable state. Registration, commit
+permits and integration receipts live in the Git common directory's
+`agent-branches/state.json`, shared by linked worktrees. OS locks and atomic
+writes serialize registry changes. On another clone/host, register the same work
+ID against that clone's remote history; never copy local operation permissions.
+The shared push preflight applies the same branch/tip check to installed repos,
+then retains its existing visibility, destination and history-protection policy.
+The actual pre-push hook checks all submitted refs and commits, and compares its
+transport URL with the single effective push URL for the registered remote.
+Both branch and tag pushes require the registered fetch repository identity.
+Read/write URL separation is supported for equivalent GitHub transports and
+native absolute paths/local file URLs; unknown transports remain exact matches.
+Different repositories, remote names and multiple destinations are rejected.
+
+To publish an explicitly requested release tag, first create the local tag, then
+register `branch allow-tag-push --repo PATH --remote REMOTE --tag TAG_NAME
+--commit FULL_COMMIT_SHA --approval USER_REFERENCE`. The tag name is relative to
+`refs/tags/`; the commit must be a full object ID. The command requires a
+registered checkout and pins the tag's raw object (including its annotation),
+peeled commit, remote name and URL. Both lightweight and annotated tags work.
+Exactly one fetch URL and one push URL must identify the registered repository;
+the approval additionally pins the exact effective push URL. The remote tag must
+not exist. Publish with `git push REMOTE refs/tags/TAG_NAME`.
+
+The hook admits only creation of that exact tag at that exact destination.
+Changed tags, tag replacement/deletion and unapproved refs in the same push are
+rejected. After the whole batch passes, the hook consumes each tag permission
+before transport, because pre-push cannot observe the server's final result.
+A transport failure or `--dry-run` therefore needs re-registration before a
+retry; reuse the same approval reference only while its scope still applies.
+This does not authorize history rewriting or bypass the existing branch checks.
+
+These are accidental-misuse guards, not an isolation boundary against deliberate
+Git configuration changes. In particular, a missing hook cannot execute itself:
+remaining hooks, `branch check` and the common push preflight detect the missing
+file. Deliberately bypassing all these entrypoints is prohibited by policy.
+Changes produced by `cherry-pick --no-commit` cannot be attributed after the fact.
+The lead still judges functional relationships and the validity of verification.
+See the [Git hook contract](https://git-scm.com/docs/githooks) and
+[cherry-pick contract](https://git-scm.com/docs/git-cherry-pick).
+
+Run `python3 tests/test_branch_management.py` and
+`python3 tests/test_branch_recovery.py` for isolated real-Git tests, in
+addition to the existing rules, push preflight and installed-package checks.
+The Linux/Windows CI matrix runs the same test. CI results do not establish
+installation or behavioral acceptance on an operator's actual host.
 
 ## License
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Project rules and skills onto the sites and workspaces a declaration names.
 
-    place.py check  --declaration <path> [--rules <dir>] [--skills <dir>]
+    place.py check  --declaration <path> [--rules <dir>] [--skills <dir>] [--site <id> --readiness]
     place.py apply  --declaration <path> [--rules <dir>] [--skills <dir>]
     place.py list   --declaration <path>
-    place.py start  --declaration <path> [--rules <dir>] [--skills <dir>] <workspace> <tool> [-- <tool-argv>...]
+    place.py start  [--config <path> | --declaration <path> [--rules <dir>] [--skills <dir>]] <workspace> <tool> [-- <tool-argv>...]
     place.py mirror --skills <dir> --dest <dir> [--check]
     place.py selfcheck
 
@@ -31,6 +31,9 @@ import tempfile
 import uuid
 from pathlib import Path
 
+# Keep every public command usable from a read-only source checkout.  This is
+# material to classify's read-only contract: local imports must not emit pyc.
+sys.dont_write_bytecode = True
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -44,6 +47,10 @@ spec.loader.exec_module(agent_rules)
 inventory_spec = importlib.util.spec_from_file_location("environment_inventory", HERE / "environment_inventory.py")
 environment_inventory = importlib.util.module_from_spec(inventory_spec)
 inventory_spec.loader.exec_module(environment_inventory)
+
+classification_spec = importlib.util.spec_from_file_location("work_classification", HERE / "work_classification.py")
+work_classification = importlib.util.module_from_spec(classification_spec)
+classification_spec.loader.exec_module(work_classification)
 
 
 class PlacementError(RuntimeError):
@@ -720,6 +727,18 @@ def load_context(args):
 
 
 def check(args, *, context=None):
+    if getattr(args, "readiness", False):
+        if getattr(args, "workspace", None) or getattr(args, "scope", None):
+            raise PlacementError("--readiness cannot be combined with --workspace or --scope")
+        if not getattr(args, "site", None):
+            raise PlacementError("--readiness requires --site")
+        placement, rules, sites, workspaces, locations, exceptions, selected, skills = context if context is not None else load_context(args)
+        if args.site not in sites:
+            raise PlacementError("unknown site: " + args.site)
+        inventory_preflight(args, (placement, rules, sites, workspaces, locations, exceptions, selected, skills),
+                            args.site, mode="readiness")
+        print("readiness: OK")
+        return 0
     placement, rules, sites, workspaces, locations, exceptions, selected, skills = context if context is not None else load_context(args)
     errors, printed = check_state(rules, placement, selected, exceptions, sites, workspaces, locations, skills, check_installed=context is None)
     for path in printed:
@@ -804,27 +823,31 @@ def check_catalog(args):
     return 0 if not errors else 1
 
 
-def inventory_preflight(args, context, site_id, *, resolver=shutil.which,
-                        mode="normal", constructing_agent=None):
-    """Check an explicitly bound local inventory before launching a CLI.
+def classify_work(args):
+    """Classify work without probing or changing any environment."""
+    try:
+        results = work_classification.classify(
+            args.catalog, args.work, args.prefer_environment
+        )
+    except work_classification.WorkClassificationError as exc:
+        raise PlacementError(str(exc)) from None
+    if args.json:
+        print(json.dumps(results, ensure_ascii=False, sort_keys=True))
+    else:
+        print(work_classification.render_table(results))
+    return 0
 
-    The optional table keeps independent public projects independent. Once a
-    site is bound, a missing catalog/evidence file is a failure, never a bypass.
-    Setup callers may request construction mode; normal start deliberately
-    exposes no construction-mode switch.
-    """
-    from types import SimpleNamespace
-    import getpass
-    import platform
 
+def inventory_binding(args, context, site_id):
+    """Resolve one site's three-column inventory binding."""
     declaration = Path(args.declaration).resolve()
     text = declaration.read_text(encoding="utf-8")
     if "<!-- BEGIN INVENTORY TSV -->" not in text:
-        return
+        return None
     rows = markdown_tsv(declaration, "INVENTORY", text)
-    required = {"site", "catalog", "environment", "evidence"}
-    if any(not required.issubset(row) for row in rows):
-        raise PlacementError("INVENTORY needs site, catalog, environment, evidence columns")
+    required = {"site", "catalog", "environment"}
+    if any(set(row) != required for row in rows):
+        raise PlacementError("INVENTORY needs exactly site, catalog, environment columns")
     if len({row["site"] for row in rows}) != len(rows):
         raise PlacementError("duplicate INVENTORY site")
     if any(row["site"] not in context[2] for row in rows):
@@ -834,32 +857,13 @@ def inventory_preflight(args, context, site_id, *, resolver=shutil.which,
         raise PlacementError("INVENTORY has no binding for selected site: " + site_id)
     if any(not binding[key].strip() for key in required):
         raise PlacementError("INVENTORY binding has an empty required value")
-    def relative(value):
-        path = Path(value)
-        return path if path.is_absolute() else declaration.parent / path
-    evidence_path = relative(binding["evidence"])
-    try:
-        try:
-            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            if mode != "construction":
-                raise
-            evidence = []
-        if not isinstance(evidence, list):
-            raise ValueError("evidence must be an array")
-        for entry in evidence:
-            if not isinstance(entry, dict):
-                raise ValueError("evidence entry must be an object")
-            record = entry.get("record")
-            if not isinstance(record, str) or not record:
-                raise ValueError("evidence entry needs a record path")
-            path = Path(record)
-            entry["record"] = str(path if path.is_absolute() else evidence_path.parent / path)
-    except (OSError, ValueError) as exc:
-        raise PlacementError("inventory evidence is unverified: " + str(exc)) from None
-    lifecycle_spec = importlib.util.spec_from_file_location("inventory_lifecycle", HERE / "inventory_lifecycle.py")
-    lifecycle = importlib.util.module_from_spec(lifecycle_spec)
-    lifecycle_spec.loader.exec_module(lifecycle)
+    catalog = Path(binding["catalog"])
+    return declaration, (catalog if catalog.is_absolute() else declaration.parent / catalog), binding["environment"]
+
+
+def current_runtime(context):
+    import getpass
+    import platform
     if os.name == "posix":
         import pwd
         user = pwd.getpwuid(os.getuid()).pw_name
@@ -870,18 +874,84 @@ def inventory_preflight(args, context, site_id, *, resolver=shutil.which,
     for name, tool in context[0]["tools"].items():
         spec = tool["configHome"]
         config_roots[name] = os.environ.get(spec.get("env", "")) or spec["default"].replace("$HOME", home)
-    principal = {"user": user, "home": home,
+    return {"user": user, "home": home,
                  "host": os.environ.get("WSL_DISTRO_NAME") or platform.system(),
                  "platform": platform.system(),
                  "configRoots": config_roots}
+
+
+def inventory_preflight(args, context, site_id, *, resolver=shutil.which,
+                        mode="normal", constructing_agent=None, target_tool=None):
+    """Check one target before start, or every registered CLI for readiness."""
+    binding = inventory_binding(args, context, site_id)
+    if binding is None:
+        if mode == "readiness":
+            raise PlacementError("--readiness requires an INVENTORY binding for the selected site")
+        return
+    declaration, catalog, environment = binding
+    from types import SimpleNamespace
+    lifecycle_spec = importlib.util.spec_from_file_location("inventory_lifecycle", HERE / "inventory_lifecycle.py")
+    lifecycle = importlib.util.module_from_spec(lifecycle_spec)
+    lifecycle_spec.loader.exec_module(lifecycle)
     errors, _record = lifecycle.validate_lifecycle(
-        relative(binding["catalog"]), context, binding["environment"],
+        catalog, context, environment,
         place_module=SimpleNamespace(**globals()), resolver=resolver,
-        current_principal=principal, session_evidence=evidence,
-        declaration_path=declaration, mode=mode, constructing_agent=constructing_agent,
+        current_principal=current_runtime(context), declaration_path=declaration,
+        mode=mode, constructing_agent=constructing_agent, target_agent=target_tool,
+        required_site=site_id,
     )
     if errors:
         raise PlacementError("inventory lifecycle check failed: " + "; ".join(errors))
+
+
+def start_config(args):
+    """Resolve the deliberately selected start configuration, if any."""
+    explicit = getattr(args, "config", None)
+    declaration = getattr(args, "declaration", None)
+    rules = getattr(args, "rules", None)
+    skills = getattr(args, "skills", None)
+    if explicit and (declaration or rules or skills):
+        raise PlacementError("--config cannot be combined with --declaration, --rules, or --skills")
+    if declaration:
+        return None
+    if rules or skills:
+        raise PlacementError("--rules and --skills cannot be combined with an implicit start config")
+    path = Path(explicit) if explicit else Path.cwd() / "placement-start.json"
+    if not path.is_file():
+        if explicit:
+            raise PlacementError("start config does not exist: %s" % path)
+        raise PlacementError("--declaration is required when %s is absent" % path)
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise PlacementError("invalid start config %s: %s" % (path, exc)) from None
+    if not isinstance(document, dict):
+        raise PlacementError("start config must be a JSON object")
+    allowed = {"version", "declaration", "rules", "skills", "inventory_host"}
+    unknown = set(document) - allowed
+    if unknown:
+        raise PlacementError("start config has unknown keys: %s" % ", ".join(sorted(unknown)))
+    if type(document.get("version")) is not int or document["version"] != 1:
+        raise PlacementError("start config version must be 1")
+    if not isinstance(document.get("declaration"), str) or not document["declaration"].strip():
+        raise PlacementError("start config declaration must be a non-empty string")
+    for key in ("rules", "skills"):
+        if key not in document:
+            continue
+        value = document[key]
+        if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+            raise PlacementError("start config %s must be an array of non-empty strings" % key)
+    host = document.get("inventory_host")
+    if host is not None and (not isinstance(host, str) or not host.strip()):
+        raise PlacementError("start config inventory_host must be a non-empty string")
+    base = path.resolve().parent
+    def resolve(value):
+        candidate = Path(value)
+        return str(candidate if candidate.is_absolute() else base / candidate)
+    args.declaration = resolve(document["declaration"])
+    args.rules = [resolve(value) for value in document.get("rules", [])]
+    args.skills = [resolve(value) for value in document.get("skills", [])]
+    return host
 
 
 def start(args, runner=subprocess.run, resolver=shutil.which):
@@ -891,6 +961,23 @@ def start(args, runner=subprocess.run, resolver=shutil.which):
     command. Invoke this same entry point on the target host instead of depending
     on an environment-private launcher.
     """
+    configured_host = start_config(args)
+    old_host = os.environ.get("ENVIRONMENT_INVENTORY_HOST")
+    if configured_host and old_host and old_host != configured_host:
+        raise PlacementError("start config inventory_host conflicts with ENVIRONMENT_INVENTORY_HOST")
+    if configured_host:
+        os.environ["ENVIRONMENT_INVENTORY_HOST"] = configured_host
+    try:
+        return _start(args, runner=runner, resolver=resolver, configured_host=configured_host)
+    finally:
+        if configured_host:
+            if old_host is None:
+                os.environ.pop("ENVIRONMENT_INVENTORY_HOST", None)
+            else:
+                os.environ["ENVIRONMENT_INVENTORY_HOST"] = old_host
+
+
+def _start(args, runner=subprocess.run, resolver=shutil.which, configured_host=None):
     context = load_context(args)
     placement, rules, sites, workspaces, locations, exceptions, _selected, skills = context
     workspace = workspaces.get(args.workspace_id)
@@ -914,11 +1001,13 @@ def start(args, runner=subprocess.run, resolver=shutil.which):
     if tool is None:
         raise PlacementError("unknown tool: %s" % args.tool)
 
-    inventory_preflight(args, context, site_id, resolver=resolver)
+    inventory_preflight(args, context, site_id, resolver=resolver, target_tool=args.tool)
 
-    selected = filter_locations(locations, workspaces, site=site_id)
+    selected = [location for location in locations.values()
+                if location["tool"] == args.tool and site_of(location, workspaces) == site_id]
     errors, _printed = check_state(
-        rules, placement, selected, exceptions, sites, workspaces, locations, skills
+        rules, placement, selected, exceptions, sites, workspaces, locations, skills,
+        check_installed=False,
     )
     if errors:
         raise PlacementError("placement check failed: " + "; ".join(errors))
@@ -926,10 +1015,10 @@ def start(args, runner=subprocess.run, resolver=shutil.which):
     entrypoint = resolver(tool["entrypoint"])
     if entrypoint is None:
         raise PlacementError("tool does not resolve: %s" % tool["entrypoint"])
-    return runner(
-        [entrypoint, *args.tool_args],
-        cwd=workspace["path"],
-    ).returncode
+    kwargs = {"cwd": workspace["path"]}
+    if configured_host:
+        kwargs["env"] = os.environ.copy()
+    return runner([entrypoint, *args.tool_args], **kwargs).returncode
 
 
 def write_rule(directory, rule_id, title, tools=None):
@@ -1254,7 +1343,10 @@ def selfcheck(_args):
     return 0
 
 
-def main(argv):
+def main(argv, *, runner=subprocess.run, resolver=shutil.which):
+    if argv[:1] == ["branch"]:
+        import branch_management
+        return branch_management.main(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -1277,6 +1369,7 @@ def main(argv):
     check_p.add_argument("--scope")
     check_p.add_argument("--environment")
     check_p.add_argument("--probe", action="store_true")
+    check_p.add_argument("--readiness", action="store_true")
     apply_p = sub.add_parser("apply")
     add_common(apply_p)
     list_p = sub.add_parser("list")
@@ -1286,8 +1379,14 @@ def main(argv):
     list_p.add_argument("--purpose")
     list_p.add_argument("--json", action="store_true")
     list_p.add_argument("--probe", action="store_true")
+    classify_p = sub.add_parser("classify", help="read-only work/environment classification")
+    classify_p.add_argument("--catalog", required=True)
+    classify_p.add_argument("--work", required=True)
+    classify_p.add_argument("--prefer-environment")
+    classify_p.add_argument("--json", action="store_true")
     start_p = sub.add_parser("start")
-    start_p.add_argument("--declaration", required=True)
+    start_p.add_argument("--config")
+    start_p.add_argument("--declaration")
     start_p.add_argument("--rules", action="append")
     start_p.add_argument("--skills", action="append")
     start_p.add_argument("workspace_id")
@@ -1297,12 +1396,17 @@ def main(argv):
     mirror_p.add_argument("--skills", action="append")
     mirror_p.add_argument("--dest", required=True)
     mirror_p.add_argument("--check", action="store_true")
+    sub.add_parser("branch", help="register work and enforce Git branch operations")
     sub.add_parser("selfcheck")
     args = parser.parse_args(argv)
     try:
         if args.command == "check":
             if args.catalog:
+                if args.readiness:
+                    raise PlacementError("--readiness requires --declaration, not --catalog")
                 return check_catalog(args)
+            if args.readiness and args.environment:
+                raise PlacementError("--readiness resolves environment from INVENTORY; do not pass --environment")
             return check(args)
         if args.command == "apply":
             return apply(args)
@@ -1310,10 +1414,12 @@ def main(argv):
             if args.catalog:
                 return list_catalog(args)
             return list_workspaces(args)
+        if args.command == "classify":
+            return classify_work(args)
         if args.command == "start":
             if args.tool_args[:1] == ["--"]:
                 args.tool_args = args.tool_args[1:]
-            return start(args)
+            return start(args, runner=runner, resolver=resolver)
         if args.command == "mirror":
             return mirror(args)
         return selfcheck(args)

@@ -9,13 +9,16 @@ shape produced for a real repository.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+from urllib.request import url2pathname
 
 
 # Deliberately conservative: an unknown SPDX identifier is not evidence that a
@@ -153,6 +156,18 @@ def repo_identity(url: str) -> tuple[str, str] | None:
     if not isinstance(url, str) or not url or "\x00" in url:
         return None
     value = url.strip().removeprefix("git+")
+    # Git accepts both native absolute paths and local file URLs. Preserve path
+    # case and symlink spelling; do not infer identity for distinct filesystems.
+    if os.path.isabs(value):
+        return "local", os.path.normpath(value)
+    if value.startswith("file://"):
+        parsed = urlsplit(value)
+        if parsed.netloc or parsed.query or parsed.fragment:
+            return None
+        path = url2pathname(parsed.path)
+        if os.path.isabs(path):
+            return "local", os.path.normpath(path)
+        return None
     # SCP-like SSH syntax: user@host:owner/repo.git
     match = re.fullmatch(r"(?:[^@/:]+@)?([^/:]+):(.+)", value)
     if match and "://" not in value:
@@ -333,6 +348,14 @@ def main() -> int:
     need_metadata = args.user_intent == "auto" and not args.temporary
     policy = load_policy(args.policy) if need_metadata and args.policy is not None else None
     output = decide(collect_state(Path(args.repo).resolve(), need_metadata), args.user_intent, args.temporary, args.oss, policy)
+    if output["decision"] == "push":
+        spec = importlib.util.spec_from_file_location("branch_management", Path(__file__).with_name("branch_management.py"))
+        branch_management = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(branch_management)
+        try:
+            branch_management.push_check(Path(args.repo).resolve(), output["remote"], output["destination"])
+        except (branch_management.BranchError, OSError, ValueError, KeyError) as exc:
+            output = result("hold", "BRANCH_CHECK_FAILED: " + str(exc))
     print(json.dumps(output, sort_keys=True, separators=(",", ":")))
     return 0
 

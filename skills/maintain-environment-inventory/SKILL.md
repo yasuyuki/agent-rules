@@ -55,16 +55,18 @@ discovery where supported; otherwise reference the installed SKILL.md from the
 agent's always-read configuration. An agent supporting neither remains an
 incomplete installation. Do not overwrite unmanaged skill directories.
 
-Check the affected environment with `place.py check --catalog <catalog>
---environment <id>` and the environment's existing placement and setup checks.
-Verify skill bytes, binding bytes, and actual resolved CLI/config roots. Obtain
-actual session evidence of reading the skill body and applying an update
-condition, both in continuing sessions and at the next startup. An index entry
-or an agent's availability is not evidence of body reading. Reuse continuing
-sessions; distribution alone is no reason to restart them.
+Check the affected site's binding with `place.py check --declaration <D> --site
+<S> --readiness`. This read-only check resolves the catalog and environment
+only from that site's `INVENTORY` row. It checks every registered CLI's declared
+principal, config root, placement sites, required management skill and binding,
+managed bytes, and visible supported CLIs that are not registered. Do not pair
+`--readiness` with a workspace or scope restriction. Use ordinary `check` for
+partial placement work.
 
-Only mark construction `active` after inventory, all-agent placement, and initial
-reading checks pass. Partial failure stays `pending` with a resumable handoff;
+Only mark construction `active` after repair and readiness pass. `active` means
+the machine is ready to launch; it does not claim that an agent has followed a
+skill or completed a behavioral acceptance. Perform that acceptance through the
+ordinary entry point after activation. Partial failure stays `pending` with a resumable handoff;
 do not remove it or restore `active` as cleanup. Intentional retained/retired
 transitions keep their intended state. Repair uses existing setup/maintenance
 entry points, with the constructing agent's skill/binding present; do not add a
@@ -80,6 +82,6 @@ evidence, but cannot edit shared inventory or baseline. During comparison the
 controller does not change the shared catalog. Actual environment changes belong
 to the environment maintainer outside the cycle. Preserve executor boundaries.
 
-Report machine checks separately from observed session behavior. Managed-entry
+Report machine readiness separately from observed session behavior. Managed-entry
 preflights do not enforce direct CLI invocations or all model behavior after a
 skill has been read.
