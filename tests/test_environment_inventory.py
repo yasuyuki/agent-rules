@@ -338,6 +338,26 @@ Host target
         raise AssertionError("stale input published a catalog update")
     assert stable.read_bytes() == original
 
+    # Skill source snapshots include executable mode because the loader exposes
+    # it to consumers.  Bytes alone cannot prove a stable skill on POSIX.
+    if os.name != "nt":
+        skill_root = root / "skills"; skill = skill_root / "example"; skill.mkdir(parents=True)
+        skill_file = skill / "tool"
+        skill_file.write_text("same bytes\n", encoding="utf-8")
+        before_mode = skill_file.stat().st_mode
+        os.chmod(skill_file, before_mode ^ 0o100)
+        try:
+            loader_snapshot = inventory.snapshot_loader_inputs([], [skill_root])
+            os.chmod(skill_file, skill_file.stat().st_mode ^ 0o100)
+            try:
+                inventory._assert_loader_inputs(loader_snapshot)
+            except inventory.CatalogError as exc:
+                assert "inputs changed" in str(exc)
+            else:
+                raise AssertionError("skill executable mode change was accepted")
+        finally:
+            os.chmod(skill_file, before_mode)
+
     # Failure after the durable temporary write leaves no replacement behind.
     snapshots = inventory.snapshot_inputs([input_file])
     with mock.patch.object(inventory.os, "replace", side_effect=OSError("replace failed")):
