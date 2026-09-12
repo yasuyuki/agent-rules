@@ -44,8 +44,32 @@ ask the user to repair wrapped text. Check the longest displayed line against
 the known display constraint; if the width is unknown, shorten the invocation
 without inventing a universal width guarantee.
 
-Use an existing script when appropriate. Create a script only when it is needed
-for reliable execution and allowed by the task; respect a no-new-scripts request.
+When the remaining procedure amounts to a script (for example, checks sharing
+variables, branching, or coordinated failure handling), reuse an existing entry
+point or save and validate a script file before handing it over. Do not present
+the script body as a copy-paste procedure, including a heredoc or encoded payload
+that makes the user recreate the file. Keep ordinary short commands as commands.
+Create a script only when needed and allowed; respect a no-new-scripts request.
+
+Put the file where the intended user can access it within existing permissions.
+If transfer is needed, provide a way to retrieve just that file, using a fixed
+revision when retrieving from a repository, followed by a separate short execution
+command. Do not require a repository clone just to obtain the script or pipe a
+download directly into a shell. Verify the saved file, the available retrieval
+path, and the target shell; state the working directory, success output and
+failure behavior. Distinguish a validated handoff from execution by its recipient.
+
+As soon as this need arises, analyze why the work requires a script-like human
+handoff and whether an existing entry point can remove it. Separate observed
+failures from suspected causes. If the need is likely to recur, find and update
+the relevant existing issue or register one in the project's established issue
+tracker. Record the symptom, affected entry point, reproduction conditions and
+reason recurrence is expected; distinguish the immediate handoff workaround from
+the unresolved cause. Do not wait for another failure, duplicate an existing
+issue, or expand the task into fixing the underlying interface without authority.
+If issue registration is unavailable, preserve the pending registration in the
+existing handoff record and report the limitation.
+
 Validate the exact presented syntax in the stated shell and use a safe dry run
 or version query through the same argument path where available. Syntax checks
 do not prove that copying from the UI preserves bytes. Never execute a destructive
