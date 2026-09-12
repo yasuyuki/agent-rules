@@ -11,6 +11,8 @@ import json
 import os
 import shlex
 import subprocess
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -22,6 +24,233 @@ TOOL_CONFIG_HOMES = json.loads((Path(__file__).resolve().parents[1] / "placement
 
 class CatalogError(RuntimeError):
     pass
+
+
+def _is_link(path):
+    """Recognize both POSIX links and Windows directory junctions."""
+    if path.is_symlink():
+        return True
+    if hasattr(os.path, "isjunction"):
+        return os.path.isjunction(path)
+    try:
+        return bool(path.lstat().st_file_attributes & 0x400)
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def _safe_existing_path(path, label):
+    path = Path(path)
+    if _is_link(path):
+        raise CatalogError("%s is a link" % label)
+    for parent in path.absolute().parents:
+        if _is_link(parent):
+            raise CatalogError("%s ancestor is a link" % label)
+    if not path.is_file():
+        raise CatalogError("%s is not a regular file" % label)
+    return path
+
+
+def snapshot_inputs(paths):
+    """Capture selected local inputs, refusing links and special files.
+
+    The snapshots are deliberately small and operation-specific.  They are used
+    only to reject publishing a catalog result derived from stale placement
+    inputs; they are not an inventory cache.
+    """
+    result = {}
+    for value in paths:
+        path = Path(value).absolute()
+        if path in result:
+            continue
+        if any(_is_link(parent) for parent in path.parents):
+            raise CatalogError("inventory input ancestor is a link")
+        if not path.exists() and not path.is_symlink():
+            result[path] = ("missing",)
+            continue
+        if path.exists() and path.is_dir():
+            if _is_link(path):
+                raise CatalogError("inventory input is a link")
+            entries = []
+            try:
+                for child in sorted(path.rglob("*"), key=lambda item: str(item)):
+                    if _is_link(child):
+                        raise CatalogError("inventory input contains a link")
+                    if child.is_dir():
+                        entries.append((str(child.relative_to(path)), "dir", b""))
+                    elif child.is_file():
+                        entries.append((str(child.relative_to(path)), "file", child.read_bytes()))
+                    else:
+                        raise CatalogError("inventory input has an unsafe entry")
+            except OSError as exc:
+                raise CatalogError("inventory input cannot be read") from exc
+            result[path] = ("dir", tuple(entries))
+        else:
+            safe = _safe_existing_path(path, "inventory input")
+            try:
+                result[path] = ("file", safe.read_bytes())
+            except OSError as exc:
+                raise CatalogError("inventory input cannot be read") from exc
+    return result
+
+
+def _assert_snapshots(snapshots):
+    current = snapshot_inputs(snapshots)
+    if current != snapshots:
+        raise CatalogError("inventory inputs changed; retry the operation")
+
+
+@contextmanager
+def locked_catalog(path, owner_scope):
+    """Read one catalog while holding its sibling advisory operation lock."""
+    if not isinstance(owner_scope, str) or not owner_scope:
+        raise CatalogError("catalog operation scope is invalid")
+    # A catalog environment may not be live in two runtime clones.  Include
+    # the native locking domain nevertheless, so a Windows process can never
+    # mistake a still-live WSL claim for its own interrupted operation.
+    claim_scope = os.name + ":" + owner_scope
+    catalog = _safe_existing_path(path, "catalog")
+    lock = catalog.with_name(catalog.name + ".lock")
+    if _is_link(lock):
+        raise CatalogError("catalog lock is a link")
+    try:
+        stream = lock.open("a+b")
+    except OSError as exc:
+        raise CatalogError("catalog lock is unavailable") from exc
+    with stream:
+        if os.name == "nt":
+            import msvcrt
+            if os.fstat(stream.fileno()).st_size == 0:
+                stream.write(b"0")
+                stream.flush()
+            stream.seek(0)
+            try:
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                raise CatalogError("catalog operation is busy; retry") from exc
+        else:
+            import fcntl
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise CatalogError("catalog operation is busy; retry") from exc
+        claim = catalog.with_name(catalog.name + ".claim")
+        if _is_link(claim):
+            raise CatalogError("catalog operation claim is a link")
+        owned_claim = None
+        try:
+            if claim.exists():
+                try:
+                    existing = claim.read_bytes()
+                    value = json.loads(existing.decode("utf-8"), object_pairs_hook=_unique_object)
+                except (OSError, UnicodeError, json.JSONDecodeError, CatalogError) as exc:
+                    raise CatalogError("catalog operation claim is invalid; inspect before retrying") from exc
+                if (not isinstance(value, dict) or set(value) != {"version", "scope", "nonce", "catalog"} or
+                        value.get("version") != 1 or not isinstance(value.get("scope"), str) or
+                        not value["scope"] or not isinstance(value.get("nonce"), str) or not value["nonce"] or
+                        value.get("catalog") != catalog.name):
+                    raise CatalogError("catalog operation claim is invalid; inspect before retrying")
+                if value["scope"] != claim_scope:
+                    raise CatalogError("catalog operation is busy; resume it from its owning environment")
+                # The native lock was acquired for this scope.  A matching
+                # claim is therefore an interrupted earlier operation, not a
+                # live peer; only this scope may resume and remove it.
+                try:
+                    claim.unlink()
+                except OSError as exc:
+                    raise CatalogError("catalog operation claim could not be resumed; retry") from exc
+            nonce = os.urandom(16).hex()
+            owned_claim = json.dumps({"version": 1, "scope": claim_scope,
+                                      "nonce": nonce, "catalog": catalog.name},
+                                     separators=(",", ":")).encode("utf-8")
+            fd, temporary = tempfile.mkstemp(prefix=claim.name + ".", suffix=".tmp", dir=claim.parent)
+            try:
+                with os.fdopen(fd, "wb") as output:
+                    output.write(owned_claim)
+                    output.flush()
+                    os.fsync(output.fileno())
+                try:
+                    os.link(temporary, claim)
+                except FileExistsError as exc:
+                    raise CatalogError("catalog operation is busy; retry") from exc
+            except CatalogError:
+                raise
+            except OSError as exc:
+                raise CatalogError("catalog operation claim could not be published; retry") from exc
+            finally:
+                if os.path.exists(temporary):
+                    try:
+                        os.unlink(temporary)
+                    except OSError:
+                        pass
+            try:
+                raw = catalog.read_bytes()
+            except OSError as exc:
+                raise CatalogError("cannot read catalog") from exc
+            try:
+                document = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
+            except (UnicodeError, json.JSONDecodeError) as exc:
+                raise CatalogError("cannot read catalog") from exc
+            if not isinstance(document, dict):
+                raise CatalogError("catalog must be a JSON object")
+            yield catalog, raw, document
+        finally:
+            if owned_claim is not None:
+                try:
+                    if claim.is_file() and claim.read_bytes() == owned_claim:
+                        claim.unlink()
+                except OSError:
+                    pass
+            if os.name == "nt":
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(stream, fcntl.LOCK_UN)
+
+
+def replace_catalog(catalog, expected_bytes, document, snapshots):
+    """Atomically save a checked catalog, preserving unrelated JSON members."""
+    try:
+        catalog = _safe_existing_path(catalog, "catalog")
+        _assert_snapshots(snapshots)
+        if catalog.read_bytes() != expected_bytes:
+            raise CatalogError("catalog changed; retry the operation")
+        data = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        fd, temporary = tempfile.mkstemp(prefix=catalog.name + ".", suffix=".tmp", dir=catalog.parent)
+    except CatalogError:
+        raise
+    except OSError as exc:
+        raise CatalogError("catalog could not be saved; retry the same operation") from exc
+    replaced = False
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, catalog.stat().st_mode)
+        # The previous checks are intentionally repeated after the durable temp
+        # file is ready: a long fsync must not widen the stale-input window.
+        _assert_snapshots(snapshots)
+        if catalog.read_bytes() != expected_bytes:
+            raise CatalogError("catalog changed; retry the operation")
+        os.replace(temporary, catalog)
+        replaced = True
+        try:
+            if catalog.read_bytes() != data:
+                raise CatalogError("catalog replacement outcome is unknown; inspect the catalog before retrying")
+        except OSError as exc:
+            raise CatalogError("catalog replacement outcome is unknown; inspect the catalog before retrying") from exc
+    except CatalogError:
+        raise
+    except OSError as exc:
+        if replaced:
+            raise CatalogError("catalog replacement outcome is unknown; inspect the catalog before retrying") from exc
+        raise CatalogError("catalog could not be saved; retry the same operation") from exc
+    finally:
+        if os.path.exists(temporary):
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
 
 
 def validate_capabilities(value, environment_id="?"):

@@ -42,6 +42,15 @@ host, user, HOME, workspace, executor, or runsRoot values. Keep outer transport
 and inner runtime principal distinct. Preserve unknown or retained environments
 as explicit rows instead of dropping them.
 
+When adding a CLI to an existing environment, review its descriptor and placement
+locations first, then run `place.py inventory prepare-agent --declaration <D>
+--site <S> --tool <CLI>` on the target runtime, with its existing rule/skill inputs.
+The operation resolves the catalog and principal from the site's INVENTORY binding,
+registers the CLI and writes pending together. Do not assemble operational JSON
+references or state transitions by hand. A conflicting existing registration is
+refused, not replaced. Resume through the same operation after correcting its
+reported prerequisite; exact registration is a no-op.
+
 Include all installed agents in the runtime, including the constructing agent
 and previously installed CLIs. Compare the supported tool/subject descriptors
 against the runtime PATH and declared installation locations. Placement `absent`
@@ -63,6 +72,9 @@ managed bytes, and visible supported CLIs that are not registered. Do not pair
 `--readiness` with a workspace or scope restriction. Use ordinary `check` for
 partial placement work.
 
+After repair, run `place.py inventory activate --declaration <D> --site <S>` with
+the same inputs. It rechecks full readiness and refuses changed inputs before
+saving active; failure leaves pending. Do not edit state to bypass that check.
 Only mark construction `active` after repair and readiness pass. `active` means
 the machine is ready to launch; it does not claim that an agent has followed a
 skill or completed a behavioral acceptance. Perform that acceptance through the
