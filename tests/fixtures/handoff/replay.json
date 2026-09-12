@@ -1,0 +1,26 @@
+{
+  "id": "replay",
+  "sender_prompt": "Task H-105 already has handoff id X-105 and receiver recorded operation deploy-105 completed with result PASS. A duplicate notification for X-105 arrived. Reuse H-105 and do not rerun deploy-105; report the existing result through synthetic://tasks/H-105.",
+  "receiver_prompt": "Receiver sees duplicate handoff X-105 for H-105. Operation deploy-105 is already completed with result PASS. Shared task: synthetic://tasks/H-105.",
+  "expect": {
+    "sender": {
+      "handoff_status": "replay-recorded",
+      "overall_status": "acceptance-satisfied",
+      "facts": [
+        "X-105",
+        "deploy-105",
+        "PASS"
+      ]
+    },
+    "receiver": {
+      "handoff_status": "replay-recorded",
+      "overall_status": "acceptance-satisfied",
+      "facts": [
+        "H-105",
+        "deploy-105",
+        "completed",
+        "PASS"
+      ]
+    }
+  }
+}

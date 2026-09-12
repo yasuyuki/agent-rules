@@ -1,6 +1,6 @@
 ---
 name: human-handoff
-description: Read before presenting commands or steps for the user to execute, including explicit requests for a command, launch instructions, or a copy-paste answer. Also use for requests for user input, physical actions, or approval. Make the remaining human action reliable to carry out.
+description: Read before presenting commands or steps for the user to execute, including commands, launch instructions, and requests relayed to another agent. Also use for requests for user input, physical actions, or approval. Make the remaining human action reliable to carry out.
 ---
 
 # Handing work to a human
@@ -30,8 +30,19 @@ make those setup steps conditional; ask only when the uncertainty prevents a
 usable handoff. Distinguish checking the written procedure from observing the
 actual screen or successfully completing the action.
 
-Commands must survive the actual display and copy-paste path, not
-merely parse as the original text. Console or harness wrapping can insert real
+Relaying a request to another environment's agent is a human action when the
+person must carry it. Name the receiving environment and provide the exact text
+to paste, separately from the instructions to the person. Include the receiving
+environment in the payload itself, so it survives forwarding without the
+surrounding explanation. Include necessary URLs
+as literal text inside the copyable payload, not only hyperlink attributes.
+Use a plain-text code block without quote prefixes or list decorations that the
+person must remove. Do not ask them to reconstruct references or edit the request.
+Keep shared-task content and state under the `handoff` rule when available; this
+skill governs the human relay, not an additional task ledger.
+
+Commands, relayed requests and their references must survive the actual display
+and copy-paste path, not merely parse as the original text. Console or harness wrapping can insert real
 whitespace, even inside a quoted argument: `workspace-write` can become
 `workspace- write`. A fenced one-line command alone does not prevent this.
 
@@ -44,11 +55,39 @@ ask the user to repair wrapped text. Check the longest displayed line against
 the known display constraint; if the width is unknown, shorten the invocation
 without inventing a universal width guarantee.
 
-Use an existing script when appropriate. Create a script only when it is needed
-for reliable execution and allowed by the task; respect a no-new-scripts request.
+When the remaining procedure amounts to a script (for example, checks sharing
+variables, branching, or coordinated failure handling), reuse an existing entry
+point or save and validate a script file before handing it over. Do not present
+the script body as a copy-paste procedure, including a heredoc or encoded payload
+that makes the user recreate the file. Keep ordinary short commands as commands.
+Create a script only when needed and allowed; respect a no-new-scripts request.
+
+Put the file where the intended user can access it within existing permissions.
+If transfer is needed, provide a way to retrieve just that file, using a fixed
+revision when retrieving from a repository, followed by a separate short execution
+command. Do not require a repository clone just to obtain the script or pipe a
+download directly into a shell. Verify the saved file, the available retrieval
+path, and the target shell; state the working directory, success output and
+failure behavior. Distinguish a validated handoff from execution by its recipient.
+
+As soon as this need arises, analyze why the work requires a script-like human
+handoff and whether an existing entry point can remove it. Separate observed
+failures from suspected causes. If the need is likely to recur, find and update
+the relevant existing issue or register one in the project's established issue
+tracker. Record the symptom, affected entry point, reproduction conditions and
+reason recurrence is expected; distinguish the immediate handoff workaround from
+the unresolved cause. Do not wait for another failure, duplicate an existing
+issue, or expand the task into fixing the underlying interface without authority.
+If issue registration is unavailable, preserve the pending registration in the
+existing handoff record and report the limitation.
+
 Validate the exact presented syntax in the stated shell and use a safe dry run
 or version query through the same argument path where available. Syntax checks
-do not prove that copying from the UI preserves bytes. Never execute a destructive
+do not prove that copying from the UI preserves bytes. For relayed text, check
+that plain-text copying retains the request and literal URLs without manual
+removal of decoration; a code block's appearance alone is not proof. Report
+format inspection, observed copy/paste, recipient retrieval and execution as
+separate evidence. If the actual UI path is unavailable, leave that check pending. Never execute a destructive
 or externally visible action merely to test the user's command.
 
 If a result is needed, ask for the specific non-sensitive output or pass/fail.

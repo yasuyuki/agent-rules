@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -25,9 +26,9 @@ class BranchError(RuntimeError):
     pass
 
 
-def git(repo, *args, optional=False):
+def git(repo, *args, optional=False, env=None):
     p = subprocess.run(['git', '-C', str(repo), *args], stdout=subprocess.PIPE,
-                       stderr=subprocess.PIPE, encoding='utf-8')
+                       stderr=subprocess.PIPE, encoding='utf-8', env=env)
     if p.returncode and not optional:
         raise BranchError(p.stderr.strip() or 'git failed: ' + ' '.join(args))
     return p.stdout.strip() if p.returncode == 0 else None
@@ -80,7 +81,9 @@ def locked(repo, create=False):
         directory.mkdir(exist_ok=True)
     if not directory.is_dir():
         raise BranchError('branch management is not installed')
-    # OS locks disappear on process death; never call a Git mutation here.
+    # OS locks disappear on process death. Reference-changing Git operations
+    # invoke our hooks and must run outside this non-reentrant lock. Worktree
+    # removal changes no refs and is serialized here with registration changes.
     with (directory / 'lock').open('a+b') as stream:
         if os.name == 'nt':
             import msvcrt
@@ -120,6 +123,26 @@ def require(state):
         raise BranchError('missing or unsupported branch registration')
 
 
+def dependency_worktrees(source, python):
+    # Protect both the named executable (which may be a venv symlink) and its
+    # resolved target. Git's native lock is shared across consumer repositories.
+    found = {}
+    # Dependency discovery is outside the hook's current repository/index.
+    env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+    for path in (Path(source), Path(python).absolute().parent, Path(python).resolve().parent):
+        root = git(path, 'rev-parse', '--show-toplevel', optional=True, env=env)
+        if not root:
+            continue
+        root = str(Path(root).resolve())
+        gitdir = git(root, 'rev-parse', '--path-format=absolute', '--git-dir', env=env)
+        shared = git(root, 'rev-parse', '--path-format=absolute', '--git-common-dir', env=env)
+        if Path(gitdir).resolve() == Path(shared).resolve():
+            continue  # The primary checkout cannot be retired.
+        lock = Path(git(root, 'rev-parse', '--path-format=absolute', '--git-path', 'locked', env=env))
+        found[root] = lock
+    return found.items()
+
+
 def installation_errors(repo, directory, state, *, source_check=True):
     require(state)
     errors = []
@@ -130,6 +153,10 @@ def installation_errors(repo, directory, state, *, source_check=True):
     for key, value in [('agentBranch.python', state['python']), ('agentBranch.source', state['source'])]:
         if git(repo, 'config', '--get', key, optional=True) != value:
             errors.append(key + ' differs from installation')
+    if source_check:
+        for root, lock in dependency_worktrees(state['source'], state['python']):
+            if not lock.is_file():
+                errors.append('unprotected dependency worktree; reinstall reviewed source: ' + root)
     source = Path(state['source']) / 'hooks/branch-hook'
     for relative, expected in (state.get('source_hashes', {}) if source_check else {}).items():
         path = Path(state['source']) / relative
@@ -170,6 +197,35 @@ def same_checkout(repo, path, name):
             and common(path).resolve() == common(repo).resolve())
 
 
+def registered_head_return(repo, state, new):
+    """Allow only a detached worktree to reattach to its recorded branch tip.
+
+    A symbolic HEAD update identifies its named target as
+    ``ref:refs/heads/<branch>``.  Requiring that target, the worktree, its
+    single registered task, the named branch ref, and the recorded tip to agree
+    limits this exception to restoring the registered checkout state.
+    """
+    path = top(repo)
+    matches = [task for task in state['tasks'].values() if task['worktree'] == path]
+    if len(matches) != 1:
+        return False
+    task = matches[0]
+    return (new == 'ref:refs/heads/' + task['branch']
+            and git(repo, 'rev-parse', '--verify', 'refs/heads/' + task['branch'], optional=True) == task['tip'])
+
+
+def within(child, parent):
+    child, parent = Path(child).resolve(), Path(parent).resolve()
+    return child == parent or parent in child.parents
+
+
+def main_worktree(repo):
+    for line in git(repo, 'worktree', 'list', '--porcelain').splitlines():
+        if line.startswith('worktree '):
+            return str(Path(line[len('worktree '):]).resolve())
+    raise BranchError('repository has no working tree')
+
+
 def default_remote(repo, remote):
     if remote.startswith('-') or remote not in (git(repo, 'remote') or '').splitlines():
         raise BranchError('choose an existing remote explicitly')
@@ -183,6 +239,11 @@ def default_remote(repo, remote):
 def install(args):
     repo = Path(args.repo).resolve()
     default = default_remote(repo, args.remote)
+    # Lock before reading/pinning source bytes. Preserve existing locks and never
+    # auto-unlock on rebind: another repository may still consume this checkout.
+    for root, lock in dependency_worktrees(ROOT, sys.executable):
+        if not lock.exists():
+            git(root, 'worktree', 'lock', '--reason', 'branch management dependency', root)
     with locked(repo, create=True) as (directory, state):
         target = directory / 'hooks'
         dispatcher = ROOT / 'hooks/branch-hook'
@@ -198,7 +259,7 @@ def install(args):
                     raise BranchError('dispatcher version differs; explicit hook migration is required')
                 state['source'] = str(ROOT)
                 state['python'] = sys.executable
-                state['source_hashes'] = {name: digest(ROOT / name) for name in ('bin/branch_management.py', 'hooks/branch-hook')}
+                state['source_hashes'] = {name: digest(ROOT / name) for name in ('bin/branch_management.py', 'bin/push_preflight.py', 'hooks/branch-hook')}
                 # Rebinding to a reviewed public source is itself an installation.
                 state['installing'] = {name: {'source': str(target / name), 'sha256': expected,
                     'executable': state['hook_executable'][name]} for name, expected in state['hook_hashes'].items()}
@@ -221,7 +282,7 @@ def install(args):
                      'remote_url': git(repo, 'remote', 'get-url', args.remote),
                      'source': str(ROOT), 'python': sys.executable,
                      'dispatcher_hash': digest(dispatcher),
-                     'source_hashes': {name: digest(ROOT / name) for name in ('bin/branch_management.py', 'hooks/branch-hook')},
+                     'source_hashes': {name: digest(ROOT / name) for name in ('bin/branch_management.py', 'bin/push_preflight.py', 'hooks/branch-hook')},
                      'hook_hashes': {name: item['sha256'] for name, item in files.items()},
                      'hook_executable': {name: item['executable'] for name, item in files.items()},
                      'tasks': {}, 'permits': {}, 'merges': {}, 'picks': {}, 'installing': files}
@@ -377,6 +438,7 @@ def begin(args):
                     'base': base, 'depends_on': args.depends_on, 'into': into, 'tip': tip}
             tasks[args.task] = task
             if args.mode == 'new':
+                task['retirement_guarded'] = True
                 task['creating'] = True
                 state['permits'][args.branch] = {'kind': 'create', 'old': '0' * len(base), 'new': base,
                                                  'worktree': path}
@@ -402,6 +464,90 @@ def begin(args):
     return output
 
 
+def retirement_checks(repo, state, key):
+    """Everything that must hold before a finished registration is closed.
+
+    Refusal leaves both the registration and the files as they are. The
+    directory checks are skipped once the checkout is gone, so the same
+    conditions can be re-evaluated after removal."""
+    task = state['tasks'].get(key)
+    if task is None:
+        raise BranchError('unregistered work item: ' + key)
+    name, path = task['branch'], task['worktree']
+    if name == state['default']:
+        raise BranchError('the default branch registration is not retired')
+    if Path(path).resolve() == Path(main_worktree(repo)).resolve():
+        raise BranchError('the repository working tree is not retired')
+    if top(repo) == path:
+        raise BranchError('retire from another checkout of this repository')
+    if not task.get('retirement_guarded'):
+        raise BranchError('legacy/adopted registration needs dependency migration before retirement; keep checkout')
+    # Removing the registered dispatcher source or runtime would break every
+    # hook, commit and push in each repository installed from it.
+    for label, value in [('source', state['source']), ('python', state['python'])]:
+        if within(value, path):
+            raise BranchError('registered ' + label + ' lives in this checkout; '
+                              'rebind from another reviewed source first')
+    done = task.get('integrated')
+    if not done or done['source'] != task['tip']:
+        raise BranchError('work is not integrated into its registered destination')
+    if oid(repo, 'refs/heads/' + name) != task['tip']:
+        raise BranchError('registered branch tip changed outside enforcement')
+    if not ancestor(repo, done['commit'], 'refs/heads/' + done['destination']):
+        raise BranchError('integration is not present in the destination history')
+    for other, value in state['tasks'].items():
+        if other != key and (value['depends_on'] == key or value['into'] == name):
+            raise BranchError('another registration depends on or integrates into this work: ' + other)
+    if (state['permits'].get(name) or state['merges'].get(name)
+            or any(ticket['task'] == key for ticket in state['merges'].values())
+            or any(pick.startswith(name + ':') for pick in state['picks'])):
+        raise BranchError('in-flight permit or prepared integration; finish or retry it first')
+    if Path(path).exists():
+        if not same_checkout(repo, path, name):
+            raise BranchError('registered worktree has changed')
+        if git(path, 'status', '--porcelain', '--ignored'):
+            raise BranchError('checkout has uncommitted, untracked or ignored files; preserve and inspect')
+    return task
+
+
+def retire(args):
+    """Close a finished registration: remove its worktree, keep its branch.
+
+    The branch and its commits stay, unregistered, so nothing becomes
+    unreachable and no reference transaction is needed. Only the final removal
+    from `tasks` writes the registration, so an interrupted run is completed by
+    running the same command again."""
+    repo = Path(args.repo).resolve()
+    with locked(repo) as (directory, state):
+        assert_install(repo, directory, state)
+        reconcile(repo, state)
+        task = retirement_checks(repo, state, args.task)
+        save(directory, state)
+        name, path = task['branch'], task['worktree']
+        output = {'task': args.task, 'branch': name, 'worktree': path, 'tip': task['tip'],
+                  'destination': task['integrated']['destination'],
+                  'retired': True, 'branch_retained': True}
+        # Worktree removal does not update refs or invoke reference hooks.
+        # Keep registration changes excluded until removal and bookkeeping end.
+        if Path(path).exists():
+            git(repo, 'worktree', 'remove', path)  # never --force; honors Git locks
+            if Path(path).exists():
+                raise BranchError('worktree removal left the checkout in place')
+        listed = [str(Path(line[len('worktree '):]).resolve())
+                  for line in git(repo, 'worktree', 'list', '--porcelain').splitlines()
+                  if line.startswith('worktree ')]
+        if path in listed:
+            git(repo, 'worktree', 'prune')  # metadata only, never files
+            remaining = [str(Path(line[len('worktree '):]).resolve())
+                         for line in git(repo, 'worktree', 'list', '--porcelain').splitlines()
+                         if line.startswith('worktree ')]
+            if path in remaining:
+                raise BranchError('worktree metadata remains; preserve registration and inspect its lock')
+        state['tasks'].pop(args.task)
+        save(directory, state)
+    return output
+
+
 def merge_valid(repo, state, name, ticket):
     source = state['tasks'][ticket['task']]
     _, target = task_for(state, name)
@@ -420,7 +566,8 @@ def merge_valid(repo, state, name, ticket):
     if dependency:
         parent = state['tasks'][dependency]
         done = parent.get('integrated')
-        if not done or done['source'] != oid(repo, 'refs/heads/' + parent['branch']) or not ancestor(repo, done['commit'], ticket['old']):
+        if parent is not target and (not done or done['source'] != oid(repo, 'refs/heads/' + parent['branch'])
+                                     or not ancestor(repo, done['commit'], ticket['old'])):
             raise BranchError('dependency must be integrated first into destination history')
 
 
@@ -495,11 +642,14 @@ def transaction(repo, directory, state, phase, data):
         raise BranchError('invalid reference transaction')
     updates = [row for row in rows if row[2].startswith('refs/heads/')]
     # HEAD updates paired with a branch are validated through that branch.
+    # A detached checkout may return only to its own recorded branch tip.
     if phase == 'prepared' and any(r[2] == 'HEAD' for r in rows) and not updates:
         try:
             branch(repo)
         except BranchError:
-            raise BranchError('detached HEAD updates are not authorized')
+            head_rows = [row for row in rows if row[2] == 'HEAD']
+            if len(head_rows) != 1 or not registered_head_return(repo, state, head_rows[0][1]):
+                raise BranchError('detached HEAD updates are not authorized')
     if phase == 'prepared':
         checked = []
         for old, new, ref in updates:
@@ -559,12 +709,75 @@ def transaction(repo, directory, state, phase, data):
         save(directory, state)
 
 
-def validate_push(repo, directory, state, rows, remote):
-    assert_install(repo, directory, state)
+def push_destination(repo, state, remote):
     if remote != state['remote']:
         raise BranchError('push remote differs from registration')
+    fetch = git(repo, 'remote', 'get-url', '--all', remote).splitlines()
+    push = git(repo, 'remote', 'get-url', '--push', '--all', remote).splitlines()
+    if fetch != [state['remote_url']] or len(push) != 1:
+        raise BranchError('push requires one registered fetch and one push URL')
+    # Share the preflight's conservative repository identity, including supported
+    # read/write transports. Pin this executable dependency with the hook source.
+    spec = importlib.util.spec_from_file_location('push_identity', ROOT / 'bin/push_preflight.py')
+    identity = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(identity)
+    registered = identity.repo_identity(state['remote_url'])
+    if registered is None or identity.repo_identity(push[0]) != registered:
+        raise BranchError('push repository differs from registration')
+    return push[0]
+
+
+def allow_tag_push(args):
+    if not args.approval.strip():
+        raise BranchError('explicit user approval reference is required')
+    if args.tag.startswith('refs/'):
+        raise BranchError('--tag requires a tag name, not a full ref')
+    ref = 'refs/tags/' + args.tag
+    git(args.repo, 'check-ref-format', ref)
+    with locked(args.repo) as (directory, state):
+        assert_install(args.repo, directory, state)
+        checkout(args.repo, state)
+        destination = push_destination(args.repo, state, args.remote)
+        commit = oid(args.repo, args.commit)
+        if args.commit != commit:
+            raise BranchError('tag approval requires a full commit object ID')
+        if oid(args.repo, ref) != commit:
+            raise BranchError('tag target differs from approved commit')
+        value = git(args.repo, 'rev-parse', '--verify', ref)
+        if git(args.repo, 'ls-remote', '--refs', args.remote, ref):
+            raise BranchError('release tag already exists on remote; replacement is not authorized')
+        ticket = {'object': value, 'commit': commit, 'remote': args.remote,
+                  'destination': destination, 'approval': args.approval}
+        state.setdefault('tag_pushes', {})[ref] = ticket
+        save(directory, state)
+        return {'ref': ref, **ticket}
+
+
+def validate_push(repo, directory, state, rows, remote, destination=None):
+    assert_install(repo, directory, state)
+    expected = push_destination(repo, state, remote)
+    if destination != expected:
+        raise BranchError('push destination differs from registration')
     reconcile(repo, state)
+    tags = []
     for local, value, target, previous in rows:
+        if target.startswith('refs/tags/'):
+            ticket = state.get('tag_pushes', {}).get(target)
+            if not ticket:
+                raise BranchError('tag push needs an exact user-approved exception')
+            if target in tags:
+                raise BranchError('duplicate tag push destination')
+            if set(value) == {'0'} or set(previous) != {'0'}:
+                raise BranchError('tag replacement or deletion is not authorized')
+            if (local != target or value != ticket['object']
+                    or git(repo, 'rev-parse', '--verify', target, optional=True) != value
+                    or oid(repo, target) != ticket['commit']):
+                raise BranchError('tag object or target differs from authorization')
+            if (remote != ticket['remote'] or destination != ticket['destination']
+                    or expected != destination):
+                raise BranchError('tag push destination differs from authorization')
+            tags.append(target)
+            continue
         if not target.startswith('refs/heads/') or set(value) == {'0'}:
             raise BranchError('only registered branch pushes are authorized')
         name = target[len('refs/heads/'):]
@@ -575,6 +788,7 @@ def validate_push(repo, directory, state, rows, remote):
             raise BranchError('push source differs from registered branch')
         if set(previous) != {'0'} and not ancestor(repo, previous, value):
             raise BranchError('push would rewrite remote history')
+    return tags
 
 
 def push_check(repo, remote, destination):
@@ -584,7 +798,8 @@ def push_check(repo, remote, destination):
         return
     with locked(repo) as (directory, state):
         validate_push(repo, directory, state,
-                      [('HEAD', oid(repo, 'HEAD'), 'refs/heads/' + destination, '0' * len(oid(repo, 'HEAD')))], remote)
+                      [('HEAD', oid(repo, 'HEAD'), 'refs/heads/' + destination, '0' * len(oid(repo, 'HEAD')))],
+                      remote, push_destination(repo, state, remote))
 
 
 def hook(name, args):
@@ -623,7 +838,11 @@ def hook(name, args):
             rows = [line.split() for line in data.decode().splitlines()]
             if any(len(row) != 4 for row in rows):
                 raise BranchError('invalid push input')
-            validate_push(repo, directory, state, rows, args[0])
+            tags = validate_push(repo, directory, state, rows, args[0], args[1])
+            # pre-push cannot observe transport success. Consume only after the
+            # entire batch passes; a transport failure needs fresh authorization.
+            for ref in tags:
+                state['tag_pushes'].pop(ref, None)
             save(directory, state)
         else:
             raise BranchError('unknown hook')
@@ -657,7 +876,7 @@ def main(argv=None):
             return hook(argv[1], argv[2:])
         parser = argparse.ArgumentParser(description=__doc__)
         sub = parser.add_subparsers(dest='command', required=True)
-        for name in ('install', 'begin', 'check', 'prepare-merge', 'allow-cherry-pick'):
+        for name in ('install', 'begin', 'check', 'retire', 'prepare-merge', 'allow-cherry-pick', 'allow-tag-push'):
             p = sub.add_parser(name)
             p.add_argument('--repo', default='.')
             p.add_argument('--json', action='store_true')
@@ -669,14 +888,18 @@ def main(argv=None):
                 for flag in ('request', 'branch', 'worktree', 'base', 'into', 'depends-on'):
                     p.add_argument('--' + flag)
                 p.add_argument('--sync', action='store_true')
-            elif name == 'prepare-merge':
+            elif name in ('retire', 'prepare-merge'):
                 p.add_argument('--task', required=True)
             elif name == 'allow-cherry-pick':
                 for flag in ('commit', 'approval', 'reason'):
                     p.add_argument('--' + flag, required=True)
+            elif name == 'allow-tag-push':
+                for flag in ('remote', 'tag', 'commit', 'approval'):
+                    p.add_argument('--' + flag, required=True)
         args = parser.parse_args(argv)
-        value = {'install': install, 'begin': begin, 'check': check,
-                 'prepare-merge': prepare_merge, 'allow-cherry-pick': allow_pick}[args.command](args)
+        value = {'install': install, 'begin': begin, 'check': check, 'retire': retire,
+                 'prepare-merge': prepare_merge, 'allow-cherry-pick': allow_pick,
+                 'allow-tag-push': allow_tag_push}[args.command](args)
         if args.command == 'check' and not args.json:
             print('OK: registered worktrees and hooks agree' if value['ok'] else 'FAIL: ' + '; '.join(value['errors']))
         else:

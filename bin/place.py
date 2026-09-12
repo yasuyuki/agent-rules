@@ -4,7 +4,7 @@
     place.py check  --declaration <path> [--rules <dir>] [--skills <dir>] [--site <id> --readiness]
     place.py apply  --declaration <path> [--rules <dir>] [--skills <dir>]
     place.py list   --declaration <path>
-    place.py start  --declaration <path> [--rules <dir>] [--skills <dir>] <workspace> <tool> [-- <tool-argv>...]
+    place.py start  [--config <path> | --declaration <path> [--rules <dir>] [--skills <dir>]] <workspace> <tool> [-- <tool-argv>...]
     place.py mirror --skills <dir> --dest <dir> [--check]
     place.py selfcheck
 
@@ -904,6 +904,56 @@ def inventory_preflight(args, context, site_id, *, resolver=shutil.which,
         raise PlacementError("inventory lifecycle check failed: " + "; ".join(errors))
 
 
+def start_config(args):
+    """Resolve the deliberately selected start configuration, if any."""
+    explicit = getattr(args, "config", None)
+    declaration = getattr(args, "declaration", None)
+    rules = getattr(args, "rules", None)
+    skills = getattr(args, "skills", None)
+    if explicit and (declaration or rules or skills):
+        raise PlacementError("--config cannot be combined with --declaration, --rules, or --skills")
+    if declaration:
+        return None
+    if rules or skills:
+        raise PlacementError("--rules and --skills cannot be combined with an implicit start config")
+    path = Path(explicit) if explicit else Path.cwd() / "placement-start.json"
+    if not path.is_file():
+        if explicit:
+            raise PlacementError("start config does not exist: %s" % path)
+        raise PlacementError("--declaration is required when %s is absent" % path)
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise PlacementError("invalid start config %s: %s" % (path, exc)) from None
+    if not isinstance(document, dict):
+        raise PlacementError("start config must be a JSON object")
+    allowed = {"version", "declaration", "rules", "skills", "inventory_host"}
+    unknown = set(document) - allowed
+    if unknown:
+        raise PlacementError("start config has unknown keys: %s" % ", ".join(sorted(unknown)))
+    if type(document.get("version")) is not int or document["version"] != 1:
+        raise PlacementError("start config version must be 1")
+    if not isinstance(document.get("declaration"), str) or not document["declaration"].strip():
+        raise PlacementError("start config declaration must be a non-empty string")
+    for key in ("rules", "skills"):
+        if key not in document:
+            continue
+        value = document[key]
+        if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+            raise PlacementError("start config %s must be an array of non-empty strings" % key)
+    host = document.get("inventory_host")
+    if host is not None and (not isinstance(host, str) or not host.strip()):
+        raise PlacementError("start config inventory_host must be a non-empty string")
+    base = path.resolve().parent
+    def resolve(value):
+        candidate = Path(value)
+        return str(candidate if candidate.is_absolute() else base / candidate)
+    args.declaration = resolve(document["declaration"])
+    args.rules = [resolve(value) for value in document.get("rules", [])]
+    args.skills = [resolve(value) for value in document.get("skills", [])]
+    return host
+
+
 def start(args, runner=subprocess.run, resolver=shutil.which):
     """Run one declared CLI in one local direct workspace.
 
@@ -911,6 +961,23 @@ def start(args, runner=subprocess.run, resolver=shutil.which):
     command. Invoke this same entry point on the target host instead of depending
     on an environment-private launcher.
     """
+    configured_host = start_config(args)
+    old_host = os.environ.get("ENVIRONMENT_INVENTORY_HOST")
+    if configured_host and old_host and old_host != configured_host:
+        raise PlacementError("start config inventory_host conflicts with ENVIRONMENT_INVENTORY_HOST")
+    if configured_host:
+        os.environ["ENVIRONMENT_INVENTORY_HOST"] = configured_host
+    try:
+        return _start(args, runner=runner, resolver=resolver, configured_host=configured_host)
+    finally:
+        if configured_host:
+            if old_host is None:
+                os.environ.pop("ENVIRONMENT_INVENTORY_HOST", None)
+            else:
+                os.environ["ENVIRONMENT_INVENTORY_HOST"] = old_host
+
+
+def _start(args, runner=subprocess.run, resolver=shutil.which, configured_host=None):
     context = load_context(args)
     placement, rules, sites, workspaces, locations, exceptions, _selected, skills = context
     workspace = workspaces.get(args.workspace_id)
@@ -948,10 +1015,10 @@ def start(args, runner=subprocess.run, resolver=shutil.which):
     entrypoint = resolver(tool["entrypoint"])
     if entrypoint is None:
         raise PlacementError("tool does not resolve: %s" % tool["entrypoint"])
-    return runner(
-        [entrypoint, *args.tool_args],
-        cwd=workspace["path"],
-    ).returncode
+    kwargs = {"cwd": workspace["path"]}
+    if configured_host:
+        kwargs["env"] = os.environ.copy()
+    return runner([entrypoint, *args.tool_args], **kwargs).returncode
 
 
 def write_rule(directory, rule_id, title, tools=None):
@@ -1276,7 +1343,7 @@ def selfcheck(_args):
     return 0
 
 
-def main(argv):
+def main(argv, *, runner=subprocess.run, resolver=shutil.which):
     if argv[:1] == ["branch"]:
         import branch_management
         return branch_management.main(argv[1:])
@@ -1318,7 +1385,8 @@ def main(argv):
     classify_p.add_argument("--prefer-environment")
     classify_p.add_argument("--json", action="store_true")
     start_p = sub.add_parser("start")
-    start_p.add_argument("--declaration", required=True)
+    start_p.add_argument("--config")
+    start_p.add_argument("--declaration")
     start_p.add_argument("--rules", action="append")
     start_p.add_argument("--skills", action="append")
     start_p.add_argument("workspace_id")
@@ -1351,7 +1419,7 @@ def main(argv):
         if args.command == "start":
             if args.tool_args[:1] == ["--"]:
                 args.tool_args = args.tool_args[1:]
-            return start(args)
+            return start(args, runner=runner, resolver=resolver)
         if args.command == "mirror":
             return mirror(args)
         return selfcheck(args)

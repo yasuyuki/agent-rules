@@ -19,11 +19,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - run: python tests/test_handoff.py
       - run: python tests/test_rules.py
       - run: python tests/test_push_preflight.py
       - run: python tests/test_agent_report.py
       - run: python tests/test_branch_management.py
       - run: python tests/test_branch_recovery.py
+      - run: python tests/test_verification_skill.py
       - run: python -m pip install build twine
       - run: python -m build
       - name: Validate distribution metadata

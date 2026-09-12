@@ -1,0 +1,30 @@
+{
+  "id": "sender-only-artifact",
+  "sender_prompt": "Task H-103 needs receiver analysis of report R-103, but R-103 exists only at /sender/private/R-103 and has no shared copy or retrieval route. Do not expose private paths. Preserve the source record. Receiver has analysis capability.",
+  "receiver_prompt": "Receiver sees task H-103, but no artifact R-103 or retrieval route was provided. Sender-local paths are inaccessible.",
+  "expect": {
+    "sender": {
+      "handoff_status": "blocked-missing-artifact",
+      "overall_status": "not-delivered",
+      "facts": [
+        "R-103",
+        "no shared copy",
+        "Preserve"
+      ],
+      "forbid": [
+        "/sender/private/R-103"
+      ]
+    },
+    "receiver": {
+      "handoff_status": "blocked-missing-artifact",
+      "overall_status": [
+        "not-delivered",
+        "not-complete"
+      ],
+      "facts": [
+        "R-103",
+        "inaccessible"
+      ]
+    }
+  }
+}

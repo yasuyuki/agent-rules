@@ -161,6 +161,29 @@ python3 bin/place.py list --declaration PLACEMENT.md
 python3 bin/place.py start --declaration PLACEMENT.md <workspace> <tool> -- <tool arguments>
 ```
 
+For repeated local starts, save the selected inputs once in `placement-start.json`
+in the directory from which you launch:
+
+```json
+{
+  "version": 1,
+  "declaration": "PLACEMENT.md",
+  "rules": ["private-rules"],
+  "skills": ["private-skills"]
+}
+```
+
+Then use `python3 bin/place.py start <workspace> <tool>` and append native CLI
+arguments after `--`, including the CLI's own resume command. Paths in this file
+are relative to its directory. `rules` and `skills` may be omitted; the public
+sources remain included. An optional `inventory_host` selects the catalog's
+existing observer and must agree with an already set `ENVIRONMENT_INVENTORY_HOST`.
+`--config PATH` explicitly selects a different file. No parent directory or HOME
+is searched. A full `--declaration` invocation ignores the default file; mixing
+config inputs and explicit source arguments is rejected. Configuration does not
+apply placement or adopt sources: start still checks the selected workspace/CLI
+and current managed bytes before launching it.
+
 ## Environment catalog
 
 OpenCode skill placement uses `.opencode/skills` in a project and
@@ -580,6 +603,30 @@ python3 tests/test_push_preflight.py
 
 ## Skills
 
+`skills/create-verification-skill/SKILL.md` creates a project-specific verification
+skill when generation or revision is requested. Read it by path and name the
+target checkout; ordinary verification requests use the existing generated skill.
+The workflow is agent-neutral and reuses the project's own operation tools.
+
+`skills/verify-agent-rules/SKILL.md` is the demonstrated output for this project.
+It drives public declaration-based apply/check against disposable inputs, checks
+actual generated contents and hand-written-file preservation, and retains evidence
+after cleanup. Its optional `--environment-repo` profile also proves composition
+with agent-environment's synthetic input and disposable agent-skills mirror output.
+See [acceptance and limitations](docs/verification-skill.md).
+From this checkout root:
+
+```console
+python3 skills/verify-agent-rules/scripts/verify.py --repo .
+python3 tests/test_verification_skill.py
+```
+
+The adapted generator retains pstack's MIT notice and a pinned `UPSTREAM.tsv`
+entry. Existing `place.py apply/check` distributes both skills. The existing
+authorship-filtered `mirror` excludes that adapted third-party generator and
+publishes the original project verifier; use the generator's canonical source
+here. Neither skill requires this repository's private environment bindings.
+
 Rules and skills are the two managed kinds. A rule is always-on text projected
 into every tool's rule convention; a skill is a directory the agent loads on
 demand. Both are copied from this repository and compared byte for byte, so a
@@ -745,6 +792,14 @@ supplies its own hooks, rebind from a separate reviewed source so its source has
 remains stable during the merge. A changed dispatcher needs a separately reviewed
 hook migration; it is never silently overwritten.
 
+Installation protects linked worktrees containing the source or Python runtime
+with Git's native worktree lock before pinning bytes. Existing locks are kept;
+rebind never unlocks an old dependency because other repositories may still use
+it. Legacy installations using an unlocked linked dependency must reinstall the
+reviewed source before acceptance. Dependency decommissioning is explicit
+maintenance after its consumers have moved, not part of ordinary task retirement.
+Primary checkouts are already excluded from retirement.
+
 Installation disables automatic reference packing in this repository with
 `maintenance.pack-refs.enabled=false` and `gc.packRefs=false`; other maintenance
 remains enabled. Git's hook interface cannot distinguish pruning a loose reference
@@ -783,10 +838,58 @@ Prepare integration in the registered destination with `branch prepare-merge
 --no-commit SOURCE_BRANCH`, run the project's required verification, then commit.
 Both tips and the ordered parents are checked again. A dependent task can be
 integrated only after its parent has been integrated into the destination's
-history. A moved source or destination requires fresh preparation. A successful
+history, or directly into that parent when it is the registered destination
+(its pinned HEAD already supplies the dependency). A moved source or destination requires fresh preparation. A successful
 integration consumes the permission. A failed or interrupted commit preserves
 changes and can be retried; a source reserved by a prepared integration must wait
 for that integration to finish or retry.
+
+Transparent normal operation is a design and acceptance requirement for this
+branch workflow, as explicitly requested for this work. Setup inventories,
+migration checks and incident repair must not become routine prerequisites for
+starting, resuming or finishing work. The owning layer resolves routine targets,
+checks consistency and records state using existing registrations and entry
+points. Keep safety checks at the protected operation and revalidate after
+relevant state changes; do not require repeated history reconstruction, complex
+argument assembly, explanations or duplicate records. Verify affected normal
+paths with representative operations, without adding per-task reports. This
+requirement does not extend this tool's responsibility or authority boundaries.
+
+Retirement is enabled only for work created by the dependency-protecting version
+of `begin --mode new`. Existing and adopted registrations are retained: older
+consumers may not have locked their source or runtime worktrees. Reinstallation
+alone does not certify their migration, and continuation does not silently lift
+this restriction. Resolving those legacy dependencies is separate migration work;
+do not unlock dependencies or edit registration state to bypass it. An interrupted
+or failed installation may leave its newly acquired dependency lock in place;
+this is deliberate preservation until explicit maintenance resolves its consumers.
+
+Close a finished registration with `branch retire --repo REPO --task ID`. It
+removes the registered worktree and drops the registration; the branch and its
+commits are kept. "Finished" means the ledger's integration receipt, not
+`git branch --merged`: the receipt's source must equal both the registered tip
+and the branch's current commit, and its merge commit must be an ancestor of the
+registered destination. Work integrated into a registered topic is finished even
+though it never reached the default branch, and a branch merged somewhere else is
+not. Retirement is refused for the default-branch registration, the repository's
+own working tree, the checkout the command is run from, a checkout holding the
+registered `agentBranch.source` or `agentBranch.python`, work another
+registration depends on or integrates into, a branch with an outstanding permit,
+prepared integration or cherry-pick exception, and a checkout with uncommitted,
+untracked or ignored files. Ignored files count because a retired checkout can
+contain another repository's registered worktree. Removal uses `git worktree
+remove` without `--force`; nothing is reset, stashed or force-deleted, and a
+refusal leaves both the registration and the files as they are.
+
+The work identifier, branch name and path become available for new work. The
+retained branch is now unregistered, so its future updates are refused like any
+other retained branch; re-register it with `git worktree add PATH BRANCH` and
+`begin --mode adopt`. Branch deletion is not part of this command. An interrupted
+retirement is completed by running the same command again: worktree removal is a
+no-op once the directory is gone, and a stale administrative record is pruned
+(metadata only, never a file, and repository-wide). There is no bulk mode, no age
+or count criterion and no abandonment path; each retirement names one work
+identifier and is justified by that work's own integration receipt.
 
 A user-approved cherry-pick exception is registered in its destination topic with
 `branch allow-cherry-pick --repo PATH --commit SOURCE_SHA --approval USER_REFERENCE
@@ -808,7 +911,30 @@ writes serialize registry changes. On another clone/host, register the same work
 ID against that clone's remote history; never copy local operation permissions.
 The shared push preflight applies the same branch/tip check to installed repos,
 then retains its existing visibility, destination and history-protection policy.
-The actual pre-push hook checks all submitted refs and commits.
+The actual pre-push hook checks all submitted refs and commits, and compares its
+transport URL with the single effective push URL for the registered remote.
+Both branch and tag pushes require the registered fetch repository identity.
+Read/write URL separation is supported for equivalent GitHub transports and
+native absolute paths/local file URLs; unknown transports remain exact matches.
+Different repositories, remote names and multiple destinations are rejected.
+
+To publish an explicitly requested release tag, first create the local tag, then
+register `branch allow-tag-push --repo PATH --remote REMOTE --tag TAG_NAME
+--commit FULL_COMMIT_SHA --approval USER_REFERENCE`. The tag name is relative to
+`refs/tags/`; the commit must be a full object ID. The command requires a
+registered checkout and pins the tag's raw object (including its annotation),
+peeled commit, remote name and URL. Both lightweight and annotated tags work.
+Exactly one fetch URL and one push URL must identify the registered repository;
+the approval additionally pins the exact effective push URL. The remote tag must
+not exist. Publish with `git push REMOTE refs/tags/TAG_NAME`.
+
+The hook admits only creation of that exact tag at that exact destination.
+Changed tags, tag replacement/deletion and unapproved refs in the same push are
+rejected. After the whole batch passes, the hook consumes each tag permission
+before transport, because pre-push cannot observe the server's final result.
+A transport failure or `--dry-run` therefore needs re-registration before a
+retry; reuse the same approval reference only while its scope still applies.
+This does not authorize history rewriting or bypass the existing branch checks.
 
 These are accidental-misuse guards, not an isolation boundary against deliberate
 Git configuration changes. In particular, a missing hook cannot execute itself:
@@ -828,3 +954,39 @@ installation or behavioral acceptance on an operator's actual host.
 ## License
 
 MIT. See `LICENSE`.
+
+
+## Cross-environment handoff
+
+The maintainer's `handoff` rule keeps workspace resumption in the nearest
+HANDOFF.md and cross-environment unfinished work in an explicitly selected,
+accessible shared task. `classify-work` handles capability/phase routing;
+`human-handoff` handles a person's relay and copy/paste path. The session-end
+rule includes that relay as human work. The phase rule already preserves scope
+and acceptance boundaries and needs no parallel delivery procedure.
+
+This uses existing issue/task storage and notification paths. No task database,
+mandatory handoff CLI, credential transfer or delivery service is introduced.
+Saving or rereading a task is not recipient receipt; sender completion is not
+acceptance of remaining work. Missing source documents and sender-only artifacts
+remain blockers to the affected handoff, with source information retained.
+
+Behavioral regression cases and response grading are in
+[the handoff fixtures](tests/fixtures/handoff/README.md). Run:
+
+```console
+python3 tests/test_handoff.py
+python3 tests/test_rules.py
+```
+
+The offline test validates the regression grader, not agent compliance. Exercise
+fresh sender/receiver sessions with the fixture protocol to measure behavior.
+Synthetic cases cannot establish real cross-host delivery or UI clipboard
+fidelity. For real acceptance, use an independent harmless task, an authorized
+existing destination and fresh sender/recipient sessions; retain the shared
+reference, source revision, actual receipt and acceptance results separately.
+Unavailable destination execution must be handed over, never marked passed.
+Rule/skill placement and mirroring use the existing `place.py apply/check/mirror`
+commands; a successful byte check is not a behavioral acceptance result. Do not
+apply these source changes to pinned experimental baselines or reuse previous
+experiment results as evidence for the changed instructions.

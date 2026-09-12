@@ -11,12 +11,14 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+from urllib.request import url2pathname
 
 
 # Deliberately conservative: an unknown SPDX identifier is not evidence that a
@@ -154,6 +156,18 @@ def repo_identity(url: str) -> tuple[str, str] | None:
     if not isinstance(url, str) or not url or "\x00" in url:
         return None
     value = url.strip().removeprefix("git+")
+    # Git accepts both native absolute paths and local file URLs. Preserve path
+    # case and symlink spelling; do not infer identity for distinct filesystems.
+    if os.path.isabs(value):
+        return "local", os.path.normpath(value)
+    if value.startswith("file://"):
+        parsed = urlsplit(value)
+        if parsed.netloc or parsed.query or parsed.fragment:
+            return None
+        path = url2pathname(parsed.path)
+        if os.path.isabs(path):
+            return "local", os.path.normpath(path)
+        return None
     # SCP-like SSH syntax: user@host:owner/repo.git
     match = re.fullmatch(r"(?:[^@/:]+@)?([^/:]+):(.+)", value)
     if match and "://" not in value:
