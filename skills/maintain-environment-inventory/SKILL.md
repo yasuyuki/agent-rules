@@ -46,9 +46,12 @@ For a versioned catalog and a runtime using saved launch inputs, review the CLI'
 descriptor and locations, then use `place.py inventory declare-agent --declaration
 <D> --site <S> --tool <CLI>` in the registered source topic. Commit/integrate/push
 the declaration through the existing branch workflow before runtime adoption.
-Use `place.py inventory adopt --config <existing-start-config> --site <S>` on the
+Use `place.py inventory adopt --environment <ID> --source-ref <revision>` on the
 target runtime. It applies the site, checks all registered CLI readiness and Grok
 discovery, and records pending/active only in that existing untracked start config.
+The existing workspace config resolves site/catalog/inputs; use `--config` only
+for a nondefault saved config. `--check-inputs` checks source inputs before a
+maintenance interruption without claiming adoption or readiness.
 Do not copy runtime JSON back to another clone or add a receipt registry. A retained
 runtime may select the exact committed catalog with `--source-ref <revision>`;
 this does not attribute unrelated dirt or an external policy to that commit.

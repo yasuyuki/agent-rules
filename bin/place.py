@@ -849,12 +849,12 @@ def classify_work(args):
     return 0
 
 
-def inventory_binding(args, context, site_id):
-    """Resolve one site's three-column inventory binding."""
+def inventory_bindings(args, context):
+    """Read validated binding rows without resolving other environments."""
     declaration = Path(args.declaration).resolve()
     text = declaration.read_text(encoding="utf-8")
     if "<!-- BEGIN INVENTORY TSV -->" not in text:
-        return None
+        return []
     rows = markdown_tsv(declaration, "INVENTORY", text)
     required = {"site", "catalog", "environment"}
     if any(set(row) != required for row in rows):
@@ -863,10 +863,19 @@ def inventory_binding(args, context, site_id):
         raise PlacementError("duplicate INVENTORY site")
     if any(row["site"] not in context[2] for row in rows):
         raise PlacementError("unknown INVENTORY site")
+    return rows
+
+
+def inventory_binding(args, context, site_id):
+    """Resolve one site's three-column inventory binding."""
+    declaration = Path(args.declaration).resolve()
+    rows = inventory_bindings(args, context)
+    if not rows:
+        return None
     binding = next((row for row in rows if row["site"] == site_id), None)
     if binding is None:
         raise PlacementError("INVENTORY has no binding for selected site: " + site_id)
-    if any(not binding[key].strip() for key in required):
+    if any(not binding[key].strip() for key in ("site", "catalog", "environment")):
         raise PlacementError("INVENTORY binding has an empty required value")
     catalog = Path(binding["catalog"])
     return declaration, (catalog if catalog.is_absolute() else declaration.parent / catalog), binding["environment"]
@@ -1328,6 +1337,12 @@ def inventory_adopt(args, *, resolver=shutil.which, runner=subprocess.run):
         context = load_context(args)
         environment_inventory._assert_snapshots(input_snapshot)
         environment_inventory._assert_loader_inputs(loader_snapshot)
+        if args.environment:
+            sites = [row['site'] for row in inventory_bindings(args, context)
+                     if row['environment'] == args.environment]
+            if len(sites) != 1:
+                raise PlacementError('environment must have exactly one saved runtime binding: ' + args.environment)
+            args.site = sites[0]
         if args.site not in context[2]:
             raise PlacementError('unknown site')
         _inventory_site_runtime(context, args.site)
@@ -1337,6 +1352,20 @@ def inventory_adopt(args, *, resolver=shutil.which, runner=subprocess.run):
         declaration, catalog, environment = binding
         public = SimpleNamespace(**globals())
         config = args._start_config_path
+        if args.check_inputs:
+            # A preparation check must not create the mutation lock or claim.
+            catalog_snapshot = environment_inventory.snapshot_inputs([catalog])
+            environment_inventory.load_catalog(catalog, environment_id=environment)
+            facts = inventory_adoption.identity(public, args, context, args.site, args.source_ref)
+            environment_inventory._assert_snapshots(input_snapshot)
+            environment_inventory._assert_loader_inputs(loader_snapshot)
+            environment_inventory._assert_snapshots(catalog_snapshot)
+            if config.read_bytes() != args._start_config_raw:
+                raise PlacementError('saved launch inputs changed; retry the input check')
+            print(json.dumps({'environment': environment, 'state': 'inputs-valid',
+                              'sourceRevision': facts['sourceRevision'],
+                              'adopted': False}, sort_keys=True))
+            return 0
         with environment_inventory.locked_catalog(
                 catalog, _inventory_claim_scope(context, args.site, environment)) as (catalog_path, raw, document):
             environment_inventory.load_catalog(catalog_path, environment_id=environment)
@@ -1952,8 +1981,11 @@ def main(argv, *, runner=subprocess.run, resolver=shutil.which):
     inventory_sub = inventory_p.add_subparsers(dest="inventory_command", required=True)
     adopt_p = inventory_sub.add_parser('adopt', help='apply a committed catalog using saved runtime inputs')
     adopt_p.add_argument('--config', default='placement-start.json')
-    adopt_p.add_argument('--site', required=True)
+    adopt_target = adopt_p.add_mutually_exclusive_group(required=True)
+    adopt_target.add_argument('--environment', help='environment ID resolved from saved runtime inputs')
+    adopt_target.add_argument('--site', help='explicit site for compatibility with existing callers')
     adopt_p.add_argument('--source-ref', default='HEAD', help='catalog repository revision whose catalog bytes are adopted')
+    adopt_p.add_argument('--check-inputs', action='store_true', help='validate source and saved inputs without projection, readiness, or state changes')
     for name in ("declare-agent", "prepare-agent", "activate"):
         operation = inventory_sub.add_parser(name)
         operation.add_argument("--declaration", required=True)

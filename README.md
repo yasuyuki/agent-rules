@@ -219,10 +219,17 @@ update affected consumers before publishing a descriptor they cannot read.
 On the selected runtime, use its existing untracked saved launch inputs:
 
 ```console
-python3 bin/place.py inventory adopt --config placement-start.json --site SITE
+python3 bin/place.py inventory adopt --environment ENVIRONMENT --source-ref REVISION
 ```
 
-`adopt` verifies the catalog against its repository's `HEAD`, records pending in
+The environment ID resolves the site and catalog from the existing
+`placement-start.json` in the current workspace; no host or file list is rebuilt.
+`--config` selects a nondefault existing config, and `--site` remains available
+for existing callers. Unknown or ambiguous environment bindings are refused.
+`--check-inputs` validates the saved inputs and committed catalog before maintenance;
+its `inputs-valid` result does not mean readiness or adoption.
+
+`adopt` verifies the catalog against the requested revision (default `HEAD`), records pending in
 that existing config, applies the selected site, checks every registered CLI's
 readiness, and inspects Grok discovery in the declared direct workspaces without
 running a model or changing trust. Only success records active. Failure retains

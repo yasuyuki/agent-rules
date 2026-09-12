@@ -102,6 +102,24 @@ class InventoryAdoptionTests(unittest.TestCase):
                             runner=lambda argv, **kwargs: (calls.append((argv, kwargs)) or SimpleNamespace(returncode=0)))
         return result, calls
 
+    def test_environment_request_resolves_saved_site_and_refuses_unknown_target(self):
+        before = self.config.read_bytes()
+        command = ["inventory", "adopt", "--config", str(self.config),
+                   "--environment", "missing", "--source-ref", "HEAD"]
+        self.assertEqual(place.main(command), 1)
+        self.assertEqual(self.config.read_bytes(), before)
+        command[5] = "env"
+        self.assertEqual(place.main([*command, "--check-inputs"]), 0)
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertFalse((self.root / "catalog.json.lock").exists())
+        self.assertFalse((self.root / "catalog.json.claim").exists())
+        self.assertFalse((self.home / ".codex/AGENTS.md").exists())
+        self.assertEqual(place.main(command, resolver=lambda name: "/bin/" + name if name == "codex" else None), 0)
+        result = json.loads(self.config.read_text(encoding="utf-8"))["adoption"]
+        self.assertEqual(result["environment"], "env")
+        self.assertEqual(result["site"], "s1")
+        self.assertEqual(self.catalog.read_bytes(), self.catalog_bytes)
+
     def test_adopt_keeps_catalog_and_allows_exact_pending_start(self):
         self.assertEqual(self.adopt(), 0)
         self.assertEqual(self.catalog.read_bytes(), self.catalog_bytes)
