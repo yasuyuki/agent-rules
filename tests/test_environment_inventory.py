@@ -3,6 +3,7 @@
 from pathlib import Path
 import importlib.util
 import json
+import os
 import subprocess
 import tempfile
 from unittest import mock
@@ -318,3 +319,86 @@ Host target
         "  %s %s\n" % (option, value) for option, value in fields.values()), encoding="utf-8")
     argv = check_probe(probe)
     assert argv[-2] == "target"
+
+    # A write derived from a changed declaration is rejected before the atomic
+    # replacement, so unrelated catalog content is never overwritten by stale
+    # preparation/readiness inputs.
+    stable = root / "stable.json"
+    stable.write_text('{"schemaVersion": 1, "unchanged": true}\n', encoding="utf-8")
+    input_file = root / "operation-input.txt"
+    input_file.write_text("before\n", encoding="utf-8")
+    snapshots = inventory.snapshot_inputs([input_file])
+    original = stable.read_bytes()
+    input_file.write_text("after\n", encoding="utf-8")
+    try:
+        inventory.replace_catalog(stable, original, {"schemaVersion": 1, "changed": True}, snapshots)
+    except inventory.CatalogError as exc:
+        assert "inputs changed" in str(exc)
+    else:
+        raise AssertionError("stale input published a catalog update")
+    assert stable.read_bytes() == original
+
+    # Skill source snapshots include executable mode because the loader exposes
+    # it to consumers.  Bytes alone cannot prove a stable skill on POSIX.
+    if os.name != "nt":
+        skill_root = root / "skills"; skill = skill_root / "example"; skill.mkdir(parents=True)
+        skill_file = skill / "tool"
+        skill_file.write_text("same bytes\n", encoding="utf-8")
+        before_mode = skill_file.stat().st_mode
+        os.chmod(skill_file, before_mode ^ 0o100)
+        try:
+            loader_snapshot = inventory.snapshot_loader_inputs([], [skill_root])
+            os.chmod(skill_file, skill_file.stat().st_mode ^ 0o100)
+            try:
+                inventory._assert_loader_inputs(loader_snapshot)
+            except inventory.CatalogError as exc:
+                assert "inputs changed" in str(exc)
+            else:
+                raise AssertionError("skill executable mode change was accepted")
+        finally:
+            os.chmod(skill_file, before_mode)
+
+    # Failure after the durable temporary write leaves no replacement behind.
+    snapshots = inventory.snapshot_inputs([input_file])
+    with mock.patch.object(inventory.os, "replace", side_effect=OSError("replace failed")):
+        try:
+            inventory.replace_catalog(stable, original, {"schemaVersion": 1}, snapshots)
+        except inventory.CatalogError as exc:
+            assert "could not be saved" in str(exc)
+        else:
+            raise AssertionError("replace failure was accepted")
+    assert not list(root.glob("stable.json.*.tmp"))
+
+    # Official writers use the same sibling advisory lock, so a concurrent
+    # operation fails closed instead of reading and replacing stale bytes.
+    with inventory.locked_catalog(stable, "environment-a"):
+        try:
+            with inventory.locked_catalog(stable, "environment-a"):
+                raise AssertionError("second catalog lock unexpectedly acquired")
+        except inventory.CatalogError as exc:
+            assert "busy" in str(exc)
+
+    claim = stable.with_name(stable.name + ".claim")
+    stale_claim = json.dumps({"version": 1, "scope": os.name + ":environment-a", "nonce": "stale", "catalog": stable.name}).encode("utf-8")
+    claim.write_bytes(stale_claim)
+    with inventory.locked_catalog(stable, "environment-a"):
+        assert claim.is_file()
+    assert not claim.exists()
+    foreign_claim = json.dumps({"version": 1, "scope": os.name + ":environment-b", "nonce": "live", "catalog": stable.name}).encode("utf-8")
+    claim.write_bytes(foreign_claim)
+    try:
+        with inventory.locked_catalog(stable, "environment-a"):
+            raise AssertionError("foreign claim was removed")
+    except inventory.CatalogError as exc:
+        assert "owning environment" in str(exc)
+    assert claim.read_bytes() == foreign_claim
+    claim.write_bytes(b"not-json")
+    try:
+        with inventory.locked_catalog(stable, "environment-a"):
+            raise AssertionError("malformed claim was removed")
+    except inventory.CatalogError as exc:
+        assert "claim is invalid" in str(exc)
+    assert claim.read_bytes() == b"not-json"
+    claim.unlink()
+
+print("test_environment_inventory: OK")

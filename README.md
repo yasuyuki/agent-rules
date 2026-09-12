@@ -161,30 +161,74 @@ python3 bin/place.py list --declaration PLACEMENT.md
 python3 bin/place.py start --declaration PLACEMENT.md <workspace> <tool> -- <tool arguments>
 ```
 
-For repeated local starts, save the selected inputs once in `placement-start.json`
-in the directory from which you launch:
+For repeated local starts, save the selected inputs once from the directory
+where you launch. The public operation validates the declaration and source
+directories before publishing the complete configuration:
 
-```json
-{
-  "version": 1,
-  "declaration": "PLACEMENT.md",
-  "rules": ["private-rules"],
-  "skills": ["private-skills"]
-}
+```console
+python3 bin/place.py save-start-config --declaration PLACEMENT.md --rules private-rules --skills private-skills
 ```
 
 Then use `python3 bin/place.py start <workspace> <tool>` and append native CLI
 arguments after `--`, including the CLI's own resume command. Paths in this file
-are relative to its directory. `rules` and `skills` may be omitted; the public
-sources remain included. An optional `inventory_host` selects the catalog's
+are relative to its directory. `--rules` and `--skills` may be omitted; the public
+sources remain included. Optional `--inventory-host` selects the catalog's
 existing observer and must agree with an already set `ENVIRONMENT_INVENTORY_HOST`.
 `--config PATH` explicitly selects a different file. No parent directory or HOME
 is searched. A full `--declaration` invocation ignores the default file; mixing
-config inputs and explicit source arguments is rejected. Configuration does not
+config inputs and explicit source arguments is rejected. Saving identical inputs
+is a byte-preserving no-op. A different or malformed existing configuration is
+refused; it is never replaced or repaired automatically. Use an explicitly named
+new `--config PATH` for a different set of launch inputs. Configuration does not
 apply placement or adopt sources: start still checks the selected workspace/CLI
 and current managed bytes before launching it.
 
 ## Environment catalog
+
+Grok Build uses the native `grok` executable, `~/.grok/AGENTS.md`, and
+`~/.grok/skills`; its workspace locations are `AGENTS.md` and `.grok/skills`.
+`GROK_HOME` is its config-root override and must agree with the declared runtime
+for lifecycle checks. Grok also discovers Claude and Cursor compatibility files;
+use `grok inspect` in the actual workspace to check source discovery and avoid
+duplicating managed rules through multiple owners. Inspect is configuration
+evidence, not proof of successful agent work. See the official
+[rule discovery](https://docs.x.ai/build/features/project-rules) and
+[skill discovery](https://docs.x.ai/build/features/skills-plugins-marketplaces).
+Use an already registered worktree and native resume arguments after `--`.
+The placement entry does not enable Grok's worktree creation or automatic approvals.
+
+For an additional CLI, first add its reviewed descriptor and declaration
+locations. On the target runtime, use the semantic inventory operation before
+installation or placement:
+
+```console
+python3 bin/place.py inventory prepare-agent --declaration PLACEMENT.md --site SITE --tool grok
+python3 bin/place.py apply --declaration PLACEMENT.md --site SITE
+python3 bin/place.py inventory activate --declaration PLACEMENT.md --site SITE
+```
+
+Pass the same additional `--rules` and `--skills` sources to these operations
+when the declaration uses private inputs. `prepare-agent` resolves the catalog,
+environment, principal, and config root from the site's `INVENTORY` binding; it
+registers the CLI and writes `pending` together. It does not install or start a CLI.
+Perform the official installation and any necessary login while pending, using
+the environment's existing maintenance route. `activate` runs full readiness
+for every registered CLI before writing `active`; it does not accept workspace
+or scope restrictions. Then verify behavior through ordinary `start`.
+
+Use the same operation to resume after a failure. Existing exact registration
+is preserved; conflicting registration, unrelated runtime identity, and stale
+inputs are refused. Failed activation leaves pending. Other environments and
+unknown state are retained. Catalog saves serialize cooperating writers with a
+native lock plus an atomically published shared claim, including Windows/WSL
+writers to the same file. An interrupted owner can resume from the same environment
+binding after its native lock is released. A claim from another environment must
+be resumed there; a missing owner is not permission to delete the claim. Environment
+IDs must identify their actual runtime, not be reused for independent clones.
+Saves compare the original bytes before replacement; normal start still checks current
+placement after activation. These operations do not make arbitrary source editors
+transactional, and do not atomically install a CLI and all its placement files.
+Do not hand-edit operational JSON to bypass a refusal.
 
 OpenCode skill placement uses `.opencode/skills` in a project and
 `~/.config/opencode/skills` globally, following its
@@ -382,6 +426,16 @@ schema fields are rejected. This is not a semantic secret scanner: the model
 and trusted adapters must obey the metadata-only contract, and filenames or
 metadata can themselves be private. Review HTML before sharing; never commit
 real-environment reports to this public repository.
+
+When a successful query cannot be converted, its existing `response conversion
+failed` status remains a failure and the report/console add one fixed diagnostic
+stage and code. Built-in envelope failures use `envelope` with `malformed`,
+`failed-result`, or `incomplete`; metadata JSON failures use `metadata` with
+`malformed-json` or `missing-json`; schema failures use `schema` with a fixed
+validation code; other adapter or local processing failures use
+`processing: unexpected-error`. These labels contain no response, stderr,
+exception text, payload, or traceback. They describe that one query only and
+do not save it or trigger a retry.
 
 ### Existing launch entry points
 
