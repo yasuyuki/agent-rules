@@ -17,7 +17,7 @@ spec.loader.exec_module(place)
 class SavedStartTests(unittest.TestCase):
     def test_publish_read_repeat_and_preserve(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             declaration = root / "placement.md"
             declaration.write_text("""<!-- BEGIN SITES TSV -->
 ```tsv
