@@ -954,3 +954,39 @@ installation or behavioral acceptance on an operator's actual host.
 ## License
 
 MIT. See `LICENSE`.
+
+
+## Cross-environment handoff
+
+The maintainer's `handoff` rule keeps workspace resumption in the nearest
+HANDOFF.md and cross-environment unfinished work in an explicitly selected,
+accessible shared task. `classify-work` handles capability/phase routing;
+`human-handoff` handles a person's relay and copy/paste path. The session-end
+rule includes that relay as human work. The phase rule already preserves scope
+and acceptance boundaries and needs no parallel delivery procedure.
+
+This uses existing issue/task storage and notification paths. No task database,
+mandatory handoff CLI, credential transfer or delivery service is introduced.
+Saving or rereading a task is not recipient receipt; sender completion is not
+acceptance of remaining work. Missing source documents and sender-only artifacts
+remain blockers to the affected handoff, with source information retained.
+
+Behavioral regression cases and response grading are in
+[the handoff fixtures](tests/fixtures/handoff/README.md). Run:
+
+```console
+python3 tests/test_handoff.py
+python3 tests/test_rules.py
+```
+
+The offline test validates the regression grader, not agent compliance. Exercise
+fresh sender/receiver sessions with the fixture protocol to measure behavior.
+Synthetic cases cannot establish real cross-host delivery or UI clipboard
+fidelity. For real acceptance, use an independent harmless task, an authorized
+existing destination and fresh sender/recipient sessions; retain the shared
+reference, source revision, actual receipt and acceptance results separately.
+Unavailable destination execution must be handed over, never marked passed.
+Rule/skill placement and mirroring use the existing `place.py apply/check/mirror`
+commands; a successful byte check is not a behavioral acceptance result. Do not
+apply these source changes to pinned experimental baselines or reuse previous
+experiment results as evidence for the changed instructions.

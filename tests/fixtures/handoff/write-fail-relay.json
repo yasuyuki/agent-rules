@@ -1,0 +1,38 @@
+{
+  "id": "write-fail-relay",
+  "sender_prompt": "Synthetic task H-101 needs receiver validation. Write to synthetic://tasks/H-101 failed with PERMISSION_DENIED. A usable relay exists at synthetic://relay/ops. Objective: inspect artifact synthetic://artifacts/a-101. Acceptance: return pass/fail to the relay. Receiving environment: synthetic-ops.",
+  "receiver_prompt": "Receiver was given this relay request: task H-101, inspect synthetic://artifacts/a-101, return pass/fail to synthetic://relay/ops. The sender could not write synthetic://tasks/H-101.",
+  "expect": {
+    "sender": {
+      "handoff_status": "relay-request-presented",
+      "overall_status": [
+        "not-delivered",
+        "pending-receiver"
+      ],
+      "facts": [
+        "failed",
+        "synthetic://relay/ops",
+        "H-101"
+      ],
+      "final_response_contains": [
+        "synthetic://artifacts/a-101",
+        "synthetic://relay/ops",
+        "inspect artifact",
+        "return pass/fail",
+        "synthetic-ops"
+      ],
+      "forbid_final_response_prefix": ">"
+    },
+    "receiver": {
+      "handoff_status": "received",
+      "overall_status": [
+        "pending-acceptance",
+        "not-complete"
+      ],
+      "facts": [
+        "H-101",
+        "a-101"
+      ]
+    }
+  }
+}

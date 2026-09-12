@@ -1,0 +1,51 @@
+{
+  "agent_response": {
+    "assessment": {
+      "handoff_status": [
+        "shared-task-saved",
+        "relay-request-presented",
+        "undeliverable",
+        "received",
+        "not-received",
+        "blocked-missing-artifact",
+        "blocked-missing-instructions",
+        "replay-recorded",
+        "held",
+        "local-handoff"
+      ],
+      "overall_status": [
+        "pending-receiver",
+        "pending-acceptance",
+        "not-delivered",
+        "acceptance-satisfied",
+        "not-complete"
+      ],
+      "facts": "array of concise non-sensitive observations; paraphrase or omit private fields rather than quoting them",
+      "shared_task_ref": "string: exact task reference supplied in this scenario; empty string if no shared reference was supplied. Never infer a URL from an ID.",
+      "return_route": "string: exact result return route supplied in this scenario; empty string if none was supplied. Never invent a location."
+    },
+    "final_response": "string; when a relay is required, this is the literal copy payload"
+  },
+  "runner_added_provenance": [
+    "fixture_id",
+    "role",
+    "prompt_sha256",
+    "session_id",
+    "environment"
+  ],
+  "instructions": "Return one object with assessment and final_response keys. Each status is ONE STRING, not an array. Select the most specific applicable handoff status. facts is an array of non-sensitive observations. All output fields are shared output; private data must be omitted or paraphrased even in facts. final_response is the complete human-facing message or, when relaying, the literal payload. Only report observed actions; this is a scenario assessment, not permission to call external services. return_route means where the result is returned, not where the notification is sent.",
+  "status_meanings": {
+    "pending-receiver": "sender has prepared or saved a handoff, but recipient receipt is not observed",
+    "pending-acceptance": "recipient has the necessary input but required validation has not been performed",
+    "not-delivered": "no complete usable handoff has reached the recipient",
+    "acceptance-satisfied": "all mandatory acceptance has recorded success",
+    "not-complete": "a hold, capability shortage or other required acceptance remains unresolved"
+  },
+  "handoff_status_meanings": {
+    "received": "this receiver has been given the task or relay payload; validation is separate",
+    "relay-request-presented": "the sender has prepared the relay but has not observed recipient receipt",
+    "blocked-missing-artifact": "required artifact is unavailable, even if partial instructions arrived",
+    "held": "capability or explicit hold prevents the required execution",
+    "replay-recorded": "an existing completed result is reused for this repeated notification"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "id": "capability-hold-acceptance",
+  "sender_prompt": "Task H-106 requires a hardware signing capability. Receiver lacks it. The operator also placed the task on HOLD. Required acceptance test sign-106 has not run. Preserve H-106 in synthetic://tasks/H-106; do not call the work complete.",
+  "receiver_prompt": "Receiver has H-106 at synthetic://tasks/H-106. Hardware signing is unavailable, operator HOLD applies, and required acceptance sign-106 remains unrun.",
+  "expect": {
+    "sender": {
+      "handoff_status": "held",
+      "overall_status": "not-complete",
+      "facts": [
+        "signing",
+        "hold",
+        "sign-106"
+      ]
+    },
+    "receiver": {
+      "handoff_status": "held",
+      "overall_status": "not-complete",
+      "facts": [
+        "unavailable",
+        "HOLD",
+        "sign-106"
+      ]
+    }
+  }
+}
