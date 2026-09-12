@@ -110,6 +110,9 @@ class BranchManagementTests(unittest.TestCase):
         self.branch("check", repo=legacy, ok=False)
 
     def test_declare_agent_updates_only_a_registered_source_catalog(self):
+        # Inventory consumes the source checkout's managed rules/skills; the
+        # installed wheel exposes project commands and branch hooks only. Keep
+        # PLACE for branch registration/hooks so their installed form is covered.
         self.begin("integration", "adopt", branch="main", into="main")
         source = Path(self.begin("declaration", branch="declaration")["worktree"])
         declaration = source / "PLACEMENT.md"
@@ -153,7 +156,7 @@ s1\tcatalog.json\tenv
         self.git_at(source, "add", "PLACEMENT.md", "catalog.json")
         self.git_at(source, "commit", "-m", "add declaration inputs")
         declaration.write_text(declaration.read_text(encoding="utf-8") + "\n", encoding="utf-8")
-        source_dirty = self.command(sys.executable, str(PLACE), "inventory", "declare-agent",
+        source_dirty = self.command(sys.executable, str(ROOT / "bin" / "place.py"), "inventory", "declare-agent",
                                     "--declaration", str(declaration), "--site", "s1", "--tool", "grok", ok=False)
         self.assertIn("refuse source dirt", source_dirty.stderr)
         self.git_at(source, "checkout", "--", "PLACEMENT.md")
@@ -161,11 +164,11 @@ s1\tcatalog.json\tenv
         integration_catalog = self.repo / "catalog.json"
         integration_declaration.write_bytes(declaration.read_bytes())
         integration_catalog.write_bytes(catalog.read_bytes())
-        default_checkout = self.command(sys.executable, str(PLACE), "inventory", "declare-agent",
+        default_checkout = self.command(sys.executable, str(ROOT / "bin" / "place.py"), "inventory", "declare-agent",
                                         "--declaration", str(integration_declaration), "--site", "s1", "--tool", "grok", ok=False)
         self.assertIn("registered topic checkout", default_checkout.stderr)
         unrelated = source / "unrelated.txt"; unrelated.write_text("keep\n", encoding="utf-8")
-        result = self.command(sys.executable, str(PLACE), "inventory", "declare-agent",
+        result = self.command(sys.executable, str(ROOT / "bin" / "place.py"), "inventory", "declare-agent",
                               "--declaration", str(declaration), "--site", "s1", "--tool", "grok")
         output = json.loads(result.stdout)
         self.assertTrue(output["changed"])
@@ -175,17 +178,17 @@ s1\tcatalog.json\tenv
         self.assertEqual(updated["environments"][0]["state"], "pending")
         self.assertEqual(updated["unknown"], ["keep"])
         self.assertEqual(unrelated.read_text(encoding="utf-8"), "keep\n")
-        repeated = self.command(sys.executable, str(PLACE), "inventory", "declare-agent",
+        repeated = self.command(sys.executable, str(ROOT / "bin" / "place.py"), "inventory", "declare-agent",
                                 "--declaration", str(declaration), "--site", "s1", "--tool", "grok")
         self.assertFalse(json.loads(repeated.stdout)["changed"])
         pending_catalog = catalog.read_text(encoding="utf-8")
         invalid = json.loads(pending_catalog); invalid["environments"][0]["agents"] = "invalid"
         catalog.write_text(json.dumps(invalid), encoding="utf-8")
-        invalid_catalog = self.command(sys.executable, str(PLACE), "inventory", "declare-agent",
+        invalid_catalog = self.command(sys.executable, str(ROOT / "bin" / "place.py"), "inventory", "declare-agent",
                                        "--declaration", str(declaration), "--site", "s1", "--tool", "grok", ok=False)
         self.assertIn("agents", invalid_catalog.stderr)
         catalog.write_text(pending_catalog + " ", encoding="utf-8")
-        refused = self.command(sys.executable, str(PLACE), "inventory", "declare-agent",
+        refused = self.command(sys.executable, str(ROOT / "bin" / "place.py"), "inventory", "declare-agent",
                                "--declaration", str(declaration), "--site", "s1", "--tool", "grok", ok=False)
         self.assertIn("refuse target dirt", refused.stderr)
 
