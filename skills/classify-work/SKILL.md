@@ -45,8 +45,12 @@ Present per-phase classifications, candidates, reasons, preparation and missing
 conditions. Separately show holds, natural-event waits and missing executor
 assignment. Distinguish CI, another environment's agent and human operations.
 If phases use different environments, explain the handover using existing
-transfer paths; unknown transfer paths remain unresolved. Do not substitute
-synthetic success for real acceptance.
+transfer paths; unknown transfer paths remain unresolved. Identify the accessible
+shared task and required recipient notification as proposed handoff steps. When
+an applicable `handoff` rule is available, use it to describe those steps; do not
+perform them as part of classification. Classification output alone is not
+delivery or receipt.
+Do not substitute synthetic success for real acceptance.
 
 Classification does not authorize launching agents, installing tools,
 connecting to hosts, transferring data, releasing artifacts or starting

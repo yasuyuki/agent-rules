@@ -1,6 +1,6 @@
 ---
 name: human-handoff
-description: Read before presenting commands or steps for the user to execute, including explicit requests for a command, launch instructions, or a copy-paste answer. Also use for requests for user input, physical actions, or approval. Make the remaining human action reliable to carry out.
+description: Read before presenting commands or steps for the user to execute, including commands, launch instructions, and requests relayed to another agent. Also use for requests for user input, physical actions, or approval. Make the remaining human action reliable to carry out.
 ---
 
 # Handing work to a human
@@ -30,8 +30,19 @@ make those setup steps conditional; ask only when the uncertainty prevents a
 usable handoff. Distinguish checking the written procedure from observing the
 actual screen or successfully completing the action.
 
-Commands must survive the actual display and copy-paste path, not
-merely parse as the original text. Console or harness wrapping can insert real
+Relaying a request to another environment's agent is a human action when the
+person must carry it. Name the receiving environment and provide the exact text
+to paste, separately from the instructions to the person. Include the receiving
+environment in the payload itself, so it survives forwarding without the
+surrounding explanation. Include necessary URLs
+as literal text inside the copyable payload, not only hyperlink attributes.
+Use a plain-text code block without quote prefixes or list decorations that the
+person must remove. Do not ask them to reconstruct references or edit the request.
+Keep shared-task content and state under the `handoff` rule when available; this
+skill governs the human relay, not an additional task ledger.
+
+Commands, relayed requests and their references must survive the actual display
+and copy-paste path, not merely parse as the original text. Console or harness wrapping can insert real
 whitespace, even inside a quoted argument: `workspace-write` can become
 `workspace- write`. A fenced one-line command alone does not prevent this.
 
@@ -72,7 +83,11 @@ existing handoff record and report the limitation.
 
 Validate the exact presented syntax in the stated shell and use a safe dry run
 or version query through the same argument path where available. Syntax checks
-do not prove that copying from the UI preserves bytes. Never execute a destructive
+do not prove that copying from the UI preserves bytes. For relayed text, check
+that plain-text copying retains the request and literal URLs without manual
+removal of decoration; a code block's appearance alone is not proof. Report
+format inspection, observed copy/paste, recipient retrieval and execution as
+separate evidence. If the actual UI path is unavailable, leave that check pending. Never execute a destructive
 or externally visible action merely to test the user's command.
 
 If a result is needed, ask for the specific non-sensitive output or pass/fail.
