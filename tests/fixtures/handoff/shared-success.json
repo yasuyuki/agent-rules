@@ -1,0 +1,34 @@
+{
+  "id": "shared-success",
+  "sender_prompt": "Sender env observed successful save and readback of shared task H-100 at synthetic://tasks/H-100, with artifact synthetic://artifacts/build-7. Receiver cannot access sender files. Objective: validate build-7 at revision rev-7. Allowed: run validation only. Acceptance: report checksum to synthetic://tasks/H-100. Relay route is synthetic://relay/receiver.",
+  "receiver_prompt": "Receiver sees shared task H-100 at synthetic://tasks/H-100 and artifact synthetic://artifacts/build-7. Objective: validate build-7 at revision rev-7. Allowed: run validation only. Acceptance: report checksum to synthetic://tasks/H-100. Result return route: synthetic://tasks/H-100. Notification route: synthetic://relay/receiver.",
+  "expect": {
+    "sender": {
+      "handoff_status": "shared-task-saved",
+      "overall_status": "pending-receiver",
+      "facts": [
+        "H-100",
+        "rev-7",
+        "checksum"
+      ],
+      "shared_task_ref": "synthetic://tasks/H-100",
+      "return_route": "synthetic://tasks/H-100"
+    },
+    "receiver": {
+      "handoff_status": "received",
+      "overall_status": [
+        "pending-acceptance",
+        "not-complete"
+      ],
+      "facts": [
+        "H-100",
+        "rev-7",
+        "only",
+        "checksum"
+      ],
+      "shared_task_ref": "synthetic://tasks/H-100",
+      "return_route": "synthetic://tasks/H-100",
+      "same_task_as_sender": true
+    }
+  }
+}

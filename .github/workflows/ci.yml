@@ -19,6 +19,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - run: python tests/test_handoff.py
       - run: python tests/test_rules.py
       - run: python tests/test_push_preflight.py
       - run: python tests/test_agent_report.py

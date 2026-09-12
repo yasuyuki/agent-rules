@@ -1,0 +1,23 @@
+{
+  "id": "write-fail-no-route",
+  "sender_prompt": "Synthetic task H-102 requires receiver validation. Write to synthetic://tasks/H-102 failed with FORBIDDEN. No relay, notification, or other delivery route is available. Preserve the sender record. Objective: inspect artifact a-102.",
+  "receiver_prompt": "Receiver has no delivered task for H-102. This prompt exists only to test that lack of delivery is not mistaken for receipt.",
+  "expect": {
+    "sender": {
+      "handoff_status": "undeliverable",
+      "overall_status": "not-delivered",
+      "facts": [
+        "failed",
+        "no relay",
+        "Preserve"
+      ]
+    },
+    "receiver": {
+      "handoff_status": "not-received",
+      "overall_status": "not-delivered",
+      "facts": [
+        "H-102"
+      ]
+    }
+  }
+}
