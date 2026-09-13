@@ -31,7 +31,8 @@ one lock scope; an executed pre-legacy hook is followed by a fresh validation.
 ## Diagnostics and reuse
 
 `tests/ci_runner.py` collects explicit unittest modules through their loaders,
-then sorts and partitions IDs among three child processes. Recovery's
+then assigns all collected IDs to six duration-balanced buckets, split across
+two independent checkout jobs with three child processes each. Recovery's
 `load_tests` prevents inherited base tests from being run again. The JSON records
 per-test status/elapsed time, fixture/cleanup times and outer Git/CLI invocation
 counts and durations. Outer command durations include nested hooks: they are not
@@ -66,3 +67,58 @@ run [34737576430](https://github.com/yasuyuki/agent-rules/actions/runs/347375764
 took 1,753 seconds and 4,023 total runner seconds. Windows branch/recovery and the
 wheel composite step were the dominant costs; the composite is not build time.
 These are individual runs, not a p50/p95 estimate.
+
+## Five-minute integration follow-up
+
+The source/handoff/rules contracts run in checkout partition 0; both partitions
+run their disjoint part of the complete real-Git collection. Package jobs have
+no dependency on checkout tests: each builds its own sdist and wheel, performs
+strict metadata validation, and runs the entire installed project suite and the
+same three wheel-specific E2Es. Separate runners isolate build output, source
+hash checks, installed environments and every mutable Git fixture. There is no
+artifact transfer or shared mutable checkout between verification jobs.
+
+The four existing `test (<os>, <python>)` check names are retained as gates. Each
+waits for **all** checkout partitions and package configurations, including
+artifact upload, and accepts only `success` for both matrices. Failure,
+cancellation or an unexpected job skip cannot satisfy the gate. Matrix fail-fast
+remains disabled. Source-stage skips in checkout partition 1 are intentional:
+those contracts run once per OS/Python configuration in partition 0. Platform
+case skips remain explicit in the JSON. Checkout artifacts now include the
+partition number; package artifacts have a separate name.
+
+`tests/ci_checkout_weights.json` contains only test IDs and relative weights
+from integrated main run #125 (`34764799630`, `8bc1e6a`). For each of Windows
+3.10 and 3.12, case duration is normalized by the suite total; the larger of the
+two normalized observations is used. Longest-weight-first assignment breaks
+ties by test ID and then bucket index. Timings affect ordering and assignment,
+never collection or eligibility; absent/new/invalid measurements fall back
+without excluding cases. Recovery still uses its existing `load_tests`.
+
+Saved #125 JSON gives the following scheduling estimates. They reuse measured
+case durations, and are **not** predictions of contention or runner startup:
+
+| Layout | Windows 3.10 longest bucket | Windows 3.12 longest bucket |
+| --- | ---: | ---: |
+| Existing ID-stride, 3 workers | 356.8 s | 268.5 s |
+| Weighted, 3 workers | 309.1 s | 233.8 s |
+| Weighted, 4 workers on one runner | 232.3 s | 175.4 s |
+| Weighted, two runners × 3 workers | 156.9 s | 116.2 s |
+
+Three workers cannot reach five minutes on 3.10 even with perfect balancing
+(the average lower bound is 306.3 seconds before other work). Four workers on
+one runner with the existing serial package path still project over five
+minutes (232.3 + 124 seconds); making package work concurrent on that runner
+would also compete for CPU and require build/source isolation. Two checkout
+runners preserve the measured three-worker concurrency on each host and remove
+the package dependency, at the cost of extra startup and checkout operations.
+Actual run/job/step timestamps and summed runner seconds must measure that cost.
+
+The longest retirement case was inspected separately: consolidating its
+unfinished/dependent and untracked/ignored fixtures could save roughly three
+outer CLI and four outer Git invocations while retaining assertions. This alone
+cannot remove the observed 182-second gap to the target. It changes scenario
+setup and is deferred in favor of scheduling-only changes. Cherry-pick fixture
+reuse would add sequencer-abort coupling. No production engine, fixture,
+assertion, lock, fsync or validation cache is changed in this follow-up; existing
+legacy-hook and inspection-path negative regressions remain in the full suite.

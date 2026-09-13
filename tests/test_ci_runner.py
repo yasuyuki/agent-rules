@@ -46,9 +46,13 @@ class SetupError(unittest.TestCase):
         environment = os.environ.copy()
         environment['PYTHONPATH'] = str(directory) + os.pathsep + str(SOURCE.parent)
         environment.update(options.get('environment', {}))
-        return subprocess.run([sys.executable, str(SOURCE), '--output', str(output),
-                               '--timeout', str(options.get('timeout', 3)),
-                               '--workers', str(options.get('workers', 1)), *names],
+        arguments = ['--output', str(output), '--timeout', str(options.get('timeout', 3)),
+                     '--workers', str(options.get('workers', 1))]
+        if options.get('timings'):
+            arguments.extend(['--timings', str(options['timings'])])
+        arguments.extend(['--shard-count', str(options.get('shard_count', 1)),
+                          '--shard-index', str(options.get('shard_index', 0))])
+        return subprocess.run([sys.executable, str(SOURCE), *arguments, *names],
                               env=environment, text=True, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, timeout=15)
 
@@ -80,6 +84,103 @@ class SetupError(unittest.TestCase):
                  'synthetic_ci_tests.Cases.test_pass'],
                 ['synthetic_ci_tests.Cases.test_fail', 'synthetic_ci_tests.Cases.test_skip']])
             self.assertIn('ci_runner start', result.stderr)
+
+    def test_lpt_assigns_skewed_timings_and_partitions_all_ids_once(self):
+        ids = ['case.%s' % name for name in ('a', 'b', 'c', 'd', 'e')]
+        with tempfile.TemporaryDirectory() as directory:
+            timings = Path(directory) / 'timings.json'
+            timings.write_text(json.dumps({'case.a': 100, 'case.b': 60, 'case.c': 5,
+                                           'case.d': 4, 'case.e': 3}), encoding='utf-8')
+            buckets = runner.assign_buckets(ids, 4, timings)
+            self.assertEqual(buckets, [['case.a'], ['case.b'], ['case.c'], ['case.d', 'case.e']])
+            assigned = [test_id for shard in buckets for test_id in shard]
+            self.assertCountEqual(assigned, ids)
+            self.assertEqual(len(assigned), len(set(assigned)))
+
+    def test_actual_partitions_are_disjoint_and_cover_collected_synthetic_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.module(directory)
+            names = ['synthetic_ci_tests.Cases.test_pass',
+                     'synthetic_ci_tests.Cases.test_skip',
+                     'synthetic_ci_tests.Cases.test_expected_failure']
+            sys.path.insert(0, directory)
+            try:
+                collected = runner.collect(names)
+            finally:
+                sys.path.remove(directory)
+            outputs = []
+            for shard_index in range(2):
+                output = Path(directory) / ('job-%d.json' % shard_index)
+                result = self.invoke(directory, output, *names, workers=2,
+                                     shard_count=2, shard_index=shard_index)
+                self.assertEqual(result.returncode, 0)
+                outputs.append(json.loads(output.read_text(encoding='utf-8')))
+            selected = [set(output['tests']) for output in outputs]
+            self.assertFalse(selected[0] & selected[1])
+            self.assertEqual(selected[0] | selected[1], set(collected))
+
+    def test_real_checkout_and_recovery_ids_are_assigned_once_at_all_bucket_counts(self):
+        ids = runner.collect(['test_branch_management', 'test_branch_recovery'])
+        for bucket_count in (1, 3, 6, len(ids) + 1):
+            assigned = [test_id for bucket in runner.assign_buckets(ids, bucket_count)
+                        for test_id in bucket]
+            self.assertCountEqual(assigned, ids)
+            self.assertEqual(len(assigned), len(set(assigned)))
+
+    def test_timing_fallback_ignores_missing_and_invalid_values(self):
+        ids = ['case.a', 'case.b', 'case.c']
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'timings.json'
+            path.write_text(json.dumps({'case.a': True, 'case.b': -1, 'case.c': float('inf')}),
+                            encoding='utf-8')
+            self.assertEqual(runner.assign_buckets(ids, 2, path), [['case.a', 'case.c'], ['case.b']])
+            self.assertEqual(runner.assign_buckets(ids, 2, Path(directory) / 'missing.json'),
+                             [['case.a', 'case.c'], ['case.b']])
+            path.write_text('{not json', encoding='utf-8')
+            self.assertEqual(runner.assign_buckets(ids, 2, path),
+                             [['case.a', 'case.c'], ['case.b']])
+            path.write_bytes(b'\xff')
+            self.assertEqual(runner.assign_buckets(ids, 2, path),
+                             [['case.a', 'case.c'], ['case.b']])
+            path.write_text('{"case.a": 4, "case.b": "bad", "case.c": ' + '9' * 400 + '}',
+                            encoding='utf-8')
+            self.assertEqual(runner.load_timings(path), ({'case.a': 4}, 4))
+            self.assertEqual(runner.assign_buckets(ids, 2, path),
+                             [['case.a', 'case.c'], ['case.b']])
+            path.write_text('{"case.a": ' + '9' * 5000 + '}', encoding='utf-8')
+            self.assertEqual(runner.assign_buckets(ids, 2, path),
+                             [['case.a', 'case.c'], ['case.b']])
+
+    def test_invalid_shard_arguments_fail_before_collection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'metrics.json'
+            result = subprocess.run([sys.executable, str(SOURCE), '--output', str(output),
+                                     '--timeout', '3', '--shard-count', '2', '--shard-index', '2',
+                                     'test_branch_management'], text=True, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('--shard-index must select a shard', result.stderr)
+
+    def test_empty_assigned_workers_do_not_launch_children(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'metrics.json'
+            with mock.patch.object(runner.subprocess, 'Popen') as popen:
+                self.assertEqual(runner.run_parent(['only'], output, 3, 3, None, 2, 1), 0)
+            popen.assert_not_called()
+            data = json.loads(output.read_text())
+            self.assertEqual(data['shards'], [])
+
+    def test_failure_in_selected_partition_still_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.module(directory)
+            output = Path(directory) / 'metrics.json'
+            result = self.invoke(directory, output,
+                                 'synthetic_ci_tests.Cases.test_fail',
+                                 'synthetic_ci_tests.Cases.test_pass',
+                                 workers=1, shard_count=2, shard_index=0)
+            self.assertEqual(result.returncode, 1)
+            data = json.loads(output.read_text())
+            self.assertEqual(data['tests']['synthetic_ci_tests.Cases.test_fail']['status'], 'failure')
 
     def test_command_stage_records_exit_code_without_capturing_output(self):
         with tempfile.TemporaryDirectory() as directory:

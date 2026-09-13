@@ -239,7 +239,7 @@ def _child_command(output, timeout, ids):
 def _child_data(child):
     try:
         return json.loads(child['output'].read_text(encoding='utf-8'))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return {'tests': {}}
 
 
@@ -249,8 +249,50 @@ def _last_test(data):
     return running[-1] if running else None
 
 
-def run_parent(ids, output, workers, timeout):
-    shards = [ids[index::workers] for index in range(min(workers, len(ids)))]
+def load_timings(path):
+    """Read optional per-test estimates, treating every bad value as unknown."""
+    if not path:
+        return {}, 1.0
+    try:
+        data = json.loads(Path(path).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        # Includes malformed UTF-8/JSON and Python's integer-decoding limit.
+        return {}, 1.0
+    if not isinstance(data, dict):
+        return {}, 1.0
+    weights = {}
+    for test_id, value in data.items():
+        if not isinstance(test_id, str) or isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        try:
+            valid = math.isfinite(value) and value >= 0
+        except OverflowError:
+            valid = False
+        if valid:
+            weights[test_id] = value
+    # An unseen test should not be favoured over known slow tests.  This also
+    # keeps scheduling useful if a timings file is only partially populated.
+    return weights, max(weights.values(), default=1.0)
+
+
+def assign_buckets(ids, bucket_count, timings=None):
+    """Deterministically assign every ID once with longest-processing-time first."""
+    weights, fallback = load_timings(timings)
+    buckets = [[] for unused in range(bucket_count)]
+    loads = [0.0] * bucket_count
+    for test_id in sorted(ids, key=lambda item: (-weights.get(item, fallback), item)):
+        index = min(range(bucket_count), key=lambda item: (loads[item], item))
+        buckets[index].append(test_id)
+        loads[index] += weights.get(test_id, fallback)
+    return buckets
+
+
+def run_parent(ids, output, workers, timeout, timings=None, shard_count=1, shard_index=0):
+    buckets = assign_buckets(ids, workers * shard_count, timings)
+    first_bucket = shard_index * workers
+    assigned_buckets = buckets[first_bucket:first_bucket + workers]
+    # Do not launch no-op children when a job owns more workers than tests.
+    shards = [bucket for bucket in assigned_buckets if bucket]
     started = time.monotonic()
     children = []
     with tempfile.TemporaryDirectory(prefix='agent-rules-ci-runner-') as directory:
@@ -302,11 +344,13 @@ def run_parent(ids, output, workers, timeout):
             shards_data.append({'ids': child['ids'], 'exitCode': child['returncode'],
                                 'timedOut': child['timed_out'],
                                 'lastTest': child.get('last_test')})
-        missing = sorted(set(ids) - set(tests))
+        assigned_ids = [test_id for shard in assigned_buckets for test_id in shard]
+        missing = sorted(set(assigned_ids) - set(tests))
         for test_id in missing:
             tests[test_id] = {'status': 'missing', 'elapsed': 0.0}
         payload = {'metadata': _metadata(), 'stageElapsed': time.monotonic() - started,
                    'tests': tests, 'shards': shards_data, 'missing': missing,
+                   'globalShards': buckets,
                    'cleanupFailed': cleanup_failed, 'spawnError': spawn_error}
         _write(output, payload)
     failed = (interrupted or spawn_error or cleanup_failed or missing or
@@ -368,16 +412,22 @@ def run_command(command, output, timeout):
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--workers', type=int, default=1)
+    parser.add_argument('--shard-count', type=int, default=1)
+    parser.add_argument('--shard-index', type=int, default=0)
+    parser.add_argument('--timings')
     parser.add_argument('--timeout', type=float, required=True)
     parser.add_argument('--output', required=True)
     parser.add_argument('--_child', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--command', nargs=argparse.REMAINDER)
     parser.add_argument('names', nargs='*')
     args = parser.parse_args(argv)
-    if args.workers < 1 or args.timeout <= 0 or not math.isfinite(args.timeout):
-        parser.error('--workers and --timeout must be positive')
+    if (args.workers < 1 or args.shard_count < 1 or
+            args.shard_index < 0 or args.shard_index >= args.shard_count or
+            args.timeout <= 0 or not math.isfinite(args.timeout)):
+        parser.error('--workers, --shard-count, and --timeout must be positive; '
+                     '--shard-index must select a shard')
     if args.command is not None:
-        if args._child or args.names or not args.command:
+        if args._child or args.names or not args.command or args.timings or args.shard_count != 1 or args.shard_index:
             parser.error('--command cannot be combined with test names or child mode')
         return run_command(args.command, args.output, args.timeout)
     if not args.names:
@@ -389,8 +439,11 @@ def main(argv=None):
         _write(args.output, {'metadata': _metadata(), 'collectionError': str(error),
                              'tests': {}, 'shards': []})
         return 1
+    if args._child and (args.timings or args.shard_count != 1 or args.shard_index):
+        parser.error('child mode cannot select timings or shards')
     return run_child(ids, args.output) if args._child else run_parent(
-        ids, args.output, args.workers, args.timeout)
+        ids, args.output, args.workers, args.timeout, args.timings,
+        args.shard_count, args.shard_index)
 
 
 if __name__ == '__main__':
