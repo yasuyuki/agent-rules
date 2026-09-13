@@ -138,11 +138,19 @@ def dependency_worktrees(source, python):
     found = {}
     # Dependency discovery is outside the hook's current repository/index.
     env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+    seen_paths, seen_roots = set(), set()
     for path in (Path(source), Path(python).absolute().parent, Path(python).resolve().parent):
+        named = path.absolute()
+        if named in seen_paths:
+            continue
+        seen_paths.add(named)
         root = git(path, 'rev-parse', '--show-toplevel', optional=True, env=env)
         if not root:
             continue
         root = str(Path(root).resolve())
+        if root in seen_roots:
+            continue
+        seen_roots.add(root)
         gitdir = git(root, 'rev-parse', '--path-format=absolute', '--git-dir', env=env)
         shared = git(root, 'rev-parse', '--path-format=absolute', '--git-common-dir', env=env)
         if Path(gitdir).resolve() == Path(shared).resolve():
@@ -157,10 +165,19 @@ def installation_errors(repo, directory, state, *, source_check=True):
     errors = []
     if git(repo, 'remote', 'get-url', state['remote'], optional=True) != state['remote_url']:
         errors.append('registered remote URL changed')
-    if git(repo, 'config', '--get', 'core.hooksPath', optional=True) != str(directory / 'hooks'):
+    # One fresh read per validation; last value matches `config --get`. NUL
+    # records avoid ambiguity with embedded newlines; strip matches git() above.
+    raw = git_bytes(repo, 'config', '--null', '--get-regexp',
+                    r'^(core\.hookspath|agentbranch\.(python|source))$', optional=True)
+    config = {}
+    for record in (raw or b'').split(b'\0'):
+        if record:
+            key, _, value = record.partition(b'\n')
+            config[key.decode('utf-8').lower()] = value.decode('utf-8').strip()
+    if config.get('core.hookspath') != str(directory / 'hooks'):
         errors.append('core.hooksPath differs from registered hooks')
     for key, value in [('agentBranch.python', state['python']), ('agentBranch.source', state['source'])]:
-        if git(repo, 'config', '--get', key, optional=True) != value:
+        if config.get(key.lower()) != value:
             errors.append(key + ' differs from installation')
     if source_check:
         for root, lock in dependency_worktrees(state['source'], state['python']):
@@ -648,7 +665,7 @@ def prepare_commit(repo, directory, state):
     merge_head = Path(git(repo, 'rev-parse', '--git-path', 'MERGE_HEAD'))
     pick = git(repo, 'rev-parse', '--verify', 'CHERRY_PICK_HEAD', optional=True)
     parents = [old]
-    permit = {'kind': 'commit', 'old': old, 'worktree': top(repo)}
+    permit = {'kind': 'commit', 'old': old, 'worktree': task['worktree']}
     if merge_head.exists():
         heads = merge_head.read_text().splitlines()
         ticket = state['merges'].get(name)
@@ -661,7 +678,7 @@ def prepare_commit(repo, directory, state):
         raise BranchError('default branch is integration-only')
     if pick:
         permission = state['picks'].get(name + ':' + pick)
-        if not permission or permission['old'] != old or permission['worktree'] != top(repo):
+        if not permission or permission['old'] != old or permission['worktree'] != task['worktree']:
             raise BranchError('cherry-pick needs an exact user-approved exception')
         permit['pick'] = pick
     permit['parents'] = parents
@@ -831,16 +848,16 @@ def push_check(repo, remote, destination):
     if not directory.exists() and not git(repo, 'config', '--get', 'agentBranch.source', optional=True):
         return
     with locked(repo) as (directory, state):
+        head = oid(repo, 'HEAD')
         validate_push(repo, directory, state,
-                      [('HEAD', oid(repo, 'HEAD'), 'refs/heads/' + destination, '0' * len(oid(repo, 'HEAD')))],
+                      [('HEAD', head, 'refs/heads/' + destination, '0' * len(head))],
                       remote, push_destination(repo, state, remote))
 
 
 def hook(name, args):
     repo = Path.cwd()
     data = sys.stdin.buffer.read() if name in ('reference-transaction', 'pre-push') else b''
-    with locked(repo) as (directory, state):
-        assert_install(repo, directory, state)
+    directory = common(repo) / 'agent-branches'
     previous = directory / 'hooks' / (name + '.previous')
     def legacy():
         if previous.exists() and os.access(previous, os.X_OK):
@@ -857,12 +874,7 @@ def hook(name, args):
             return subprocess.run(command + args, input=data, env=env).returncode
         return 0
     committed = name == 'reference-transaction' and args == ['committed']
-    if not committed:
-        code = legacy()
-        if code:
-            return code
-    with locked(repo) as (directory, state):
-        assert_install(repo, directory, state)
+    def enforce(directory, state):
         reconcile(repo, state)
         if name == 'prepare-commit-msg':
             prepare_commit(repo, directory, state)
@@ -880,6 +892,20 @@ def hook(name, args):
             save(directory, state)
         else:
             raise BranchError('unknown hook')
+    with locked(repo) as (directory, state):
+        assert_install(repo, directory, state)
+        # Without an external legacy hook, validate and enforce in this same
+        # lock scope. Never carry validation across a legacy hook invocation.
+        needs_legacy = not committed and previous.exists() and os.access(previous, os.X_OK)
+        if not needs_legacy:
+            enforce(directory, state)
+    if needs_legacy:
+        code = legacy()
+        if code:
+            return code
+        with locked(repo) as (directory, state):
+            assert_install(repo, directory, state)
+            enforce(directory, state)
     return legacy() if committed else 0
 
 

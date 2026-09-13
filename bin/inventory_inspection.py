@@ -8,6 +8,11 @@ def _absolute(path):
     return os.path.normcase(os.path.normpath(os.path.abspath(os.fspath(path))))
 
 
+def _requested_path(path):
+    """Return an absolute path without changing the caller's spelling."""
+    return os.path.normpath(os.path.abspath(os.fspath(path)))
+
+
 def _project_path(path, cwd):
     return path == cwd or path.startswith(cwd + os.sep)
 
@@ -30,10 +35,14 @@ def inspect_grok(*, executable, cwd, instruction_paths, skill_paths, runner=subp
     not include Grok's stdout, stderr, or other configuration fields.
     """
     requested_cwd = _absolute(cwd)
-    expected_instructions = {_absolute(path) for path in instruction_paths}
+    requested_cwd_path = _requested_path(cwd)
     expected_skills = {_absolute(path) for path in skill_paths}
+    requested_instructions = {
+        _absolute(path): _requested_path(path) for path in instruction_paths
+    }
+    expected_instructions = set(requested_instructions)
     completed = runner(
-        [os.fspath(executable), 'inspect', '--json'], cwd=requested_cwd,
+        [os.fspath(executable), 'inspect', '--json'], cwd=requested_cwd_path,
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True)
     if completed.returncode != 0:
@@ -87,13 +96,14 @@ def inspect_grok(*, executable, cwd, instruction_paths, skill_paths, runner=subp
 
     if not expected_instructions.issubset(discovered_instructions):
         ignored = []
-        for path in sorted(expected_instructions - discovered_instructions):
-            if not _within(path, normalized_root) or not os.path.isfile(path):
+        for key in sorted(expected_instructions - discovered_instructions):
+            path = requested_instructions[key]
+            if not _within(key, normalized_root) or not os.path.isfile(path):
                 continue
-            relative = os.path.relpath(path, requested_cwd)
+            relative = os.path.relpath(path, requested_cwd_path)
             try:
                 result = runner(
-                    ['git', 'check-ignore', '--quiet', '--', relative], cwd=requested_cwd,
+                    ['git', 'check-ignore', '--quiet', '--', relative], cwd=requested_cwd_path,
                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL)
             except OSError:

@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -19,7 +20,10 @@ PLACE = Path(os.environ.get("AGENT_RULES_PLACE", ROOT / "bin" / "place.py"))
 
 class BranchManagementTests(unittest.TestCase):
     def setUp(self):
+        started = time.monotonic()
+        self._ci_metrics = {}
         self.temp = tempfile.TemporaryDirectory(prefix="branch management ")
+        self.addCleanup(self.cleanup_fixture)
         self.root = Path(self.temp.name)
         self.remote = self.root / "remote.git"
         self.repo = self.root / "integration checkout"
@@ -32,13 +36,21 @@ class BranchManagementTests(unittest.TestCase):
         self.git("commit", "-m", "base")
         self.git("push", "-u", "origin", "main")
         self.branch("install")
+        self._ci_metrics['fixtureSeconds'] = time.monotonic() - started
 
-    def tearDown(self):
+    def cleanup_fixture(self):
+        started = time.monotonic()
         self.temp.cleanup()
+        self._ci_metrics['cleanupSeconds'] = time.monotonic() - started
 
     def command(self, *argv, cwd=None, ok=True, input=None):
+        started = time.monotonic()
         result = subprocess.run(argv, cwd=cwd, text=True, input=input,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        kind = 'git' if argv[0] == 'git' else 'cli'
+        count, elapsed = kind + 'CommandCount', kind + 'CommandSeconds'
+        self._ci_metrics[count] = self._ci_metrics.get(count, 0) + 1
+        self._ci_metrics[elapsed] = self._ci_metrics.get(elapsed, 0.0) + time.monotonic() - started
         if ok and result.returncode:
             self.fail("%r failed (%s):\nstdout: %s\nstderr: %s" %
                       (argv, result.returncode, result.stdout, result.stderr))
