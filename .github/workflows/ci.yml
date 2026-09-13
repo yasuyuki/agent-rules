@@ -17,7 +17,48 @@ env:
   PYTHONUNBUFFERED: "1"
 
 jobs:
-  test:
+  checkout:
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.12"]
+        shard: [0, 1]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Handoff contract
+        if: matrix.shard == 0
+        run: python tests/ci_runner.py --output ci-results/handoff.json --timeout 300 --command python tests/test_handoff.py
+      - name: Placement and rules contract
+        if: matrix.shard == 0
+        run: python tests/ci_runner.py --output ci-results/rules.json --timeout 300 --command python tests/test_rules.py
+      - name: Source regression contracts
+        if: matrix.shard == 0
+        run: python tests/ci_runner.py --output ci-results/source.json --timeout 300 test_grok_placement test_start_config test_inventory_adoption test_inventory_inspection test_push_preflight test_agent_report test_branch_validation test_ci_runner test_verification_skill
+      - name: Complete real-Git checkout contract
+        run: python tests/ci_runner.py --output ci-results/checkout.json --timeout 900 --workers 3 --shard-count 2 --shard-index ${{ matrix.shard }} --timings tests/ci_checkout_weights.json test_branch_management test_branch_recovery
+      - name: Record resolved dependencies
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p ci-results
+          python -m pip freeze > ci-results/build-dependencies.txt
+          python -VV > ci-results/python.txt
+          git --version > ci-results/git.txt
+      - name: Retain timings and outcomes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-results-checkout-${{ matrix.os }}-${{ matrix.python }}-${{ matrix.shard }}-${{ github.run_attempt }}
+          path: ci-results/
+          if-no-files-found: error
+
+  package:
     timeout-minutes: 35
     strategy:
       fail-fast: false
@@ -30,14 +71,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - name: Handoff contract
-        run: python tests/ci_runner.py --output ci-results/handoff.json --timeout 300 --command python tests/test_handoff.py
-      - name: Placement and rules contract
-        run: python tests/ci_runner.py --output ci-results/rules.json --timeout 300 --command python tests/test_rules.py
-      - name: Source regression contracts
-        run: python tests/ci_runner.py --output ci-results/source.json --timeout 300 test_grok_placement test_start_config test_inventory_adoption test_inventory_inspection test_push_preflight test_agent_report test_branch_validation test_ci_runner test_verification_skill
-      - name: Complete real-Git checkout contract
-        run: python tests/ci_runner.py --output ci-results/checkout.json --timeout 900 --workers 3 test_branch_management test_branch_recovery
       - run: python -m pip install build twine
       - run: python -m build
       - name: Validate distribution metadata
@@ -55,7 +88,7 @@ jobs:
           "$runtime/python" -m pip install --no-index dist/*.whl
           "$runtime/python" tests/ci_runner.py --output ci-results/project.json --timeout 300 test_project
           installed_place=$("$runtime/python" -c 'import agent_rules_manager.bin.place as p; print(p.__file__)')
-          # Full behavior runs above. These retain the distinct installed boundary:
+          # Checkout jobs cover full behavior. Retain the distinct installed boundary:
           # packaged hook/data, legacy hook, source-only catalog, and real ref guards.
           AGENT_RULES_PLACE="$installed_place" "$runtime/python" tests/ci_runner.py --output ci-results/wheel.json --timeout 600 --workers 3 \
             test_branch_management.BranchManagementTests.test_install_preserves_an_existing_hook_and_detects_tampering \
@@ -76,6 +109,27 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ci-results-${{ matrix.os }}-${{ matrix.python }}-${{ github.run_attempt }}
+          name: ci-results-package-${{ matrix.os }}-${{ matrix.python }}-${{ github.run_attempt }}
           path: ci-results/
           if-no-files-found: error
+
+  # Preserve the existing check names and require every configuration/partition.
+  # always() makes failure, cancellation and unexpected skips explicit failures.
+  test:
+    needs: [checkout, package]
+    if: always()
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.12"]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all verification results
+        env:
+          CHECKOUT_RESULT: ${{ needs.checkout.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+        shell: bash
+        run: |
+          test "$CHECKOUT_RESULT" = success
+          test "$PACKAGE_RESULT" = success
