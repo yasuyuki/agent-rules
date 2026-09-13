@@ -969,6 +969,30 @@ REMOTE/BRANCH` in its registered worktree. The one-use import is pinned to the
 old and fetched new commits; unrelated fast-forwards are rejected. This does not
 identify which Git command produced the same reference transition.
 
+`branch check --json` is a read-only diagnosis for the latest recorded operation
+in the checked registered worktree. It compares its before snapshot with current
+HEAD, index OIDs, worktree hashes and modes, dirty categories, and merge/pick
+markers. Its `outcome` is `no-update`, `completed`, `partial-update`, `conflict`,
+or `unknown`; unresolved partial, conflict, or unknown outcomes make `check`
+nonzero and include a regular Git `next_action`. `authorization` reports
+`available`, `consumed`, `not-issued`, or `stale`; an attempt records whether a
+legacy hook returned a rejection, the reference update completed, or it was in
+flight or interrupted. Hashes and index object IDs are evidence, not backups or proof of
+which command made a change. Separate changes must not be attributed to the
+operation or use its approval.
+
+New sync, merge preparation, and cherry-pick approval require clean staged,
+unstaged, and untracked work; a preflight refusal retains the original bytes and
+modes and issues no authorization. An exact active `MERGE_HEAD` matching the
+prepared source, or a matching existing `CHERRY_PICK_HEAD`, may receive
+authorization from its retained current state to resume the normal sequencer.
+That continuation does not reconstruct a pre-merge snapshot and is not a broad
+dirty-work exemption. The split prepare/Git workflow cannot prevent writes Git
+makes before a rejected reference, or prove which Git command exited; it records
+enough state to preserve and assess them. Installed hook dispatch uses the
+reviewed source's same branch engine. Each worktree lead owns Git updates;
+implementation workers do not perform them.
+
 Prepare integration in the registered destination with `branch prepare-merge
 --repo DESTINATION_PATH --task SOURCE_ID`. Merge with `git merge --no-ff
 --no-commit SOURCE_BRANCH`, run the project's required verification, then commit.

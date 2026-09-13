@@ -54,7 +54,7 @@ class BranchManagementTests(unittest.TestCase):
         if ok and result.returncode:
             self.fail("%r failed (%s):\nstdout: %s\nstderr: %s" %
                       (argv, result.returncode, result.stdout, result.stderr))
-        if not ok:
+        if ok is False:
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
 
@@ -213,6 +213,27 @@ s1\tcatalog.json\tenv
         result = self.command(sys.executable, str(PLACE.with_name("push_preflight.py")),
                               str(self.repo), "--user-intent", "push")
         return json.loads(result.stdout)
+
+    def checked_operation(self, repo):
+        """Return the newest public operation diagnosis for one checkout."""
+        result = self.branch("check", "--json", repo=repo, ok=None)
+        checked = json.loads(result.stdout)
+        self.assertIn("operations", checked)
+        self.assertTrue(checked["operations"])
+        return checked["operations"][-1]
+
+    def publish_topic_update(self, topic, name="remote", contents="remote\n"):
+        """Publish and fetch one same-branch fast-forward for a registered topic."""
+        publisher = self.root / ("publisher " + name)
+        self.command("git", "clone", self.remote, publisher)
+        self.git_at(publisher, "config", "user.name", "Publisher")
+        self.git_at(publisher, "config", "user.email", "publisher@example.invalid")
+        self.git_at(publisher, "switch", "-c", "topic", "origin/main")
+        (publisher / name).write_text(contents, encoding="utf-8")
+        self.git_at(publisher, "add", name)
+        self.git_at(publisher, "commit", "-m", "remote topic " + name)
+        self.git_at(publisher, "push", "origin", "topic")
+        self.git_at(topic, "fetch", "origin")
 
     def test_branch_transport_destination_and_shared_preflight(self):
         self.begin("integration", "adopt", branch="main", into="main")
@@ -633,6 +654,209 @@ s1\tcatalog.json\tenv
         self.branch("begin", "--mode", "continue", "--task", "topic", "--sync", repo=topic)
         self.git_at(topic, "merge", "--ff-only", "origin/topic")
         self.branch("begin", "--mode", "continue", "--task", "topic", "--sync", repo=topic, ok=False)
+
+    def test_sync_diagnosis_records_a_completed_public_operation(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        topic = Path(self.begin("topic", branch="topic")["worktree"])
+        self.publish_topic_update(topic)
+        before = self.git_at(topic, "rev-parse", "HEAD").stdout.strip()
+        self.branch("begin", "--mode", "continue", "--task", "topic", "--sync", repo=topic)
+        self.git_at(topic, "merge", "--ff-only", "origin/topic")
+        after = self.git_at(topic, "rev-parse", "HEAD").stdout.strip()
+
+        operation = self.checked_operation(topic)
+        self.assertEqual(operation["kind"], "sync")
+        self.assertEqual(operation["outcome"], "completed")
+        self.assertEqual(operation["before"]["head"], before)
+        self.assertEqual(operation["current"]["head"], after)
+        self.assertTrue(operation["head_changed"])
+        self.assertTrue(operation["index_changed"])
+        self.assertTrue(operation["worktree_changed"])
+        self.assertNotEqual(operation["before"]["index"], operation["current"]["index"])
+        self.assertNotEqual(operation["before"]["worktree"], operation["current"]["worktree"])
+        self.assertEqual(operation["attempt"]["status"], "reference-committed")
+
+    def test_sync_dirty_preflight_preserves_each_existing_change_category(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        topic = Path(self.begin("topic", branch="topic")["worktree"])
+        self.publish_topic_update(topic, name="incoming")
+        staged = topic / "staged.bin"
+        staged.write_bytes(b"\x00staged\xff\n")
+        staged.chmod(0o755)
+        self.git_at(topic, "add", "staged.bin")
+        readme = topic / "README"
+        original_readme = readme.read_bytes()
+        readme.write_bytes(original_readme + b"unstaged\n")
+        untracked = topic / "untracked.bin"
+        untracked.write_bytes(b"\x00untracked\xfe\n")
+        untracked.chmod(0o751)
+        staged_before = self.git_at(topic, "diff", "--cached", "--binary").stdout
+        unstaged_before = self.git_at(topic, "diff", "--binary").stdout
+        modes_before = {path.name: path.stat().st_mode & 0o777 for path in (staged, untracked)}
+
+        denied = self.branch("begin", "--mode", "continue", "--task", "topic", "--sync",
+                             repo=topic, ok=False)
+        self.assertIn("staged", denied.stderr)
+        self.assertIn("unstaged", denied.stderr)
+        self.assertIn("untracked", denied.stderr)
+        self.assertEqual(self.git_at(topic, "diff", "--cached", "--binary").stdout, staged_before)
+        self.assertEqual(self.git_at(topic, "diff", "--binary").stdout, unstaged_before)
+        self.assertEqual(readme.read_bytes(), original_readme + b"unstaged\n")
+        self.assertEqual(untracked.read_bytes(), b"\x00untracked\xfe\n")
+        self.assertEqual({path.name: path.stat().st_mode & 0o777 for path in (staged, untracked)}, modes_before)
+
+        operation = self.checked_operation(topic)
+        self.assertEqual(operation["kind"], "sync")
+        self.assertEqual(operation["outcome"], "no-update")
+        self.assertTrue(operation["before"]["staged"])
+        self.assertTrue(operation["before"]["unstaged"])
+        self.assertTrue(operation["before"]["untracked"])
+        self.assertEqual(operation["before"], operation["current"])
+
+    def test_sync_legacy_reference_refusal_reports_a_partial_update(self):
+        legacy = self.root / "legacy sync"
+        self.command("git", "clone", self.remote, legacy)
+        self.git_at(legacy, "config", "user.name", "Test User")
+        self.git_at(legacy, "config", "user.email", "test@example.invalid")
+        transaction = legacy / ".git" / "hooks" / "reference-transaction"
+        transaction.write_text(
+            "#!/bin/sh\n"
+            "[ \"$1\" = prepared ] || exit 0\n"
+            "while read old new ref; do\n"
+            "  [ \"$ref\" = refs/heads/topic ] && "
+            "[ -e \"$(git rev-parse --path-format=absolute --git-common-dir)/reject\" ] && exit 1\n"
+            "done\nexit 0\n",
+            encoding="utf-8", newline="\n")
+        transaction.chmod(0o755)
+        self.branch("install", repo=legacy)
+        self.begin("legacy-main", "adopt", repo=legacy, branch="main", into="main")
+        topic = Path(self.begin("topic", repo=legacy, branch="topic")["worktree"])
+        self.publish_topic_update(topic, name="refusal")
+        old = self.git_at(topic, "rev-parse", "HEAD").stdout.strip()
+        self.branch("begin", "--mode", "continue", "--task", "topic", "--sync", repo=topic)
+        (legacy / ".git" / "reject").write_text("reject\n", encoding="utf-8")
+        self.git_at(topic, "merge", "--ff-only", "origin/topic", ok=False)
+
+        operation = self.checked_operation(topic)
+        self.assertEqual(operation["kind"], "sync")
+        self.assertEqual(operation["outcome"], "partial-update")
+        self.assertEqual(self.git_at(topic, "rev-parse", "HEAD").stdout.strip(), old)
+        self.assertFalse(operation["head_changed"])
+        self.assertTrue(operation["index_changed"])
+        self.assertNotEqual(operation["before"]["index"], operation["current"]["index"])
+
+    def test_conflicted_pick_diagnosis_keeps_the_conflict_and_next_action(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        source = Path(self.begin("source", branch="source")["worktree"])
+        (source / "clash").write_text("source\n", encoding="utf-8")
+        self.git_at(source, "add", "clash")
+        self.git_at(source, "commit", "-m", "source clash")
+        commit = self.git_at(source, "rev-parse", "HEAD").stdout.strip()
+        target = Path(self.begin("target", branch="target")["worktree"])
+        (target / "clash").write_text("target\n", encoding="utf-8")
+        self.git_at(target, "add", "clash")
+        self.git_at(target, "commit", "-m", "target clash")
+        self.branch("allow-cherry-pick", "--commit", commit, "--approval", "review-conflict",
+                    "--reason", "resolve conflict", repo=target)
+        self.git_at(target, "cherry-pick", commit, ok=False)
+
+        operation = self.checked_operation(target)
+        self.assertEqual(operation["kind"], "pick")
+        self.assertEqual(operation["outcome"], "conflict")
+        self.assertTrue(operation["index_changed"])
+        self.assertTrue(operation["current"]["markers"])
+        self.assertIn("cherry-pick", operation["next_action"])
+        self.assertNotEqual(self.git_at(target, "ls-files", "-u").stdout, "")
+
+    def test_active_merge_preparation_refuses_unrelated_dirty_changes(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        source = Path(self.begin("source", branch="source")["worktree"])
+        (source / "source-change").write_bytes(b"source\n")
+        self.git_at(source, "add", "source-change")
+        self.git_at(source, "commit", "-m", "source change")
+        self.git("merge", "--no-ff", "--no-commit", "source")
+        untracked = self.repo / "unrelated.bin"
+        untracked.write_bytes(b"\x00untracked\xff\n")
+        untracked.chmod(0o751)
+        readme = self.repo / "README"
+        readme.write_bytes(readme.read_bytes() + b"unstaged outsider\n")
+        staged = self.repo / "outside-staged"
+        staged.write_bytes(b"outside staged\n")
+        staged.chmod(0o755)
+        self.git("add", "outside-staged")
+        staged_before = self.git("diff", "--cached", "--binary").stdout
+        unstaged_before = self.git("diff", "--binary").stdout
+        modes_before = {path.name: path.stat().st_mode & 0o777 for path in (untracked, staged)}
+
+        denied = self.branch("prepare-merge", "--task", "source", ok=False)
+        self.assertIn("staged", denied.stderr)
+        self.assertIn("unstaged", denied.stderr)
+        self.assertIn("untracked", denied.stderr)
+        self.assertEqual(self.git("diff", "--cached", "--binary").stdout, staged_before)
+        self.assertEqual(self.git("diff", "--binary").stdout, unstaged_before)
+        self.assertEqual(untracked.read_bytes(), b"\x00untracked\xff\n")
+        self.assertEqual({path.name: path.stat().st_mode & 0o777 for path in (untracked, staged)}, modes_before)
+
+        checked = json.loads(self.branch("check", "--json").stdout)
+        self.assertTrue(checked["ok"])
+        self.assertEqual(checked["operations"], [])  # Refusal precedes any authority record.
+
+    def test_conflicted_pick_reauthorization_preserves_its_original_snapshot(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        source = Path(self.begin("source", branch="source")["worktree"])
+        (source / "clash").write_text("source\n", encoding="utf-8")
+        self.git_at(source, "add", "clash")
+        self.git_at(source, "commit", "-m", "source clash")
+        commit = self.git_at(source, "rev-parse", "HEAD").stdout.strip()
+        target = Path(self.begin("target", branch="target")["worktree"])
+        (target / "clash").write_text("target\n", encoding="utf-8")
+        self.git_at(target, "add", "clash")
+        self.git_at(target, "commit", "-m", "target clash")
+        self.branch("allow-cherry-pick", "--commit", commit, "--approval", "review-one",
+                    "--reason", "resolve conflict", repo=target)
+        self.git_at(target, "cherry-pick", commit, ok=False)
+        original = self.checked_operation(target)
+        original_id, original_before = original["id"], original["before"]
+        foreign = target / "foreign.bin"
+        foreign.write_bytes(b"foreign\x00bytes\n")
+        foreign.chmod(0o751)
+
+        denied = self.branch("allow-cherry-pick", "--commit", commit, "--approval", "review-two",
+                             "--reason", "must not accept foreign work", repo=target, ok=False)
+        self.assertIn("untracked", denied.stderr)
+        self.assertEqual(foreign.read_bytes(), b"foreign\x00bytes\n")
+        refused = self.checked_operation(target)
+        self.assertEqual(refused["id"], original_id)
+        self.assertEqual(refused["before"], original_before)
+        self.assertEqual(refused["source"], commit)
+
+        foreign.unlink()
+        self.branch("allow-cherry-pick", "--commit", commit, "--approval", "review-three",
+                    "--reason", "resume exact conflict", repo=target)
+        resumed = self.checked_operation(target)
+        self.assertEqual(resumed["id"], original_id)
+        self.assertEqual(resumed["before"], original_before)
+        self.assertEqual(resumed["source"], commit)
+        self.assertEqual(resumed["outcome"], "conflict")
+
+    def test_sync_reports_a_change_made_after_prepare_as_separate(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        topic = Path(self.begin("topic", branch="topic")["worktree"])
+        self.publish_topic_update(topic, name="after-prepare")
+        old = self.git_at(topic, "rev-parse", "HEAD").stdout.strip()
+        self.branch("begin", "--mode", "continue", "--task", "topic", "--sync", repo=topic)
+        readme = topic / "README"
+        readme.write_bytes(b"separate writer bytes\n")
+        self.git_at(topic, "merge", "--ff-only", "origin/topic", ok=False)
+
+        operation = self.checked_operation(topic)
+        self.assertEqual(operation["kind"], "sync")
+        self.assertEqual(operation["outcome"], "unknown")
+        self.assertEqual(self.git_at(topic, "rev-parse", "HEAD").stdout.strip(), old)
+        self.assertEqual(readme.read_bytes(), b"separate writer bytes\n")
+        self.assertTrue(operation["separate_changes"])
+        self.assertIn("README", " ".join(operation["separate_changes"]))
+        self.assertNotEqual(operation["before"]["worktree"], operation["current"]["worktree"])
 
     def test_retries_a_commit_after_the_preserved_hook_rejects_it(self):
         legacy = self.root / "retry legacy"
