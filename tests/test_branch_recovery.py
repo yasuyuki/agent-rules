@@ -17,6 +17,22 @@ spec.loader.exec_module(management)
 
 
 class RecoveryTests(BranchManagementTests):
+    def test_legacy_hook_mutation_is_revalidated_before_enforcement(self):
+        clone = self.root / 'legacy mutation'
+        self.command('git', 'clone', self.remote, clone)
+        previous = clone / '.git/hooks/prepare-commit-msg'
+        previous.write_text('#!/bin/sh\ngit config agentBranch.source unexpected-source\n',
+                            encoding='utf-8', newline='\n')
+        previous.chmod(0o755)
+        self.branch('install', repo=clone)
+        before = self.git_at(clone, 'show-ref').stdout
+        message = clone / 'message'
+        message.write_text('message', encoding='utf-8')
+        rejected = self.git_at(clone, 'hook', 'run', 'prepare-commit-msg', '--', str(message), ok=False)
+        self.assertIn('agentBranch.source differs from installation', rejected.stderr)
+        self.assertEqual(self.git_at(clone, 'show-ref').stdout, before)
+        self.assertEqual(message.read_text(encoding='utf-8'), 'message')
+
     def test_pack_refs_preserves_registered_and_retained_branches(self):
         clone = self.root / 'packed refs'
         self.command('git', 'clone', self.remote, clone)
