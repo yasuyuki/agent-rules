@@ -416,6 +416,19 @@ only from available or preparable eligible candidates. Unknown candidates stay
 visible but never become a positive proposal. Each assessment includes the
 capability evidence used for its reasons.
 
+`purpose` and lifecycle determine only whether a record is eligible. Work input
+must declare separately the required approval/sandbox mode, interoperability,
+acceptance risk, and material prohibitions as capability IDs when those facts
+affect routing. A matching OS or physical distro does not prove a logical
+runtime principal or any of those capabilities. Unknown evidence stays unknown;
+the classifier may display the candidate but does not set it as a proposed
+environment or invent a preparation route for it. In particular, an isolated permissive-approval environment cannot be
+proposed for normal-approval Windows interoperation by treating that change as
+preparation. Cross-environment handoff text must retain the concrete
+environment, logical ID/principal, existing entry point, requested mode, risk,
+material exclusions, evidence, and unknown conditions so a recipient can act
+without the sender's surrounding conversation.
+
 An observer that cannot read a referenced WSL source retains that environment
 as unverified. A malformed reference remains an error when its source is
 readable. This lets another environment still be listed while making the

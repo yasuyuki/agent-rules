@@ -21,13 +21,17 @@ with tempfile.TemporaryDirectory() as directory:
     placement.write_text("""<!-- BEGIN SITES TSV -->
 ```tsv
 id\thost\tuser\thome\treach\tlaunch
-local\tLinux\tagent\t/home/agent\tdirect\t
+normal-principal\tSynthetic Linux\tnormal-user\t/home/normal\tdirect\t
+isolated-principal\tSynthetic Linux\tisolated-user\t/home/isolated\tdirect\t
+retained-principal\tSynthetic Linux\tretained-user\t/home/retained\tdirect\t
 ```
 <!-- END SITES TSV -->
 <!-- BEGIN WORKSPACES TSV -->
 ```tsv
 id\tsite\tkind\tpath\textra
-work\tlocal\tdirect\t/tmp\t
+normal-work\tnormal-principal\tdirect\t/tmp/normal\t
+isolated-work\tisolated-principal\tdirect\t/tmp/isolated\t
+retained-work\tretained-principal\tdirect\t/tmp/retained\t
 ```
 <!-- END WORKSPACES TSV -->
 """, encoding="utf-8")
@@ -35,24 +39,32 @@ work\tlocal\tdirect\t/tmp\t
     catalog.write_text(json.dumps({"schemaVersion": 1, "sources": {"p": {
         "type": "placement-tsv", "host": "test", "paths": {"default": str(placement)}
     }}, "environments": [
-        {"id": "isolated", "purposes": ["normal-development"], "state": "active", "refs": [{"source": "p", "site": "local"}], "entrypoint": None, "agents": [], "capabilities": {
+        {"id": "isolated", "purposes": ["normal-development"], "state": "active", "refs": [{"source": "p", "site": "isolated-principal"}], "entrypoint": None, "agents": [], "capabilities": {
             "source-edit": {"status": "available", "reason": "checked", "evidence": ["fixture"]},
             "tool": {"status": "preparable", "reason": "not installed", "evidence": [], "preparation": "documented setup"},
             "device": {"status": "unavailable", "reason": "no device", "evidence": []},
+            "approval-yolo": {"status": "available", "reason": "isolated fixture approval", "evidence": ["fixture"]},
+            "isolated-sandbox": {"status": "available", "reason": "isolated fixture sandbox", "evidence": ["fixture"]},
+            "windows-interop": {"status": "unavailable", "reason": "isolated fixture has no Windows interop", "evidence": ["fixture"]},
         }},
-        {"id": "outside", "purposes": ["operator"], "state": "active", "refs": [{"source": "p", "site": "local"}], "entrypoint": None, "agents": [], "capabilities": {
+        {"id": "outside", "purposes": ["operator"], "state": "active", "refs": [{"source": "p", "site": "normal-principal"}], "entrypoint": None, "agents": [], "capabilities": {
             "source-edit": {"status": "available", "reason": "checked", "evidence": []}
         }},
-        {"id": "windows", "purposes": ["normal-development"], "state": "active", "refs": [{"source": "p", "site": "local"}], "entrypoint": None, "agents": [], "capabilities": {
+        {"id": "windows", "purposes": ["normal-development"], "state": "active", "refs": [{"source": "p", "site": "normal-principal"}], "entrypoint": None, "agents": [], "capabilities": {
             "source-edit": {"status": "available", "reason": "second capable fixture", "evidence": ["fixture"]},
             "device": {"status": "available", "reason": "fixture device", "evidence": ["fixture"]},
-            "outside-tool": {"status": "available", "reason": "fixture tool", "evidence": ["fixture"]}
+            "outside-tool": {"status": "available", "reason": "fixture tool", "evidence": ["fixture"]},
+            "approval-normal": {"status": "available", "reason": "normal fixture approval", "evidence": ["fixture"]},
+            "windows-interop": {"status": "available", "reason": "normal fixture Windows interop", "evidence": ["fixture"]}
         }},
-        {"id": "pending", "purposes": ["normal-development"], "state": "pending", "refs": [{"source": "p", "site": "local"}], "entrypoint": None, "agents": [], "capabilities": {
+        {"id": "pending", "purposes": ["normal-development"], "state": "pending", "refs": [{"source": "p", "site": "normal-principal"}], "entrypoint": None, "agents": [], "capabilities": {
             "source-edit": {"status": "available", "reason": "fixture", "evidence": []}
         }},
-        {"id": "retained", "purposes": ["normal-development"], "state": "retained", "refs": [{"source": "p", "site": "local"}], "entrypoint": None, "agents": [], "capabilities": {
+        {"id": "retained", "purposes": ["normal-development"], "state": "retained", "refs": [{"source": "p", "site": "retained-principal"}], "entrypoint": None, "agents": [], "capabilities": {
             "source-edit": {"status": "available", "reason": "fixture", "evidence": []}
+        }},
+        {"id": "experiment", "purposes": ["rule-experiment"], "state": "active", "refs": [{"source": "p", "site": "normal-principal"}], "entrypoint": None, "agents": [], "capabilities": {
+            "source-edit": {"status": "available", "reason": "dedicated fixture", "evidence": ["fixture"]}
         }},
     ]}), encoding="utf-8")
     work = root / "work.json"
@@ -70,6 +82,11 @@ work\tlocal\tdirect\t/tmp\t
             phase("unknown-external", ["outside-tool"]),
             phase("construct", ["source-edit"], ids=["pending"], mode="construction"),
             phase("retained", ["source-edit"], ids=["retained"]),
+            phase("normal-windows", ["approval-normal", "windows-interop"]),
+            phase("isolated-yolo", ["approval-yolo", "isolated-sandbox"]),
+            phase("experiment", ["source-edit"], purpose="rule-experiment"),
+            phase("isolated-windows-incompatible", ["isolated-sandbox", "windows-interop"], ids=["isolated"]),
+            phase("unknown-boundary", ["undocumented-approval"]),
         ]},
         {"id": "excluded", "reference": "synthetic old record", "excludedReason": "completed"},
     ]}), encoding="utf-8")
@@ -101,6 +118,17 @@ work\tlocal\tdirect\t/tmp\t
     assert phases["none"]["candidates"] == []
     assert phases["construct"]["candidates"][0]["environment"] == "pending"
     assert phases["retained"]["candidates"][0]["environment"] == "retained"
+    assert phases["normal-windows"]["proposedEnvironment"] == "windows"
+    assert phases["isolated-yolo"]["proposedEnvironment"] == "isolated"
+    assert phases["experiment"]["proposedEnvironment"] == "experiment"
+    assert phases["isolated-windows-incompatible"]["classification"] == "external-required"
+    assert phases["isolated-windows-incompatible"]["proposedEnvironment"] is None
+    assert not phases["isolated-windows-incompatible"]["assessments"][0]["preparation"]
+    assert phases["unknown-boundary"]["proposedEnvironment"] is None
+    records = {record["id"]: record for record in classifier.environment_inventory.load_catalog(catalog)[2]}
+    assert records["isolated"]["refs"][0]["site"]["host"] == records["retained"]["refs"][0]["site"]["host"]
+    assert records["isolated"]["refs"][0]["site"]["user"] != records["retained"]["refs"][0]["site"]["user"]
+    assert records["retained"]["state"] == "retained"
     assert cases["splitRequired"] is True
     assert cases["handover"]
     assert result[1]["excludedReason"] == "completed"
