@@ -86,7 +86,26 @@ def inspect_grok(*, executable, cwd, instruction_paths, skill_paths, runner=subp
             discovered_skills.add(_absolute(path))
 
     if not expected_instructions.issubset(discovered_instructions):
-        _error('did not discover required instructions', requested_cwd)
+        ignored = []
+        for path in sorted(expected_instructions - discovered_instructions):
+            if not _within(path, normalized_root) or not os.path.isfile(path):
+                continue
+            relative = os.path.relpath(path, requested_cwd)
+            try:
+                result = runner(
+                    ['git', 'check-ignore', '--quiet', '--', relative], cwd=requested_cwd,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL)
+            except OSError:
+                continue
+            if result.returncode == 0:
+                ignored.append(relative)
+        reason = 'did not discover required instructions'
+        if ignored:
+            # Report only requested paths, never private ignore patterns or CLI output.
+            reason += (' (Git ignores existing project paths: ' + json.dumps(ignored) +
+                       '; inspect project ignore policy; no policy or trust was changed)')
+        _error(reason, requested_cwd)
     if not expected_skills.issubset(discovered_skills):
         _error('did not discover required skills', requested_cwd)
     return {

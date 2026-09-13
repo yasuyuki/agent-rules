@@ -197,6 +197,14 @@ evidence, not proof of successful agent work. See the official
 Use an already registered worktree and native resume arguments after `--`.
 The placement entry does not enable Grok's worktree creation or automatic approvals.
 
+Before maintenance, use the installed `grok inspect --json` in affected workspaces
+to check trust and project instruction discovery. `adopt --check-inputs` checks
+source inputs only. When adoption cannot discover an existing project instruction,
+its error also identifies requested paths ignored by Git, without printing private
+ignore patterns or changing policy. Git's ignore result is diagnostic evidence;
+Grok's official inspect remains the discovery verdict. Skills being visible does
+not establish that standing project instructions were loaded.
+
 For an additional CLI, first add its reviewed descriptor and declaration
 locations. To publish the missing agent registration, run the declaration operation
 from the registered topic checkout that tracks both `PLACEMENT.md` and its

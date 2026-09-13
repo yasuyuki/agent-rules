@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 
 
@@ -104,6 +105,49 @@ class InventoryInspectionTests(unittest.TestCase):
             self.inspect(self.payload(projectInstructions=[]))
         with self.assertRaisesRegex(ValueError, 'required skills for cwd '):
             self.inspect(self.payload(skills=[]))
+
+    def test_missing_ignored_instruction_reports_git_fact_without_policy_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(['git', 'init', '-q', directory], check=True)
+            instruction = root / 'AGENTS.md'
+            instruction.write_text('private instruction', encoding='utf-8')
+            policy = root / '.gitignore'
+            policy.write_text('# private policy comment\nAGENTS.md\n', encoding='utf-8')
+            payload = self.payload(cwd=directory, projectRoot=directory,
+                                   projectInstructions=[], skills=[])
+            calls = []
+
+            def run(argv, **kwargs):
+                calls.append(argv)
+                if argv[0] == self.executable:
+                    return subprocess.CompletedProcess(argv, 0, json.dumps(payload), '')
+                return subprocess.run(argv, **kwargs)
+
+            with self.assertRaisesRegex(ValueError, 'Git ignores existing project paths') as error:
+                inspection.inspect_grok(executable=self.executable, cwd=directory,
+                                        instruction_paths=[instruction], skill_paths=[], runner=run)
+            self.assertIn('AGENTS.md', str(error.exception))
+            self.assertNotIn('private', str(error.exception))
+            self.assertEqual(calls[-1], ['git', 'check-ignore', '--quiet', '--', 'AGENTS.md'])
+            self.assertEqual(instruction.read_text(encoding='utf-8'), 'private instruction')
+            self.assertEqual(policy.read_text(encoding='utf-8'), '# private policy comment\nAGENTS.md\n')
+
+            policy.write_text('', encoding='utf-8')
+            with self.assertRaises(ValueError) as error:
+                inspection.inspect_grok(executable=self.executable, cwd=directory,
+                                        instruction_paths=[instruction], skill_paths=[], runner=run)
+            self.assertNotIn('Git ignores', str(error.exception))
+
+            def no_git(argv, **kwargs):
+                if argv[0] == 'git':
+                    raise FileNotFoundError('private executable diagnostic')
+                return run(argv, **kwargs)
+
+            with self.assertRaisesRegex(ValueError, 'did not discover required instructions') as error:
+                inspection.inspect_grok(executable=self.executable, cwd=directory,
+                                        instruction_paths=[instruction], skill_paths=[], runner=no_git)
+            self.assertNotIn('private', str(error.exception))
 
     def test_rejects_failed_or_invalid_output_without_echoing_stderr(self):
         for payload, returncode, reason in [
