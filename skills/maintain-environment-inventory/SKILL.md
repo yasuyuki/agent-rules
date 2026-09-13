@@ -14,6 +14,16 @@ instructions before modifying an inventory.
 
 Read `place.py list --catalog <catalog> --purpose <purpose> --json`. Keep the
 requested purpose: zero matches does not authorize a normal-development fallback.
+Treat purpose and lifecycle as eligibility only.  Before selecting an eligible
+environment, separately compare the work's declared approval/sandbox boundary,
+required interoperability, acceptance risk, and explicit prohibitions with
+capability evidence.  A similarly named OS, a shared distro, or an active state
+does not establish any of those conditions.  Unknown evidence remains unknown
+and must not select an environment or justify changing one.  In particular, do
+not turn an isolated permissive-approval environment into a Windows-interoperable
+normal-approval environment to satisfy a selection request. Use the existing
+`classify-work` skill and read-only `place.py classify` entry point to record
+that comparison; do not add a separate selection mechanism.
 An explicit request to repurpose a named environment is an environment change,
 not a selection fallback. Preserve its other purposes unless their removal is
 requested or necessary to satisfy the requested isolation constraints.
