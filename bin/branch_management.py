@@ -14,6 +14,9 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
+import uuid
+from datetime import datetime, timezone
 import subprocess
 import sys
 import tempfile
@@ -34,10 +37,10 @@ def git(repo, *args, optional=False, env=None):
     return p.stdout.strip() if p.returncode == 0 else None
 
 
-def git_bytes(repo, *args, optional=False):
+def git_bytes(repo, *args, optional=False, input=None):
     """Read an exact Git object without text decoding or newline stripping."""
     p = subprocess.run(['git', '-C', str(repo), *args], stdout=subprocess.PIPE,
-                       stderr=subprocess.PIPE)
+                       stderr=subprocess.PIPE, input=input)
     if p.returncode and not optional:
         raise BranchError(p.stderr.decode('utf-8', 'replace').strip() or 'git failed: ' + ' '.join(args))
     return p.stdout if p.returncode == 0 else None
@@ -78,6 +81,14 @@ def atomic(path, data):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(name, path)
+        # Persist the rename as well as the file contents before authorizing Git.
+        # Python does not expose a portable directory flush on Windows.
+        if os.name != 'nt':
+            descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
     finally:
         if os.path.exists(name):
             os.unlink(name)
@@ -390,6 +401,12 @@ def reconcile(repo, state):
 def finish(state, name, permit, new):
     _, task = task_for(state, name)
     task['tip'] = new
+    operation = state.get('operations', {}).get(name)
+    if operation and permit.get('operation') == operation['id']:
+        operation['committed'] = new
+        operation['hook_outcome'] = 'committed'
+    elif operation and operation.get('committed'):
+        operation['later_registered_tip'] = new
     if permit.get('pick'):
         state['picks'].pop(name + ':' + permit['pick'], None)
     if permit.get('merge'):
@@ -397,6 +414,151 @@ def finish(state, name, permit, new):
         source['integrated'] = {'source': permit['parents'][1], 'destination': name, 'commit': new}
         state['merges'].pop(name, None)
     state['permits'].pop(name, None)
+
+
+def work_state(repo):
+    """Read fingerprints only; never refresh/write the index or save user bytes."""
+    index = git_bytes(repo, 'ls-files', '--stage', '-z').hex()
+    paths = git_bytes(repo, 'ls-files', '--cached', '--others', '--exclude-standard', '-z')
+    files = {}
+    for raw in sorted(set(paths.split(b'\0')) - {b''}):
+        name = os.fsdecode(raw)
+        path = Path(repo) / name
+        try:
+            mode = path.lstat().st_mode
+            if stat.S_ISLNK(mode):
+                data = os.fsencode(os.readlink(path))
+            elif stat.S_ISREG(mode):
+                data = path.read_bytes()
+            else:
+                files[name] = {'mode': mode, 'unsupported': True}
+                continue
+            # Ask Git for its canonical blob identity without writing an object.
+            # This honors CRLF/attributes/clean filters instead of comparing a
+            # transformed checkout directly with repository blob bytes.
+            options = ('--no-filters',) if stat.S_ISLNK(mode) else ('--path=' + name,)
+            blob = git_bytes(repo, 'hash-object', *options, '--stdin', input=data).decode().strip()
+            files[name] = {'mode': mode, 'sha256': hashlib.sha256(data).hexdigest(), 'git_blob': blob}
+        except FileNotFoundError:
+            files[name] = None
+    def names(*args):
+        return [os.fsdecode(p) for p in git_bytes(repo, *args).split(b'\0') if p]
+    return {'head': oid(repo, 'HEAD'), 'branch': branch(repo), 'index': index,
+            'files': files,
+            'staged': names('diff', '--cached', '--name-only', '-z', 'HEAD'),
+            'unstaged': names('diff', '--name-only', '-z'),
+            'untracked': names('ls-files', '--others', '--exclude-standard', '-z'),
+            'unmerged': git_bytes(repo, 'ls-files', '--unmerged', '-z').hex(),
+            'sequencer': {ref: git(repo, 'rev-parse', '--verify', ref, optional=True)
+                          for ref in ('MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD')}}
+
+
+def record_operation(repo, state, task, kind, source, *, allow_dirty=False):
+    before = work_state(repo)
+    if before['head'] != task['tip'] or before['branch'] != task['branch']:
+        raise BranchError('operation checkout differs from registered tip')
+    if not allow_dirty and (before['staged'] or before['unstaged'] or before['untracked']
+                            or before['unmerged'] or any(before['sequencer'].values())):
+        raise BranchError('operation requires a clean checkout; preserve staged, unstaged and untracked work')
+    if state['permits'].get(task['branch'], {}).get('prepared'):
+        raise BranchError('operation has an in-flight reference update; preserve its snapshot and retry later')
+    previous = state.setdefault('operations', {}).get(task['branch'])
+    if previous and not previous.get('committed'):
+        diagnosis = diagnose_operation(repo, state, task, previous)
+        if diagnosis['status'] not in ('unchanged', 'completed'):
+            raise BranchError('previous operation has unresolved changes; run branch check --json and preserve work')
+    operation = {'id': uuid.uuid4().hex, 'kind': kind, 'source': source,
+                 'task': task_for(state, task['branch'])[0], 'worktree': task['worktree'],
+                 'created': datetime.now(timezone.utc).isoformat(), 'before': before,
+                 'capture_phase': 'existing-git-operation' if allow_dirty else 'before-git'}
+    if kind == 'sync':
+        expected = {}
+        for row in git_bytes(repo, 'ls-tree', '-r', '-z', source).split(b'\0'):
+            if not row:
+                continue
+            meta, raw = row.split(b'\t', 1)
+            mode, object_type, value = meta.split()
+            if object_type != b'blob':
+                raise BranchError('sync snapshot does not support submodules; preserve and inspect')
+            expected[os.fsdecode(raw)] = {'git_blob': value.decode(),
+                                        'git_mode': mode.decode()}
+        operation['expected_files'] = expected
+        paths = git_bytes(repo, 'diff', '--name-only', '--no-renames', '-z', before['head'], source)
+        operation['operation_paths'] = [os.fsdecode(path) for path in paths.split(b'\0') if path]
+    else:
+        if kind == 'merge':
+            base = git(repo, 'merge-base', before['head'], source)
+            paths = git_bytes(repo, 'diff', '--name-only', '--no-renames', '-z', base, source)
+        else:
+            paths = git_bytes(repo, 'diff-tree', '--root', '--first-parent', '--no-commit-id',
+                              '--name-only', '--no-renames', '-r', '-z', source)
+        operation['operation_paths'] = [os.fsdecode(path) for path in paths.split(b'\0') if path]
+    if work_state(repo) != before:
+        raise BranchError('checkout changed while preparing snapshot; preserve work and retry')
+    state['operations'][task['branch']] = operation
+    return operation
+
+
+def diagnose_operation(repo, state, task, operation):
+    current = work_state(repo)
+    before = operation['before']
+    changes = {key: before[key] != current[key] for key in ('head', 'index', 'files')}
+    status = 'indeterminate'
+    if current['unmerged']:
+        status = 'conflict'
+    elif current == before:
+        status = 'unchanged'
+    elif ((operation.get('later_registered_tip') or operation.get('committed')) == current['head'] == task['tip']
+          and not current['staged'] and not current['unstaged']):
+        status = 'completed'
+    elif current['head'] == before['head'] and (changes['index'] or changes['files']):
+        status = 'partial-update'
+    unexpected = []
+    def entries(snapshot):
+        result = {}
+        for row in bytes.fromhex(snapshot['index']).split(b'\0'):
+            if row:
+                metadata, name = row.split(b'\t', 1)
+                result.setdefault(os.fsdecode(name), []).append(metadata.decode())
+        return result
+    old_index, new_index = entries(before), entries(current)
+    if operation['kind'] == 'sync' and not operation.get('later_registered_tip'):
+        for path in sorted(set(before['files']) | set(current['files']) | set(operation['expected_files']) | set(old_index) | set(new_index)):
+            actual = current['files'].get(path)
+            original = before['files'].get(path)
+            expected = operation['expected_files'].get(path)
+            matches = actual is None and expected is None
+            if actual and expected and 'git_blob' in actual:
+                mode = actual['mode']
+                git_mode = '120000' if stat.S_ISLNK(mode) else '100755' if mode & 0o111 else '100644'
+                matches = actual['git_blob'] == expected['git_blob'] and git_mode == expected['git_mode']
+            expected_index = ([expected['git_mode'] + ' ' + expected['git_blob'] + ' 0']
+                              if expected else None)
+            outside = path not in operation['operation_paths']
+            if ((actual != original and (outside or not matches))
+                    or (old_index.get(path) != new_index.get(path)
+                        and (outside or new_index.get(path) != expected_index))):
+                unexpected.append(path)
+    elif not operation.get('committed'):
+        allowed = set(operation.get('operation_paths', []))
+        for path in sorted(set(before['files']) | set(current['files']) | set(old_index) | set(new_index)):
+            if path not in allowed and (before['files'].get(path) != current['files'].get(path)
+                                        or old_index.get(path) != new_index.get(path)):
+                unexpected.append(path)
+    if unexpected:
+        status = 'indeterminate'
+    # A fingerprint comparison establishes correspondence, not exclusive authorship.
+    # In particular a later editor may change files before or after Git's hooks.
+    return {'id': operation['id'], 'kind': operation['kind'], 'source': operation['source'],
+            'status': status, 'committed': operation.get('committed'),
+            'later_registered_tip': operation.get('later_registered_tip'), 'capture_phase': operation['capture_phase'], 'unattributed_paths': unexpected, 'hook_outcome': operation.get('hook_outcome', 'not-observed'),
+            'before': before, 'current': current, 'changed': changes,
+            'attribution': 'changes since preparation; concurrent edits cannot be attributed to Git',
+            'next': ('resolve conflicts, then use the existing authorized Git continue/commit; '
+                     'or inspect Git abort without discarding original work' if status == 'conflict' else
+                     'operation complete; use the normal branch workflow' if status == 'completed' else
+                     'approval prepared; run the authorized Git operation' if status == 'unchanged' else
+                     'preserve index and worktree; inspect this comparison before retrying or preparing again')}
 
 
 def begin(args):
@@ -434,8 +596,11 @@ def begin(args):
                     raise BranchError('same-branch remote has no new commit to import')
                 if not ancestor(repo, old, new):
                     raise BranchError('same-branch remote update is not a fast-forward')
+                assert_install(task['worktree'], directory, state)
+                record_operation(task['worktree'], state, task, 'sync', new)
                 state['permits'][task['branch']] = {'kind': 'import', 'old': old, 'new': new,
-                                                      'worktree': task['worktree']}
+                                                      'worktree': task['worktree'],
+                                                      'operation': state['operations'][task['branch']]['id']}
         else:
             if args.task in tasks:
                 raise BranchError('work already registered; use --mode continue')
@@ -595,6 +760,7 @@ def retire(args):
             if path in remaining:
                 raise BranchError('worktree metadata remains; preserve registration and inspect its lock')
         state['tasks'].pop(args.task)
+        state.get('operations', {}).pop(name, None)
         save(directory, state)
     return output
 
@@ -635,6 +801,10 @@ def prepare_merge(args):
         ticket = {'task': args.task, 'source': oid(args.repo, 'refs/heads/' + source['branch']),
                   'old': oid(args.repo, 'HEAD')}
         merge_valid(args.repo, state, target['branch'], ticket)
+        pending = git(args.repo, 'rev-parse', '--verify', 'MERGE_HEAD', optional=True)
+        operation = record_operation(args.repo, state, target, 'merge', ticket['source'],
+                                     allow_dirty=pending == ticket['source'])
+        ticket['operation'] = operation['id']
         state['merges'][target['branch']] = ticket
         save(directory, state)
         return ticket
@@ -650,8 +820,12 @@ def allow_pick(args):
             raise BranchError('cherry-pick destination must be a topic')
         commit = oid(args.repo, args.commit)
         key = task['branch'] + ':' + commit
+        # A failed sequencer may already hold this exact pick's changes.
+        pending = git(args.repo, 'rev-parse', '--verify', 'CHERRY_PICK_HEAD', optional=True)
+        operation = record_operation(args.repo, state, task, 'cherry-pick', commit, allow_dirty=pending == commit)
         state['picks'][key] = {'approval': args.approval, 'reason': args.reason,
-                               'old': oid(args.repo, 'HEAD'), 'worktree': task['worktree']}
+                               'old': oid(args.repo, 'HEAD'), 'worktree': task['worktree'],
+                               'operation': operation['id']}
         save(directory, state)
         return {'commit': commit, 'destination': task['branch'], 'approval': args.approval}
 
@@ -681,6 +855,17 @@ def prepare_commit(repo, directory, state):
         if not permission or permission['old'] != old or permission['worktree'] != task['worktree']:
             raise BranchError('cherry-pick needs an exact user-approved exception')
         permit['pick'] = pick
+    operation = state.get('operations', {}).get(name)
+    if permit.get('merge') or permit.get('pick'):
+        authorization = permission if permit.get('pick') else ticket
+        if (not operation or authorization.get('operation') != operation['id']
+                or operation['source'] != (pick or ticket['source'])):
+            raise BranchError('operation snapshot differs from authorization; prepare again')
+        diagnosis = diagnose_operation(repo, state, task, operation)
+        if diagnosis['unattributed_paths']:
+            raise BranchError('unrelated changes after preparation: ' + ', '.join(diagnosis['unattributed_paths'])
+                              + '; preserve work and run branch check --json')
+        permit['operation'] = operation['id']
     permit['parents'] = parents
     permit['tree'] = git(repo, 'write-tree')  # Inherits the actual GIT_INDEX_FILE.
     state['permits'][name] = permit
@@ -729,6 +914,12 @@ def transaction(repo, directory, state, phase, data):
                 if current is not task or old != task['tip']:
                     raise BranchError('reference update belongs to another checkout')
                 if permit['kind'] == 'import':
+                    operation = state.get('operations', {}).get(name)
+                    if not operation or permit.get('operation') != operation['id']:
+                        raise BranchError('import has no matching operation snapshot; prepare again')
+                    diagnosis = diagnose_operation(repo, state, task, operation)
+                    if diagnosis['unattributed_paths']:
+                        raise BranchError('checkout changed after preparation; preserve work and run branch check --json')
                     if new != permit['new'] or new != oid(repo, 'refs/remotes/' + state['remote'] + '/' + name):
                         raise BranchError('remote update differs from registered same-branch import')
                 else:
@@ -739,11 +930,20 @@ def transaction(repo, directory, state, phase, data):
                         raise BranchError('commit tree or parents differ from authorization')
                     if git(repo, 'rev-parse', '--verify', 'CHERRY_PICK_HEAD', optional=True) != permit.get('pick'):
                         raise BranchError('cherry-pick state changed after commit preparation')
+                    if permit.get('operation'):
+                        operation = state.get('operations', {}).get(name)
+                        if not operation or operation['id'] != permit['operation']:
+                            raise BranchError('operation snapshot changed after commit preparation')
+                        if diagnose_operation(repo, state, task, operation)['unattributed_paths']:
+                            raise BranchError('unrelated changes after commit preparation; preserve work and run branch check --json')
                     if permit.get('merge'):
                         merge_valid(repo, state, name, state['merges'][name])
             checked.append((name, new))
         for name, new in checked:
             state['permits'][name]['prepared'] = new
+            operation = state.get('operations', {}).get(name)
+            if operation:
+                operation['hook_outcome'] = 'prepared'
         save(directory, state)
     elif phase == 'committed':
         for old, new, ref in updates:
@@ -757,6 +957,9 @@ def transaction(repo, directory, state, phase, data):
             permit = state['permits'].get(ref[len('refs/heads/'):])
             if permit and permit.get('prepared') == new:
                 permit.pop('prepared', None)
+            operation = state.get('operations', {}).get(ref[len('refs/heads/'):])
+            if operation:
+                operation['hook_outcome'] = 'aborted'
         save(directory, state)
 
 
@@ -926,7 +1129,24 @@ def check(args):
                     errors.append(key + ': missing dependency')
             except BranchError as exc:
                 errors.append(key + ': ' + str(exc))
-        return {'ok': not errors, 'errors': errors, 'tasks': list(state['tasks'])}
+        working = None
+        try:
+            working = work_state(args.repo)
+        except (BranchError, OSError) as exc:
+            errors.append('checkout diagnosis unavailable: ' + str(exc))
+        operations = []
+        for name, operation in state.get('operations', {}).items():
+            _, task = task_for(state, name)
+            if task['worktree'] != top(args.repo):
+                continue
+            try:
+                diagnosis = diagnose_operation(args.repo, state, task, operation)
+                operations.append(diagnosis)
+                if diagnosis['status'] not in ('unchanged', 'completed'):
+                    errors.append('operation ' + operation['id'] + ': ' + diagnosis['status'] + '; ' + diagnosis['next'])
+            except (BranchError, OSError) as exc:
+                errors.append('operation diagnosis unavailable: ' + str(exc))
+        return {'ok': not errors, 'errors': errors, 'tasks': list(state['tasks']), 'operations': operations, 'working_state': working}
 
 
 def main(argv=None):
@@ -962,6 +1182,8 @@ def main(argv=None):
                  'allow-tag-push': allow_tag_push}[args.command](args)
         if args.command == 'check' and not args.json:
             print('OK: registered worktrees and hooks agree' if value['ok'] else 'FAIL: ' + '; '.join(value['errors']))
+            for operation in value['operations']:
+                print(operation['kind'] + ': ' + operation['status'] + '; ' + operation['next'])
         else:
             print(json.dumps(value, ensure_ascii=False, sort_keys=True))
         return 1 if value.get('ok') is False else 0

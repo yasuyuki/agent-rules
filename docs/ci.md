@@ -122,3 +122,10 @@ setup and is deferred in favor of scheduling-only changes. Cherry-pick fixture
 reuse would add sequencer-abort coupling. No production engine, fixture,
 assertion, lock, fsync or validation cache is changed in this follow-up; existing
 legacy-hook and inspection-path negative regressions remain in the full suite.
+
+Operation correspondence is covered by `test_branch_operations` in the real-Git
+checkout collection. It checks separate dirty classes and exact bytes/modes,
+read-only diagnostics, completed synchronization, partial index updates, and
+changes made after preparation. Run it through `tests/ci_runner.py` alongside
+the branch/recovery modules. Installed operation tests use the same
+`AGENT_RULES_PLACE` override as the existing wheel-specific cases.

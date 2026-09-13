@@ -41,7 +41,7 @@ jobs:
         if: matrix.shard == 0
         run: python tests/ci_runner.py --output ci-results/source.json --timeout 300 test_grok_placement test_start_config test_inventory_adoption test_inventory_inspection test_push_preflight test_agent_report test_branch_validation test_ci_runner test_verification_skill
       - name: Complete real-Git checkout contract
-        run: python tests/ci_runner.py --output ci-results/checkout.json --timeout 900 --workers 3 --shard-count 2 --shard-index ${{ matrix.shard }} --timings tests/ci_checkout_weights.json test_branch_management test_branch_recovery
+        run: python tests/ci_runner.py --output ci-results/checkout.json --timeout 900 --workers 3 --shard-count 2 --shard-index ${{ matrix.shard }} --timings tests/ci_checkout_weights.json test_branch_management test_branch_recovery test_branch_operations
       - name: Record resolved dependencies
         if: always()
         shell: bash

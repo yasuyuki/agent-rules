@@ -17,6 +17,29 @@ spec.loader.exec_module(management)
 
 
 class RecoveryTests(BranchManagementTests):
+    @unittest.skipIf(os.name == 'nt', 'Python has no portable Windows directory fsync')
+    def test_atomic_state_flushes_directory_and_reports_flush_failure(self):
+        import stat
+        events = []
+        original = management.os.fsync
+        def flush(descriptor):
+            kind = 'directory' if stat.S_ISDIR(os.fstat(descriptor).st_mode) else 'file'
+            events.append(kind)
+            return original(descriptor)
+        path = self.root / 'durable-state.json'
+        with patch.object(management.os, 'fsync', side_effect=flush):
+            management.atomic(path, {'snapshot': 'before'})
+        self.assertEqual(events, ['file', 'directory'])
+        def fail_directory(descriptor):
+            if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                raise OSError('directory flush failed')
+            return original(descriptor)
+        with patch.object(management.os, 'fsync', side_effect=fail_directory):
+            with self.assertRaisesRegex(OSError, 'directory flush failed'):
+                management.atomic(path, {'snapshot': 'new'})
+        # Even a durability failure must not silently reset already written evidence.
+        self.assertEqual(json.loads(path.read_text()), {'snapshot': 'new'})
+
     def test_legacy_hook_mutation_is_revalidated_before_enforcement(self):
         clone = self.root / 'legacy mutation'
         self.command('git', 'clone', self.remote, clone)

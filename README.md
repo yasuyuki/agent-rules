@@ -969,6 +969,46 @@ REMOTE/BRANCH` in its registered worktree. The one-use import is pinned to the
 old and fetched new commits; unrelated fast-forwards are rejected. This does not
 identify which Git command produced the same reference transition.
 
+Synchronization preparation requires a clean index and worktree, including
+non-ignored untracked files. A refusal leaves their bytes and modes untouched;
+`branch check --json` reports `working_state.staged`, `unstaged`, and `untracked`
+separately. Preparation records fingerprints of HEAD, staged entries, tracked and
+non-ignored untracked files, modes, and merge/pick state in the existing branch
+registration. It does not copy file contents or create a backup. State writes
+flush the file and, on POSIX, the containing directory after replacement. Python
+has no portable Windows directory-fsync equivalent here: process-interruption
+evidence is retained, but Windows power-loss durability is not guaranteed.
+
+After a failed or interrupted update, run `branch check --repo PATH --json` in
+that worktree. Its `operations` entry retains the operation ID, source, original
+`before` state, `current` state, independent HEAD/index/files comparisons and
+observed hook outcome. `unchanged` means no observed checkout change, not that
+Git ran successfully. `completed` requires a matching committed authorization
+and a clean tracked checkout. A later ordinary registered commit retains the
+original receipt and reports `later_registered_tip`, so normal continued work
+is not confused with an unfinished sync. `partial-update` means HEAD stayed at its original
+commit while index or files changed; `conflict` identifies unmerged entries.
+`indeterminate` includes changes outside a sync's expected before/target file
+states, listed in `unattributed_paths`. These three unresolved outcomes make
+check exit nonzero. The original Git exit remains authoritative: a refused ref
+or interrupted process is never converted into a successful Git command.
+
+For a partial sync, preserve the comparison and retry the same authorized
+`git merge --ff-only REMOTE/BRANCH` only after inspecting the reported state.
+Unresolved snapshots cannot be overwritten by fresh preparation. For conflicts,
+resolve and stage the intended resolution, then use the existing Git
+continue/commit path under the same approval. Git abort is an explicit operator
+decision; the tool never automatically resets, stashes, cleans, or rolls back.
+Ordinary edits after preparation cannot be exclusively attributed to Git.
+Fingerprints are observations, not a filesystem lock: another editor can race
+with Git or diagnostics. Sync ref validation refuses detected unrelated index or file
+changes, but it runs after Git may have updated the index. Blob comparisons use
+Git's clean-filter and line-ending conversion; raw file hashes and modes remain
+in the fingerprints. Git-configured filters may run during these reads. Ignored files,
+submodule contents, filter transformations, and arbitrary Git commands are not
+covered by a rollback or exclusive-authorship guarantee. Sync preparation
+currently refuses submodules because their worktree correspondence is not known.
+
 Prepare integration in the registered destination with `branch prepare-merge
 --repo DESTINATION_PATH --task SOURCE_ID`. Merge with `git merge --no-ff
 --no-commit SOURCE_BRANCH`, run the project's required verification, then commit.
@@ -1033,6 +1073,17 @@ A user-approved cherry-pick exception is registered in its destination topic wit
 one source commit, and is consumed after success. For a sequence, each current
 source needs its own applicable exception; a rejected later pick preserves
 already committed earlier picks. Conflict resolution does not broaden approval.
+Merge and pick preparation also record an operation snapshot. A fresh operation
+requires a clean checkout. Merge/pick commit preparation and ref validation
+reject changes outside the incoming source paths relative to the saved snapshot.
+Changes within an incoming path may be an intended conflict resolution; the
+tool does not infer their author. The existing recovery path can approve an already
+pending exact merge/pick; its snapshot is explicitly marked
+`capture_phase: existing-git-operation`, and cannot describe work preceding that
+late approval. Normal preparation is marked `before-git`. One lead owns Git
+updates; implementation workers edit and test, then return their changes to that
+lead rather than performing commit, merge, pick or push in the working repository.
+
 Default-branch ordinary commits, unregistered reference updates, unrelated merges,
 amend and unauthorized fast-forwards fail before the reference is committed,
 including `git commit --no-verify`. Existing approval requirements for history
@@ -1040,7 +1091,7 @@ rewrites remain in force; this interface does not grant rewrite permission.
 
 `branch check --repo PATH` explains inconsistencies and exits nonzero; `--json`
 provides machine output. It checks worktree ownership, tips, dependencies, public
-source and installed hook bytes and executable state. Registration, commit
+source and installed hook bytes and executable state. Registration, operation snapshots, commit
 permits and integration receipts live in the Git common directory's
 `agent-branches/state.json`, shared by linked worktrees. OS locks and atomic
 writes serialize registry changes. On another clone/host, register the same work
