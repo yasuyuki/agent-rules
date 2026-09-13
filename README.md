@@ -161,30 +161,133 @@ python3 bin/place.py list --declaration PLACEMENT.md
 python3 bin/place.py start --declaration PLACEMENT.md <workspace> <tool> -- <tool arguments>
 ```
 
-For repeated local starts, save the selected inputs once in `placement-start.json`
-in the directory from which you launch:
+For repeated local starts, save the selected inputs once from the directory
+where you launch. The public operation validates the declaration and source
+directories before publishing the complete configuration:
 
-```json
-{
-  "version": 1,
-  "declaration": "PLACEMENT.md",
-  "rules": ["private-rules"],
-  "skills": ["private-skills"]
-}
+```console
+python3 bin/place.py save-start-config --declaration PLACEMENT.md --rules private-rules --skills private-skills
 ```
 
 Then use `python3 bin/place.py start <workspace> <tool>` and append native CLI
 arguments after `--`, including the CLI's own resume command. Paths in this file
-are relative to its directory. `rules` and `skills` may be omitted; the public
-sources remain included. An optional `inventory_host` selects the catalog's
+are relative to its directory. `--rules` and `--skills` may be omitted; the public
+sources remain included. Optional `--inventory-host` selects the catalog's
 existing observer and must agree with an already set `ENVIRONMENT_INVENTORY_HOST`.
 `--config PATH` explicitly selects a different file. No parent directory or HOME
 is searched. A full `--declaration` invocation ignores the default file; mixing
-config inputs and explicit source arguments is rejected. Configuration does not
+config inputs and explicit source arguments is rejected. Saving identical inputs
+is a byte-preserving no-op. A different or malformed existing configuration is
+refused; it is never replaced or repaired automatically. Use an explicitly named
+new `--config PATH` for a different set of launch inputs. Configuration does not
 apply placement or adopt sources: start still checks the selected workspace/CLI
 and current managed bytes before launching it.
 
 ## Environment catalog
+
+Grok Build uses the native `grok` executable, `~/.grok/AGENTS.md`, and
+`~/.grok/skills`; its workspace locations are `AGENTS.md` and `.grok/skills`.
+`GROK_HOME` is its config-root override and must agree with the declared runtime
+for lifecycle checks. Grok also discovers Claude and Cursor compatibility files;
+use `grok inspect` in the actual workspace to check source discovery and avoid
+duplicating managed rules through multiple owners. Inspect is configuration
+evidence, not proof of successful agent work. See the official
+[rule discovery](https://docs.x.ai/build/features/project-rules) and
+[skill discovery](https://docs.x.ai/build/features/skills-plugins-marketplaces).
+Use an already registered worktree and native resume arguments after `--`.
+The placement entry does not enable Grok's worktree creation or automatic approvals.
+
+For an additional CLI, first add its reviewed descriptor and declaration
+locations. To publish the missing agent registration, run the declaration operation
+from the registered topic checkout that tracks both `PLACEMENT.md` and its
+catalog. It validates the selected site, tool, locations, and catalog source,
+then adds only that registration and sets the environment to `pending`:
+
+```console
+python3 bin/place.py inventory declare-agent --declaration PLACEMENT.md --site SITE --tool grok
+```
+
+Its JSON result records the registered base revision, task, catalog path,
+environment, tool, and whether bytes changed. It does not inspect a target
+runtime, install or project files, stage, commit, or perform Git operations.
+The declaration and catalog must initially match the registered `HEAD`; an
+exact prior uncommitted result of this same operation is the sole idempotent
+exception. Save, integrate, and push that declared change through the normal
+registered branch workflow. This operation does not certify other consumers;
+update affected consumers before publishing a descriptor they cannot read.
+
+On the selected runtime, use its existing untracked saved launch inputs:
+
+```console
+python3 bin/place.py inventory adopt --environment ENVIRONMENT --source-ref REVISION
+```
+
+The environment ID resolves the site and catalog from the existing
+`placement-start.json` in the current workspace; no host or file list is rebuilt.
+`--config` selects a nondefault existing config, and `--site` remains available
+for existing callers. Unknown or ambiguous environment bindings are refused.
+`--check-inputs` validates the saved inputs and committed catalog before maintenance;
+its `inputs-valid` result does not mean readiness or adoption.
+
+`adopt` verifies the catalog against the requested revision (default `HEAD`), records pending in
+that existing config, applies the selected site, checks every registered CLI's
+readiness, and inspects Grok discovery in the declared direct workspaces without
+running a model or changing trust. Only success records active. Failure retains
+pending and the catalog is never rewritten. An exact active repeat verifies
+readiness/discovery without repeating projection or writing the config. Stale
+inputs, a failed check, or changed Git HEAD prevent normal config-based startup.
+The config becomes version 2 with one adoption member; no catalog copy or receipt
+registry is created. Tracked start configs cannot store runtime adoption.
+Like the existing user-owned catalog and public startup code, this detects stale
+or incomplete operations; it is not tamper-proof attestation against that same
+user editing their state or code. It grants no root or transport authority.
+
+`--source-ref REVISION` explicitly selects the **catalog** repository revision
+when a retained runtime HEAD is older. The catalog must match that revision's
+checkout representation, including Git EOL rules. An in-repository declaration
+must match it too. An explicitly configured external runtime policy, such as a
+root-owned deployed declaration, is recorded separately by path and digest;
+`sourceScope: catalog` does not claim that policy is a Git blob. The runtime HEAD
+and committed catalog revision are both reported. Other dirty files are preserved
+and are not attributed to this operation. Normal Git synchronization is still
+required to migrate any remaining unrelated legacy state.
+
+The existing `start --config` (or implicit `placement-start.json`) checks the
+adoption's exact environment, site, catalog, policy, source inputs, runtime identity
+and HEAD. A pending catalog requires this saved adoption; explicit declaration-only
+startup cannot infer it. Catalog listing remains declaration-only and does not
+claim another runtime's active state. A host bootstrap that previously used only
+an explicit declaration must be updated to consume the same saved inputs before
+adopting this path. Legacy active catalogs and `prepare-agent`/`activate` remain
+compatible for consumers not yet migrated; they still mutate the catalog and are
+not the normal versioned declaration workflow.
+
+The returned `commandElapsedSeconds` measures only this command. The 60/120 second
+application targets also include controller preparation, Git/shared saving, and
+result return. No target-time success or model behavior follows from command success.
+
+Pass the same additional `--rules` and `--skills` sources to declaration operations
+when the declaration uses private inputs. `prepare-agent` resolves the catalog,
+environment, principal, and config root from the site's `INVENTORY` binding; it
+registers the CLI and writes `pending` together. It does not install or start a CLI.
+Perform the official installation and any necessary login while pending, using
+the environment's existing maintenance route. `activate` runs full readiness
+for every registered CLI before writing `active`; it does not accept workspace
+or scope restrictions. Then verify behavior through ordinary `start`.
+
+Use the same operation to resume after a failure. Existing exact registration
+is preserved; conflicting registration, unrelated runtime identity, and stale
+inputs are refused. Failed activation leaves pending. Other environments and
+unknown state are retained. Catalog saves serialize cooperating writers with a
+native lock plus an atomically published shared claim, including Windows/WSL
+writers to the same file. An interrupted owner can resume from the same environment
+binding after its native lock is released. A claim from another environment must
+be resumed there; a missing owner is not permission to delete the claim. Environment
+IDs must identify their actual runtime, not be reused for independent clones.
+Saves compare the original bytes before replacement; normal start still checks current
+placement after activation. These operations do not make arbitrary source editors
+transactional, and do not atomically install a CLI and all its placement files.
+Do not hand-edit operational JSON to bypass a refusal.
 
 OpenCode skill placement uses `.opencode/skills` in a project and
 `~/.config/opencode/skills` globally, following its
@@ -313,6 +416,19 @@ only from available or preparable eligible candidates. Unknown candidates stay
 visible but never become a positive proposal. Each assessment includes the
 capability evidence used for its reasons.
 
+`purpose` and lifecycle determine only whether a record is eligible. Work input
+must declare separately the required approval/sandbox mode, interoperability,
+acceptance risk, and material prohibitions as capability IDs when those facts
+affect routing. A matching OS or physical distro does not prove a logical
+runtime principal or any of those capabilities. Unknown evidence stays unknown;
+the classifier may display the candidate but does not set it as a proposed
+environment or invent a preparation route for it. In particular, an isolated permissive-approval environment cannot be
+proposed for normal-approval Windows interoperation by treating that change as
+preparation. Cross-environment handoff text must retain the concrete
+environment, logical ID/principal, existing entry point, requested mode, risk,
+material exclusions, evidence, and unknown conditions so a recipient can act
+without the sender's surrounding conversation.
+
 An observer that cannot read a referenced WSL source retains that environment
 as unverified. A malformed reference remains an error when its source is
 readable. This lets another environment still be listed while making the
@@ -382,6 +498,16 @@ schema fields are rejected. This is not a semantic secret scanner: the model
 and trusted adapters must obey the metadata-only contract, and filenames or
 metadata can themselves be private. Review HTML before sharing; never commit
 real-environment reports to this public repository.
+
+When a successful query cannot be converted, its existing `response conversion
+failed` status remains a failure and the report/console add one fixed diagnostic
+stage and code. Built-in envelope failures use `envelope` with `malformed`,
+`failed-result`, or `incomplete`; metadata JSON failures use `metadata` with
+`malformed-json` or `missing-json`; schema failures use `schema` with a fixed
+validation code; other adapter or local processing failures use
+`processing: unexpected-error`. These labels contain no response, stderr,
+exception text, payload, or traceback. They describe that one query only and
+do not save it or trigger a retry.
 
 ### Existing launch entry points
 
@@ -751,6 +877,8 @@ and Linux, along with the existing regression checks:
 ```console
 python3 tests/test_rules.py
 python3 tests/test_push_preflight.py
+python3 tests/test_inventory_adoption.py
+python3 tests/test_inventory_inspection.py
 ```
 
 The test renders and verifies a temporary workspace, confirms that drift is

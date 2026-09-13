@@ -36,6 +36,15 @@ to paste, separately from the instructions to the person. Include the receiving
 environment in the payload itself, so it survives forwarding without the
 surrounding explanation. Include necessary URLs
 as literal text inside the copyable payload, not only hyperlink attributes.
+For an environment-routed request, the payload must also name the concrete
+environment and logical runtime principal, its existing entry point, requested
+approval/sandbox mode, acceptance risk, material exclusions or forbidden
+operations, capability evidence, and any unknown condition.  Do not infer those
+facts from a shared distro, OS label, or an environment's active state, and do
+not describe a contract-changing environment modification as preparation. Keep
+the requested approval/sandbox mode distinct from the recipient's observed
+effective mode. Risk accepted inside the named environment does not extend to
+its host or another environment.
 Use a plain-text code block without quote prefixes or list decorations that the
 person must remove. Do not ask them to reconstruct references or edit the request.
 Keep shared-task content and state under the `handoff` rule when available; this

@@ -14,6 +14,16 @@ instructions before modifying an inventory.
 
 Read `place.py list --catalog <catalog> --purpose <purpose> --json`. Keep the
 requested purpose: zero matches does not authorize a normal-development fallback.
+Treat purpose and lifecycle as eligibility only.  Before selecting an eligible
+environment, separately compare the work's declared approval/sandbox boundary,
+required interoperability, acceptance risk, and explicit prohibitions with
+capability evidence.  A similarly named OS, a shared distro, or an active state
+does not establish any of those conditions.  Unknown evidence remains unknown
+and must not select an environment or justify changing one.  In particular, do
+not turn an isolated permissive-approval environment into a Windows-interoperable
+normal-approval environment to satisfy a selection request. Use the existing
+`classify-work` skill and read-only `place.py classify` entry point to record
+that comparison; do not add a separate selection mechanism.
 An explicit request to repurpose a named environment is an environment change,
 not a selection fallback. Preserve its other purposes unless their removal is
 requested or necessary to satisfy the requested isolation constraints.
@@ -42,6 +52,31 @@ host, user, HOME, workspace, executor, or runsRoot values. Keep outer transport
 and inner runtime principal distinct. Preserve unknown or retained environments
 as explicit rows instead of dropping them.
 
+For a versioned catalog and a runtime using saved launch inputs, review the CLI's
+descriptor and locations, then use `place.py inventory declare-agent --declaration
+<D> --site <S> --tool <CLI>` in the registered source topic. Commit/integrate/push
+the declaration through the existing branch workflow before runtime adoption.
+Use `place.py inventory adopt --environment <ID> --source-ref <revision>` on the
+target runtime. It applies the site, checks all registered CLI readiness and Grok
+discovery, and records pending/active only in that existing untracked start config.
+The existing workspace config resolves site/catalog/inputs; use `--config` only
+for a nondefault saved config. `--check-inputs` checks source inputs before a
+maintenance interruption without claiming adoption or readiness.
+Do not copy runtime JSON back to another clone or add a receipt registry. A retained
+runtime may select the exact committed catalog with `--source-ref <revision>`;
+this does not attribute unrelated dirt or an external policy to that commit.
+The host's bootstrap must consume the same saved inputs before adopting this path.
+Catalog listing reports the declaration state, not a remote runtime's adoption.
+
+For legacy consumers not yet using that path, review locations first and run
+`place.py inventory prepare-agent --declaration <D>
+--site <S> --tool <CLI>` on the target runtime, with its existing rule/skill inputs.
+The operation resolves the catalog and principal from the site's INVENTORY binding,
+registers the CLI and writes pending together. Do not assemble operational JSON
+references or state transitions by hand. A conflicting existing registration is
+refused, not replaced. Resume through the same operation after correcting its
+reported prerequisite; exact registration is a no-op.
+
 Include all installed agents in the runtime, including the constructing agent
 and previously installed CLIs. Compare the supported tool/subject descriptors
 against the runtime PATH and declared installation locations. Placement `absent`
@@ -63,6 +98,12 @@ managed bytes, and visible supported CLIs that are not registered. Do not pair
 `--readiness` with a workspace or scope restriction. Use ordinary `check` for
 partial placement work.
 
+For the saved-input path, resume `inventory adopt` with the same config/site/ref.
+It never changes trust automatically; fix only the explicitly authorized folder
+using the CLI's official operation when inspection reports it missing.
+For legacy consumers, run `place.py inventory activate --declaration <D> --site <S>` with
+the same inputs. It rechecks full readiness and refuses changed inputs before
+saving active; failure leaves pending. Do not edit state to bypass that check.
 Only mark construction `active` after repair and readiness pass. `active` means
 the machine is ready to launch; it does not claim that an agent has followed a
 skill or completed a behavioral acceptance. Perform that acceptance through the

@@ -44,6 +44,11 @@
       "unit": "dir",
       "path": ".opencode/skills/{id}",
       "home_path": "skills/{id}"
+    },
+    "grok-skills-dir": {
+      "unit": "dir",
+      "path": ".grok/skills/{id}",
+      "home_path": "skills/{id}"
     }
   },
   "tools": {
@@ -124,6 +129,18 @@
       "hooks": {
         "kind": "none",
         "reason": "opencode --help has no hook surface; session check is the recording gate"
+      }
+    },
+    "grok": {
+      "entrypoint": "grok",
+      "credential": "$HOME/.grok/auth.json",
+      "configHome": {
+        "default": "$HOME/.grok",
+        "env": "GROK_HOME"
+      },
+      "reads": {
+        "rules": ["agents-md-section"],
+        "skills": ["grok-skills-dir"]
       }
     }
   }
