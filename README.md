@@ -1040,7 +1040,67 @@ rewrites remain in force; this interface does not grant rewrite permission.
 
 `branch check --repo PATH` explains inconsistencies and exits nonzero; `--json`
 provides machine output. It checks worktree ownership, tips, dependencies, public
-source and installed hook bytes and executable state. Registration, commit
+source and installed hook bytes and executable state.
+
+Sync, merge preparation and cherry-pick approval also retain an operation ID,
+the original HEAD, index entries, worktree SHA-256 byte fingerprints and modes,
+and separate staged/unstaged/untracked path lists (including ignored untracked
+files). These records survive process death in the same registration owner.
+They are diagnostic fingerprints, not backup copies. Preparation checks the
+registered checkout and rejects unfinished operations, racing reads and sync
+updates overlapping local work. Non-overlapping dirty work remains supported.
+The sync reference hook rechecks the expected index and ordinary target files,
+and refuses changes outside the prepared update. Merge/pick commit preparation
+also refuses changes outside the prepared operation's paths.
+
+`branch check --json` includes `operations` keyed by branch. Each reports
+`before`, `current`, `original_dirty`, `head_changed`, `index_changed`,
+`worktree_changed`, `unexpected_paths`, `ref_result` and `next_step`:
+
+| Status | Meaning |
+| --- | --- |
+| `no-update` | Current observed state equals preparation; no Git success is implied. |
+| `completed` | An authorized ref completion was recorded; later descendant commits are subsequent work. |
+| `partial-update` | HEAD remains at preparation, but index, files or Git operation state changed. |
+| `conflict` | The index contains unmerged stages; resolve the prepared merge/pick through Git's normal continuation. |
+| `indeterminate` | State cannot safely be attributed, including changes outside the operation or an inconsistent completed sync. |
+
+The last three statuses make check exit nonzero. A ref refusal or killed Git
+process may leave a changed index/worktree with unchanged HEAD; check never calls
+that success. `command_exit` is null because separately invoked Git owns its exit
+status: retain Git's actual nonzero/signal result. `last_reference_attempt` records
+a legacy hook entry or observed refusal and its hook exit (not Git's exit).
+An entry without a result cannot establish whether Git was killed or is still
+running. Coordinate
+with the worktree's lead before retrying. Check reads state without refreshing
+the index, consuming permission, or resetting/stashing/cleaning anything.
+
+After a partial sync, the same `begin --mode continue --task ID --sync` can reuse
+the original record only if the current state is the exact pending import with
+all original unrelated work preserved. It never adopts other writers' changes
+as a new baseline. Resolve the hook failure, then run the same `git merge
+--ff-only REMOTE/BRANCH`. A changed snapshot requires coordination and preservation
+of the reported paths before retry; do not edit registration JSON. Conflicted
+picks retain their existing one-use approval through normal conflict resolution.
+Approving an already paused later pick in a sequence or preparing an exact merge
+after a refused commit records that later state with
+`captured_after_git_started: true`, not a claimed snapshot from before Git.
+Prior operation records remain
+historical when a new operation is prepared.
+
+These protections do not make arbitrary Git commands atomic. Git can change
+files before a reference hook runs, and uncooperative writers can change bytes
+between observations. Merge/pick paths may contain deliberate conflict resolution;
+their exact author cannot be inferred from bytes alone. Submodule interiors are
+outside the snapshot; Git's ordinary non-recursive update behavior is retained.
+`unverified_worktree_paths` names submodules and custom content conversions whose
+target correspondence cannot be proved without executing user commands. Their
+exact observed fingerprints are retained; check never executes clean filters.
+Only the registered lead performs Git updates. Implementation workers edit and
+test their assigned files and return them to that lead; diagnostic output grants
+no extra commit, recovery or rewrite authority.
+
+Registration, commit
 permits and integration receipts live in the Git common directory's
 `agent-branches/state.json`, shared by linked worktrees. OS locks and atomic
 writes serialize registry changes. On another clone/host, register the same work

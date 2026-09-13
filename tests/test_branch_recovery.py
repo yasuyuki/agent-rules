@@ -17,6 +17,149 @@ spec.loader.exec_module(management)
 
 
 class RecoveryTests(BranchManagementTests):
+    def sync_fixture(self, legacy=False):
+        repo = self.repo
+        if legacy:
+            repo = self.root / 'legacy sync'
+            self.command('git', 'clone', self.remote, repo)
+            previous = repo / '.git/hooks/reference-transaction'
+            previous.write_text('#!/bin/sh\nwhile read old new ref; do\n'
+                                'if test "$1" = prepared && test "$ref" = refs/heads/topic && '
+                                'test "$DENY_SYNC" = yes; then exit 73; fi\ndone\nexit 0\n',
+                                encoding='utf-8', newline='\n')
+            previous.chmod(0o755)
+            self.branch('install', repo=repo)
+        self.begin('integration', 'adopt', repo=repo, branch='main', into='main')
+        topic = Path(self.begin('topic', repo=repo, branch='topic')['worktree'])
+        publisher = self.root / 'publisher'
+        self.command('git', 'clone', self.remote, publisher)
+        self.git_at(publisher, 'config', 'user.name', 'Publisher')
+        self.git_at(publisher, 'config', 'user.email', 'publisher@example.invalid')
+        self.git_at(publisher, 'switch', '-c', 'topic', 'origin/main')
+        (publisher / 'remote').write_bytes(b'remote\n')
+        self.git_at(publisher, 'add', 'remote')
+        self.git_at(publisher, 'commit', '-m', 'remote topic')
+        self.git_at(publisher, 'push', 'origin', 'topic')
+        self.git_at(topic, 'fetch', 'origin')
+        return topic
+
+    def prepare_sync(self, topic, ok=True):
+        return self.branch('begin', '--mode', 'continue', '--task', 'topic', '--sync', repo=topic, ok=ok)
+
+    def diagnosis(self, topic, ok=True):
+        return json.loads(self.branch('check', '--json', repo=topic, ok=ok).stdout)['operations']['topic']
+
+    def test_sync_diagnosis_preserves_and_attributes_all_dirty_kinds(self):
+        topic = self.sync_fixture()
+        (topic / 'staged').write_bytes(b'staged\0binary\n')
+        (topic / 'staged').chmod(0o755)
+        self.git_at(topic, 'add', 'staged')
+        (topic / 'README').write_bytes(b'local\0bytes\n')
+        (topic / 'untracked').write_bytes(b'untracked\0bytes\n')
+        (topic / 'untracked').chmod(0o640)
+        before = management.stable_work_state(topic)
+        self.prepare_sync(topic)
+        prepared = self.diagnosis(topic)
+        self.assertEqual(prepared['status'], 'no-update')
+        self.assertEqual(prepared['original_dirty'], {'staged': ['staged'], 'unstaged': ['README'], 'untracked': ['untracked']})
+        self.git_at(topic, 'merge', '--ff-only', 'origin/topic')
+        result = self.diagnosis(topic)
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(result['before'], before)
+        for name in ('staged', 'README', 'untracked'):
+            self.assertEqual(result['current']['files'][name], before['files'][name])
+        self.assertEqual(result['current']['index']['staged'], before['index']['staged'])
+        self.assertEqual(result['index_changed'], ['remote'])
+        self.assertEqual(management.stable_work_state(topic), result['current'])
+
+    def test_sync_rejects_overlapping_untracked_before_mutation(self):
+        topic = self.sync_fixture()
+        (topic / 'remote').write_bytes(b'original untracked\0')
+        before = management.stable_work_state(topic)
+        self.prepare_sync(topic, ok=False)
+        self.assertEqual(management.stable_work_state(topic), before)
+
+    def test_completed_sync_does_not_hide_a_later_unapproved_pick(self):
+        topic = self.sync_fixture()
+        self.prepare_sync(topic)
+        self.git_at(topic, 'merge', '--ff-only', 'origin/topic')
+        completed = self.diagnosis(topic)
+        self.assertEqual(completed['status'], 'completed')
+        self.git_at(topic, 'cherry-pick', 'HEAD', ok=False)
+        current = self.diagnosis(topic, ok=False)
+        self.assertEqual(current['status'], 'indeterminate')
+        self.assertEqual(current['ref_result'], completed['ref_result'])
+        self.assertIsNotNone(current['current']['git_state']['CHERRY_PICK_HEAD'])
+
+    def test_sync_rejects_ignored_collision_before_mutation(self):
+        topic = self.sync_fixture()
+        (topic / '.gitignore').write_text('remote\n', encoding='utf-8')
+        (topic / 'remote').write_bytes(b'ignored original')
+        before = management.stable_work_state(topic)
+        self.prepare_sync(topic, ok=False)
+        self.assertEqual(management.stable_work_state(topic), before)
+
+    def test_sync_changed_after_preparation_is_not_attributed_to_import(self):
+        topic = self.sync_fixture()
+        self.prepare_sync(topic)
+        (topic / 'README').write_bytes(b'concurrent writer\n')
+        old = self.git_at(topic, 'rev-parse', 'HEAD').stdout
+        self.git_at(topic, 'merge', '--ff-only', 'origin/topic', ok=False)
+        result = self.diagnosis(topic, ok=False)
+        self.assertEqual(result['status'], 'indeterminate')
+        self.assertIn('README', result['unexpected_paths'])
+        self.assertEqual(self.git_at(topic, 'rev-parse', 'HEAD').stdout, old)
+        self.assertEqual((topic / 'README').read_bytes(), b'concurrent writer\n')
+        self.prepare_sync(topic, ok=False)
+
+    def test_sync_refusal_reports_partial_state_and_retry_keeps_original_snapshot(self):
+        topic = self.sync_fixture(legacy=True)
+        self.prepare_sync(topic)
+        before = self.diagnosis(topic)
+        with patch.dict(os.environ, {'DENY_SYNC': 'yes'}):
+            self.git_at(topic, 'merge', '--ff-only', 'origin/topic', ok=False)
+        result = self.diagnosis(topic, ok=False)
+        self.assertEqual(result['status'], 'partial-update')
+        self.assertFalse(result['head_changed'])
+        self.assertEqual(result['index_changed'], ['remote'])
+        self.assertEqual(result['worktree_changed'], ['remote'])
+        self.prepare_sync(topic)
+        retried = self.diagnosis(topic, ok=False)
+        self.assertEqual(retried['id'], before['id'])
+        self.assertEqual(retried['before'], before['before'])
+        self.assertIsNone(retried['command_exit'])
+        self.git_at(topic, 'merge', '--ff-only', 'origin/topic')
+        self.assertEqual(self.diagnosis(topic)['status'], 'completed')
+
+    def test_operation_snapshot_race_is_refused_without_permission(self):
+        topic = self.sync_fixture()
+        before = management.work_state(topic)
+        changed = dict(before, head='not-the-same-read')
+        with patch.object(management, 'work_state', side_effect=[before, changed]):
+            with self.assertRaisesRegex(management.BranchError, 'changed while reading'):
+                management.stable_work_state(topic)
+
+    def test_conflict_diagnosis_retains_original_state_and_continues_normally(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        source = Path(self.begin('source', branch='source')['worktree'])
+        target = Path(self.begin('topic', branch='topic')['worktree'])
+        for repo, content in ((source, b'source\n'), (target, b'target\n')):
+            (repo / 'clash').write_bytes(content)
+            self.git_at(repo, 'add', 'clash')
+            self.git_at(repo, 'commit', '-m', 'clash')
+        sha = self.git_at(source, 'rev-parse', 'HEAD').stdout.strip()
+        before = management.stable_work_state(target)
+        self.branch('allow-cherry-pick', '--commit', sha, '--approval', 'user-request', '--reason', 'backport', repo=target)
+        self.git_at(target, 'cherry-pick', sha, ok=False)
+        result = self.diagnosis(target, ok=False)
+        self.assertEqual(result['status'], 'conflict')
+        self.assertEqual(result['before'], before)
+        self.assertEqual(result['current']['git_state']['CHERRY_PICK_HEAD'], sha)
+        (target / 'clash').write_bytes(b'resolved\n')
+        self.git_at(target, 'add', 'clash')
+        self.git_at(target, '-c', 'core.editor=true', 'cherry-pick', '--continue')
+        self.assertEqual(self.diagnosis(target)['status'], 'completed')
+
     def test_legacy_hook_mutation_is_revalidated_before_enforcement(self):
         clone = self.root / 'legacy mutation'
         self.command('git', 'clone', self.remote, clone)
