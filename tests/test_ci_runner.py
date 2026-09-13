@@ -147,6 +147,9 @@ class SetupError(unittest.TestCase):
             self.assertEqual(runner.load_timings(path), ({'case.a': 4}, 4))
             self.assertEqual(runner.assign_buckets(ids, 2, path),
                              [['case.a', 'case.c'], ['case.b']])
+            path.write_text('{"case.a": ' + '9' * 5000 + '}', encoding='utf-8')
+            self.assertEqual(runner.assign_buckets(ids, 2, path),
+                             [['case.a', 'case.c'], ['case.b']])
 
     def test_invalid_shard_arguments_fail_before_collection(self):
         with tempfile.TemporaryDirectory() as directory:

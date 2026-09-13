@@ -255,7 +255,8 @@ def load_timings(path):
         return {}, 1.0
     try:
         data = json.loads(Path(path).read_text(encoding='utf-8'))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except (OSError, ValueError):
+        # Includes malformed UTF-8/JSON and Python's integer-decoding limit.
         return {}, 1.0
     if not isinstance(data, dict):
         return {}, 1.0
