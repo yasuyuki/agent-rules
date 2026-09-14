@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -399,9 +400,60 @@ def finish(state, name, permit, new):
     state['permits'].pop(name, None)
 
 
+def creation_snapshot(path, index):
+    """Fingerprint physical files and the real index without invoking Git filters."""
+    path = Path(path)
+    files = {}
+    for current, directories, names in os.walk(path, followlinks=False):
+        for name in directories + names:
+            item = Path(current) / name
+            mode = item.lstat().st_mode
+            relative = item.relative_to(path).as_posix()
+            if stat.S_ISLNK(mode):
+                value = os.readlink(item)
+            elif stat.S_ISREG(mode):
+                value = digest(item)
+            elif stat.S_ISDIR(mode):
+                value = None
+            else:
+                raise BranchError('interrupted creation has an unsupported file; preserve and inspect')
+            files[relative] = (mode, value)
+    return digest(index), files
+
+
+def verify_creation_checkout(repo, task, expected):
+    path, name = task['worktree'], task['branch']
+    if (Path(path).absolute() != Path(path).resolve() or not same_checkout(repo, path, name)
+            or oid(repo, 'refs/heads/' + name) != expected):
+        raise BranchError('interrupted creation has a conflicting checkout; preserve and inspect')
+    index = Path(git(path, 'rev-parse', '--path-format=absolute', '--git-path', 'index'))
+    before = creation_snapshot(path, index)
+    # POSIX execution bits remain part of Q even if normal status ignores them.
+    # Optional index refreshes must not write the user's real index.
+    mode_check = ('-c', 'core.filemode=true') if os.name != 'nt' else ()
+    if git(path, '--no-optional-locks', *mode_check, 'status', '--porcelain',
+           '--untracked-files=all', '--ignored'):
+        raise BranchError('interrupted creation has changed content; preserve and inspect')
+    # A fresh, private index has neither assume-unchanged nor skip-worktree
+    # flags. Compare the actual checkout to Q without rewriting the user index.
+    with tempfile.TemporaryDirectory(prefix='creation-index-',
+                                     dir=common(repo) / 'agent-branches') as temporary:
+        env = dict(os.environ, GIT_INDEX_FILE=str(Path(temporary) / 'index'))
+        git(path, *mode_check, '-c', 'core.sparseCheckout=false', 'read-tree', expected, env=env)
+        git(path, *mode_check, 'update-index', '--refresh', optional=True, env=env)
+        if git(path, *mode_check, 'diff-files', '--quiet', '--ignore-submodules=none',
+               optional=True, env=env) is None:
+            raise BranchError('interrupted creation has changed tracked content; preserve and inspect')
+    if creation_snapshot(path, index) != before:
+        raise BranchError('interrupted creation changed during validation; preserve and inspect')
+    return index, before
+
+
 def begin(args):
     repo = Path(args.repo).resolve()
     creation = None
+    if args.from_remote and args.mode != 'adopt':
+        raise BranchError('--from-remote is only valid for adoption')
     if args.sync and args.mode != 'continue':
         raise BranchError('--sync is only valid for continuation')
     if not args.task.strip():
@@ -420,6 +472,8 @@ def begin(args):
                    for field, key in [('branch', 'branch'), ('worktree', 'worktree'), ('request', 'request')]):
                 raise BranchError('continuation differs from registered work')
             if task.get('creating'):
+                if args.sync:
+                    raise BranchError('finish interrupted creation before --sync')
                 creation = task
             else:
                 # Inspect named worktree without inheriting hook-local Git environment.
@@ -442,6 +496,8 @@ def begin(args):
             if not args.request or not args.branch or not args.worktree:
                 raise BranchError('new/adopt requires --request, --branch and --worktree')
             git(repo, 'check-ref-format', '--branch', args.branch)
+            if args.from_remote and os.path.lexists(args.worktree):
+                raise BranchError('remote adoption requires an absent worktree path')
             path = str(Path(args.worktree).resolve())
             if any(t['branch'] == args.branch or t['worktree'] == path for t in tasks.values()):
                 raise BranchError('branch or worktree already belongs to another work item')
@@ -476,22 +532,33 @@ def begin(args):
                 if not args.base:
                     raise BranchError('adoption requires explicit historical --base')
                 base = oid(repo, args.base)
-                tip = oid(repo, 'refs/heads/' + args.branch)
+                if args.from_remote:
+                    if git(repo, 'rev-parse', '--verify', 'refs/heads/' + args.branch, optional=True):
+                        raise BranchError('remote adoption requires an absent local branch')
+                    tip = oid(repo, 'refs/remotes/' + state['remote'] + '/' + args.branch)
+                    advertised = git(repo, 'ls-remote', '--refs', state['remote'],
+                                     'refs/heads/' + args.branch).split()
+                    if advertised != [tip, 'refs/heads/' + args.branch]:
+                        raise BranchError('fetch remote branch before adoption: tracking tip differs from advertised commit')
+                else:
+                    tip = oid(repo, 'refs/heads/' + args.branch)
                 if not ancestor(repo, base, tip):
                     raise BranchError('adoption base is not an ancestor of branch')
                 remote_tip = git(repo, 'rev-parse', '--verify', 'refs/remotes/' + state['remote'] + '/' + args.branch, optional=True)
                 remote_base = remote_tip or oid(repo, 'refs/remotes/' + state['remote'] + '/' + state['default'])
                 if not ancestor(repo, base, remote_base):
                     raise BranchError('adoption base does not agree with remote history')
-                if not same_checkout(repo, path, args.branch):
+                if not args.from_remote and not same_checkout(repo, path, args.branch):
                     raise BranchError('adoption checkout does not match branch/worktree')
             task = {'request': args.request, 'branch': args.branch, 'worktree': path,
                     'base': base, 'depends_on': args.depends_on, 'into': into, 'tip': tip}
             tasks[args.task] = task
-            if args.mode == 'new':
+            if args.mode == 'new' or args.from_remote:
                 task['retirement_guarded'] = True
                 task['creating'] = True
-                state['permits'][args.branch] = {'kind': 'create', 'old': '0' * len(base), 'new': base,
+                if args.from_remote:
+                    task['creation_tip'] = tip
+                state['permits'][args.branch] = {'kind': 'create', 'old': '0' * len(tip), 'new': tip,
                                                  'worktree': path}
                 creation = task
         save(directory, state)
@@ -499,17 +566,36 @@ def begin(args):
     if creation:
         # Registration survives failure. Continue retries rather than cleaning up.
         name = creation['branch']
-        if Path(creation['worktree']).exists():
-            if not same_checkout(repo, creation['worktree'], name) or oid(repo, 'refs/heads/' + name) != creation['tip']:
-                raise BranchError('interrupted creation has a conflicting checkout; preserve and inspect')
-        elif git(repo, 'rev-parse', '--verify', 'refs/heads/' + name, optional=True):
-            git(repo, 'worktree', 'add', creation['worktree'], name)
-        else:
-            git(repo, 'worktree', 'add', '-b', name, creation['worktree'], creation['base'])
+        expected = creation.get('creation_tip', creation['tip'])
+        if creation['tip'] != expected:
+            raise BranchError('interrupted creation tip changed from its recorded intent; preserve and inspect')
+        existing = git(repo, 'rev-parse', '--verify', 'refs/heads/' + name, optional=True)
+        if existing is not None and existing != expected:
+            raise BranchError('interrupted creation has a conflicting branch tip; preserve and inspect')
+        if Path(creation['worktree']).absolute() != Path(creation['worktree']).resolve():
+            raise BranchError('interrupted creation has a conflicting symlink; preserve and inspect')
+        if not Path(creation['worktree']).exists():
+            if existing:
+                git(repo, 'worktree', 'add', creation['worktree'], name)
+            else:
+                git(repo, 'worktree', 'add', '-b', name, creation['worktree'], expected)
+        # Git content comparison can invoke configured filters. Do it outside
+        # the registration lock and before config writes; only read physical
+        # state while finalizing, including changes during those writes.
+        index, verified = verify_creation_checkout(repo, creation, expected)
         git(creation['worktree'], 'config', 'branch.' + name + '.remote', state['remote'])
         git(creation['worktree'], 'config', 'branch.' + name + '.merge', 'refs/heads/' + name)
         with locked(repo) as (directory, current):
-            current['tasks'][args.task].pop('creating', None)
+            resumed = current['tasks'][args.task]
+            if (resumed['tip'] != expected or
+                    resumed.get('creation_tip') != creation.get('creation_tip')):
+                raise BranchError('interrupted creation tip changed from its recorded intent; preserve and inspect')
+            path = resumed['worktree']
+            if (Path(path).absolute() != Path(path).resolve() or not same_checkout(repo, path, name) or
+                    oid(path, 'HEAD') != expected or creation_snapshot(path, index) != verified):
+                raise BranchError('interrupted creation changed after validation; preserve and inspect')
+            resumed.pop('creating', None)
+            resumed.pop('creation_tip', None)
             save(directory, current)
             output = {'task': args.task, **current['tasks'][args.task]}
     return output
@@ -948,6 +1034,7 @@ def main(argv=None):
                 for flag in ('request', 'branch', 'worktree', 'base', 'into', 'depends-on'):
                     p.add_argument('--' + flag)
                 p.add_argument('--sync', action='store_true')
+                p.add_argument('--from-remote', action='store_true')
             elif name in ('retire', 'prepare-merge'):
                 p.add_argument('--task', required=True)
             elif name == 'allow-cherry-pick':
