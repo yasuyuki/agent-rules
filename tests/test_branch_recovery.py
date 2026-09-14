@@ -58,6 +58,24 @@ class RecoveryTests(BranchManagementTests):
                     changed.write_bytes(original)
                 if variation in ('skip-worktree', 'assume-unchanged'):
                     self.git_at(path, 'update-index', '--no-' + variation, 'binary')
+        if os.name != 'nt':
+            self.git_at(path, 'config', 'core.filemode', 'false')
+            for filename, changed_mode, tree_mode in (('executable', 0o644, '100755'),
+                                                       ('binary', 0o755, '100644')):
+                with self.subTest(mode_change=filename):
+                    changed = path / filename
+                    original_mode = changed.stat().st_mode & 0o777
+                    self.assertTrue(self.git_at(path, 'ls-tree', tip, '--', filename).stdout.startswith(tree_mode))
+                    changed.chmod(changed_mode)
+                    self.assertEqual(self.git_at(path, 'status', '--porcelain', '--ignored').stdout, '')
+                    before = (self.state_path().read_bytes(), index.read_bytes(), changed.read_bytes(),
+                              changed.stat().st_mode, self.git_at(path, 'config', '--local', '--list').stdout)
+                    self.branch('begin', '--mode', 'continue', '--task', 'received', ok=False)
+                    self.assertEqual(before, (self.state_path().read_bytes(), index.read_bytes(), changed.read_bytes(),
+                                             changed.stat().st_mode, self.git_at(path, 'config', '--local', '--list').stdout))
+                    self.assertTrue(self.read_state()['tasks']['received']['creating'])
+                    self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+                    changed.chmod(original_mode)
         self.branch('begin', '--mode', 'continue', '--task', 'received')
         self.branch('begin', '--mode', 'continue', '--task', 'received')
         self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)

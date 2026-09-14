@@ -407,7 +407,10 @@ def creation_checkout_clean(repo):
     entries = git_bytes(repo, 'ls-files', '-v', '-z').split(b'\0')
     if any(entry and (entry[:1] == b'S' or entry[:1].islower()) for entry in entries):
         return False
-    return not git(repo, '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false',
+    # POSIX executable bits are part of the checkout contract even when normal
+    # status is configured to ignore them. Native Windows has no such mode bit.
+    mode_check = ('-c', 'core.filemode=true') if os.name != 'nt' else ()
+    return not git(repo, *mode_check, '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false',
                    'status', '--porcelain', '--ignored', '--untracked-files=all',
                    env=dict(os.environ, GIT_OPTIONAL_LOCKS='0'))
 

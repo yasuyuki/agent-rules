@@ -964,6 +964,8 @@ finish creation before requesting a separate `--sync` import.
 Recovery includes untracked and ignored files regardless of status display
 settings. Index entries marked skip-worktree or assume-unchanged prevent recovery
 verification and are refused without changing their flags or the index.
+On POSIX, recovery also checks executable modes even when `core.filemode=false`;
+the check does not change that configuration or repair file permissions.
 
 For independent work use `branch begin --mode new --repo REPO --task ID
 --request REQUEST --branch TOPIC --worktree NEW_PATH`. Fetch the remote default
