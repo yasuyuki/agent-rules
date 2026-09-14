@@ -422,6 +422,64 @@ def advertised_remote_tip(repo, remote, name):
     return tracked
 
 
+def worktree_entries(path, *, skip_root_git=False):
+    """Return the material filesystem state without consulting Git's index."""
+    root = Path(path)
+    entries = {}
+
+    def visit(directory):
+        for entry in os.scandir(directory):
+            if skip_root_git and directory == root and entry.name == '.git':
+                continue
+            relative = str(Path(entry.path).relative_to(root))
+            if entry.is_symlink():
+                entries[relative] = ('link', os.fsencode(os.readlink(entry.path)))
+            elif entry.is_dir(follow_symlinks=False):
+                entries[relative] = ('directory',)
+                visit(Path(entry.path))
+            elif entry.is_file(follow_symlinks=False):
+                mode = os.stat(entry.path, follow_symlinks=False).st_mode & 0o111
+                entries[relative] = ('file', Path(entry.path).read_bytes(), mode)
+            else:
+                entries[relative] = ('other', os.lstat(entry.path).st_mode)
+
+    visit(root)
+    return entries
+
+
+def worktree_matches_tip(repo, path, tip):
+    """Compare a recovered checkout to its pinned commit outside its real index.
+
+    ``status`` and the ordinary diff machinery may honor assume-unchanged,
+    skip-worktree, fsmonitor, or sparse-index state from the interrupted
+    checkout.  Build a disposable index from Q and materialize its checkout
+    transformations separately, then compare bytes, links and executable bits
+    directly.  The caller's index is never read or modified.
+    """
+    safe_env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+    with tempfile.TemporaryDirectory(prefix='creation-check-', dir=common(repo)) as temporary:
+        temporary = Path(temporary)
+        expected = temporary / 'expected'
+        safe_env['GIT_INDEX_FILE'] = str(temporary / 'index')
+        git(repo, '-c', 'core.sparseCheckout=false', 'read-tree', tip, env=safe_env)
+        expected.mkdir()
+        safe_env['GIT_WORK_TREE'] = str(expected)
+        git(repo, '-c', 'core.sparseCheckout=false', 'checkout-index', '--all', env=safe_env)
+        return worktree_entries(path, skip_root_git=True) == worktree_entries(expected)
+
+
+def index_matches_tip(worktree, tip):
+    """Check the interrupted worktree's cached index without refreshing it."""
+    safe_env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+    result = subprocess.run(['git', '-C', str(worktree), 'diff-index', '--cached', '--quiet', tip, '--'],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=safe_env)
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    raise BranchError(result.stderr.decode('utf-8', 'replace').strip() or 'cannot compare interrupted index')
+
+
 def begin(args):
     repo = Path(args.repo).resolve()
     creation = None
@@ -544,7 +602,8 @@ def begin(args):
         if creation_path.exists():
             if not same_checkout(repo, creation['worktree'], name) or oid(repo, 'refs/heads/' + name) != creation['tip']:
                 raise BranchError('interrupted creation has a conflicting checkout; preserve and inspect')
-            if git(creation['worktree'], 'status', '--porcelain', '--untracked-files=all', '--ignored=matching'):
+            if (not worktree_matches_tip(repo, creation['worktree'], creation['tip'])
+                    or not index_matches_tip(creation['worktree'], creation['tip'])):
                 raise BranchError('interrupted creation has changed worktree content; preserve and inspect')
         elif git(repo, 'rev-parse', '--verify', 'refs/heads/' + name, optional=True):
             if oid(repo, 'refs/heads/' + name) != creation['tip']:

@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 import importlib.util
 
-from test_branch_management import BranchManagementTests, ROOT
+from test_branch_management import BranchManagementTests, ROOT, PLACE
 
 spec = importlib.util.spec_from_file_location('branch_management', ROOT / 'bin/branch_management.py')
 management = importlib.util.module_from_spec(spec)
@@ -17,8 +17,17 @@ spec.loader.exec_module(management)
 
 
 class RecoveryTests(BranchManagementTests):
-    def interrupt_remote_creation(self, checkpoint):
+    def interrupt_remote_creation(self, checkpoint, *, crlf_attributes=False):
         producer, base, tip = self.remote_fixture()
+        if crlf_attributes:
+            self.git_at(producer, 'checkout', 'incoming')
+            (producer / '.gitattributes').write_text('README text eol=crlf\n')
+            self.git_at(producer, 'add', '.gitattributes')
+            self.git_at(producer, 'commit', '-m', 'remote checkout attributes')
+            self.git_at(producer, 'push', 'origin', 'incoming')
+            self.git('fetch', 'origin')
+            tip = self.git('rev-parse', 'origin/incoming').stdout.strip()
+            (self.repo / '.gitattributes').write_text('README text eol=lf\n')
         target = self.root / 'adopted'
         # Fixture-only interception of the Git child boundary, in a fresh CLI
         # process. No production failure switch or timing-dependent kill.
@@ -44,7 +53,7 @@ raise SystemExit(m.main())
 """
         before = self.preserved_checkout()
         failed = self.command(sys.executable, '-c', script,
-                              str(ROOT / 'bin/branch_management.py'), checkpoint, tip,
+                              str(PLACE.parent / 'branch_management.py'), checkpoint, tip,
                               'begin', '--repo', str(self.repo), '--mode', 'adopt',
                               '--from-remote', '--task', 'incoming', '--request', 'remote-request',
                               '--branch', 'incoming', '--worktree', str(target), '--base', base,
@@ -100,6 +109,61 @@ raise SystemExit(m.main())
         self.assertEqual((target / 'untracked').read_bytes(), b'keep\x00')
         self.assertEqual(Path(index).read_bytes(), before_index)
         self.assertEqual(self.state_path().read_bytes(), state)
+
+    def hidden_remote_resume_content(self, flag):
+        _, base, tip, target = self.interrupt_remote_creation('checkout')
+        self.git_at(target, 'update-index', flag, 'README')
+        (target / 'README').write_bytes(b'foreign bytes hidden from status\n')
+        self.assertEqual(self.git_at(target, 'status', '--porcelain').stdout, '')
+        index = Path(self.git_at(target, 'rev-parse', '--git-path', 'index').stdout.strip())
+        index_before = index.read_bytes()
+        flags_before = self.git_at(target, 'ls-files', '-v').stdout
+        state_before = self.state_path().read_bytes()
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming', ok=False)
+        self.assertEqual((target / 'README').read_bytes(), b'foreign bytes hidden from status\n')
+        self.assertEqual(index.read_bytes(), index_before)
+        self.assertEqual(self.git_at(target, 'ls-files', '-v').stdout, flags_before)
+        self.assertEqual(self.state_path().read_bytes(), state_before)
+        self.assertEqual(self.git_at(target, 'rev-parse', 'HEAD').stdout.strip(), tip)
+
+    def test_remote_adoption_preserves_assume_unchanged_resume_content(self):
+        self.hidden_remote_resume_content('--assume-unchanged')
+
+    def test_remote_adoption_preserves_skip_worktree_resume_content(self):
+        self.hidden_remote_resume_content('--skip-worktree')
+
+    def test_remote_adoption_resumes_clean_hidden_flags_and_crlf(self):
+        self.git('config', 'core.autocrlf', 'true')
+        _, base, tip, target = self.interrupt_remote_creation('checkout')
+        self.assertEqual((target / 'README').read_bytes(), b'base\r\n')
+        self.git_at(target, 'update-index', '--assume-unchanged', 'README')
+        self.git_at(target, 'update-index', '--skip-worktree', 'binary')
+        flags = self.git_at(target, 'ls-files', '-v').stdout
+        self.finish_remote_creation(base, tip, target)
+        self.assertEqual((target / 'README').read_bytes(), b'base\r\n')
+        self.assertEqual(self.git_at(target, 'ls-files', '-v').stdout, flags)
+
+    def test_remote_adoption_resume_uses_pinned_checkout_attributes(self):
+        _, base, tip, target = self.interrupt_remote_creation('checkout', crlf_attributes=True)
+        self.assertEqual((target / 'README').read_bytes(), b'base\r\n')
+        before = (self.repo / '.gitattributes').read_bytes()
+        self.finish_remote_creation(base, tip, target)
+        self.assertEqual((target / 'README').read_bytes(), b'base\r\n')
+        self.assertEqual((self.repo / '.gitattributes').read_bytes(), before)
+
+    def test_remote_adoption_preserves_index_only_resume_change(self):
+        _, base, tip, target = self.interrupt_remote_creation('checkout')
+        original = (target / 'README').read_bytes()
+        (target / 'README').write_bytes(b'staged foreign bytes\n')
+        self.git_at(target, 'add', 'README')
+        (target / 'README').write_bytes(original)
+        index = Path(self.git_at(target, 'rev-parse', '--git-path', 'index').stdout.strip())
+        before_index = index.read_bytes()
+        before_state = self.state_path().read_bytes()
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming', ok=False)
+        self.assertEqual(index.read_bytes(), before_index)
+        self.assertEqual((target / 'README').read_bytes(), original)
+        self.assertEqual(self.state_path().read_bytes(), before_state)
 
     def test_remote_adoption_preserves_ignored_resume_content(self):
         _, base, tip, target = self.interrupt_remote_creation('checkout')

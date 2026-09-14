@@ -74,7 +74,8 @@ The source/handoff/rules contracts run in checkout partition 0; both partitions
 run their disjoint part of the complete real-Git collection. Package jobs have
 no dependency on checkout tests: each builds its own sdist and wheel, performs
 strict metadata validation, and runs the entire installed project suite and the
-wheel-specific E2Es, including remote-only adoption with a distinct historical base. Separate runners isolate build output, source
+wheel-specific E2Es, including remote-only adoption with a distinct historical base
+and refusal of interrupted checkout changes hidden by index visibility flags. Separate runners isolate build output, source
 hash checks, installed environments and every mutable Git fixture. There is no
 artifact transfer or shared mutable checkout between verification jobs.
 
