@@ -93,7 +93,8 @@ jobs:
           AGENT_RULES_PLACE="$installed_place" "$runtime/python" tests/ci_runner.py --output ci-results/wheel.json --timeout 600 --workers 3 \
             test_branch_management.BranchManagementTests.test_install_preserves_an_existing_hook_and_detects_tampering \
             test_branch_management.BranchManagementTests.test_declare_agent_updates_only_a_registered_source_catalog \
-            test_branch_management.BranchManagementTests.test_unregistered_refs_no_verify_and_alternate_index_are_rejected
+            test_branch_management.BranchManagementTests.test_unregistered_refs_no_verify_and_alternate_index_are_rejected \
+            test_branch_management.BranchManagementTests.test_remote_adoption_preserves_historical_base_and_dirty_work
           cd "$RUNNER_TEMP"
           "$runtime/agent-rules" --version
           "$runtime/agent-rules" --help

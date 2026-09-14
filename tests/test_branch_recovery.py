@@ -17,6 +17,127 @@ spec.loader.exec_module(management)
 
 
 class RecoveryTests(BranchManagementTests):
+    def interrupt_remote_creation(self, checkpoint):
+        producer, base, tip = self.remote_fixture()
+        target = self.root / 'adopted'
+        # Fixture-only interception of the Git child boundary, in a fresh CLI
+        # process. No production failure switch or timing-dependent kill.
+        script = """
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('subject', sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+real = m.git
+checkpoint = sys.argv[2]
+pinned_tip = sys.argv[3]
+def interrupted(repo, *args, **kwargs):
+    if args[:2] == ('worktree', 'add'):
+        if checkpoint == 'branch':
+            real(repo, 'branch', 'incoming', pinned_tip)
+        if checkpoint == 'checkout':
+            real(repo, *args, **kwargs)
+        raise m.BranchError('fixture deterministic interruption')
+    return real(repo, *args, **kwargs)
+m.git = interrupted
+sys.argv = [sys.argv[1]] + sys.argv[4:]
+raise SystemExit(m.main())
+"""
+        before = self.preserved_checkout()
+        failed = self.command(sys.executable, '-c', script,
+                              str(ROOT / 'bin/branch_management.py'), checkpoint, tip,
+                              'begin', '--repo', str(self.repo), '--mode', 'adopt',
+                              '--from-remote', '--task', 'incoming', '--request', 'remote-request',
+                              '--branch', 'incoming', '--worktree', str(target), '--base', base,
+                              ok=False)
+        self.assertIn('fixture deterministic interruption', failed.stderr)
+        state = self.read_state()
+        self.assertTrue(state['tasks']['incoming']['creating'])
+        self.assertEqual(state['tasks']['incoming']['base'], base)
+        self.assertEqual(state['tasks']['incoming']['tip'], tip)
+        self.assertEqual(self.preserved_checkout()[1:], before[1:])
+        return producer, base, tip, target
+
+    def finish_remote_creation(self, base, tip, target):
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming')
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming')
+        task = self.read_state()['tasks']['incoming']
+        self.assertNotIn('creating', task)
+        self.assertEqual(task['base'], base)
+        self.assertEqual(task['tip'], tip)
+        self.assertEqual(self.git_at(target, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.assertEqual(self.git_at(target, 'write-tree').stdout,
+                         self.git('rev-parse', tip + '^{tree}').stdout)
+        self.assertNotIn('incoming', self.read_state()['permits'])
+
+    def test_remote_adoption_resumes_pinned_tip_after_remote_advances(self):
+        producer, base, tip, target = self.interrupt_remote_creation('before')
+        self.git_at(producer, 'checkout', 'incoming')
+        self.git_at(producer, 'commit', '--allow-empty', '-m', 'Q2')
+        self.git_at(producer, 'push', 'origin', 'incoming')
+        self.git('fetch', 'origin')
+        self.assertNotEqual(self.git('rev-parse', 'origin/incoming').stdout.strip(), tip)
+        self.finish_remote_creation(base, tip, target)
+
+    def test_remote_adoption_resumes_after_branch_creation(self):
+        _, base, tip, target = self.interrupt_remote_creation('branch')
+        self.assertFalse(target.exists())
+        self.finish_remote_creation(base, tip, target)
+
+    def test_remote_adoption_resumes_after_checkout_creation(self):
+        _, base, tip, target = self.interrupt_remote_creation('checkout')
+        self.finish_remote_creation(base, tip, target)
+
+    def test_remote_adoption_preserves_conflicting_resume_content(self):
+        _, base, tip, target = self.interrupt_remote_creation('checkout')
+        (target / 'README').write_bytes(b'changed after interruption\n')
+        self.git_at(target, 'add', 'README')
+        (target / 'untracked').write_bytes(b'keep\x00')
+        index = self.git_at(target, 'rev-parse', '--git-path', 'index').stdout.strip()
+        before_index = Path(index).read_bytes()
+        state = self.state_path().read_bytes()
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming', ok=False)
+        self.assertEqual((target / 'README').read_bytes(), b'changed after interruption\n')
+        self.assertEqual((target / 'untracked').read_bytes(), b'keep\x00')
+        self.assertEqual(Path(index).read_bytes(), before_index)
+        self.assertEqual(self.state_path().read_bytes(), state)
+
+    def test_remote_adoption_preserves_ignored_resume_content(self):
+        _, base, tip, target = self.interrupt_remote_creation('checkout')
+        (self.repo / '.git/info/exclude').write_text('private-artifact\n')
+        (target / 'private-artifact').write_bytes(b'private ignored bytes')
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming', ok=False)
+        self.assertEqual((target / 'private-artifact').read_bytes(), b'private ignored bytes')
+        self.assertTrue(self.read_state()['tasks']['incoming']['creating'])
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX symlink fixture')
+    def test_remote_adoption_preserves_resume_symlink(self):
+        _, base, tip, target = self.interrupt_remote_creation('before')
+        target.symlink_to(self.root / 'absent', target_is_directory=True)
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming', ok=False)
+        self.assertTrue(target.is_symlink())
+        self.assertFalse((self.root / 'absent').exists())
+        self.assertTrue(self.read_state()['tasks']['incoming']['creating'])
+
+    def test_remote_adoption_preserves_changed_resume_branch(self):
+        _, base, tip, target = self.interrupt_remote_creation('branch')
+        # An external ref edit after the one-use permit was consumed.
+        ref = self.repo / '.git/refs/heads/incoming'
+        ref.write_text(base + '\n')
+        state = self.state_path().read_bytes()
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming', ok=False)
+        self.assertEqual(ref.read_text(), base + '\n')
+        self.assertFalse(target.exists())
+        self.assertEqual(self.state_path().read_bytes(), state)
+
+    def test_remote_adoption_preserves_unrelated_resume_path(self):
+        _, base, tip, target = self.interrupt_remote_creation('before')
+        target.mkdir()
+        (target / 'keep').write_bytes(b'unrelated')
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming', ok=False)
+        self.assertEqual((target / 'keep').read_bytes(), b'unrelated')
+        self.assertTrue(self.read_state()['tasks']['incoming']['creating'])
+        self.assertFalse(self.git('show-ref', '--verify', 'refs/heads/incoming', ok=False).stdout)
+
     def test_legacy_hook_mutation_is_revalidated_before_enforcement(self):
         clone = self.root / 'legacy mutation'
         self.command('git', 'clone', self.remote, clone)
