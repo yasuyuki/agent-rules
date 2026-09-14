@@ -287,6 +287,28 @@ class BranchManagementTests(unittest.TestCase):
         self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
         self.assertNotIn('received', json.loads(state_path.read_text())['permits'])
 
+    @unittest.skipIf(os.name == 'nt', 'POSIX executable modes are not modeled on Windows')
+    def test_remote_adoption_real_failure_rejects_hidden_executable_mode(self):
+        path, state_path, tip = self.interrupted_remote_checkout()
+        self.git_at(path, 'config', 'core.filemode', 'false')
+        control = self.root / 'same config control'
+        self.command('git', 'clone', '--config', 'core.filemode=false', '--branch', 'received', self.remote, control)
+        self.assertEqual(self.git_at(control, 'config', '--get', 'core.filemode').stdout.strip(), 'false')
+        self.assertEqual(self.git_at(control, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        expected_mode = (control / 'run').stat().st_mode & 0o777
+        self.assertTrue(expected_mode & 0o100)
+        (path / 'run').chmod(0o644)
+        self.assertEqual(self.git_at(path, 'status', '--porcelain').stdout, '')
+        self.branch('begin', '--mode', 'continue', '--task', 'received', ok=False)
+        self.assertEqual((path / 'run').stat().st_mode & 0o777, 0o644)
+        self.assertEqual(self.git_at(path, 'config', '--get', 'core.filemode').stdout.strip(), 'false')
+        self.assertTrue(json.loads(state_path.read_text())['tasks']['received']['creating'])
+        (path / 'run').chmod(expected_mode)
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.assertEqual((path / 'run').stat().st_mode & 0o777, expected_mode)
+        self.assertNotIn('creating', json.loads(state_path.read_text())['tasks']['received'])
+
     def test_install_preserves_an_existing_hook_and_detects_tampering(self):
         # Reinstall over a real hook: its args, stdin and exit status must survive.
         legacy = self.root / "legacy checkout"

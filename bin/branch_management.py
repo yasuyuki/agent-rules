@@ -537,8 +537,11 @@ def begin(args):
         index_entries = git_bytes(target, 'ls-files', '-v', '-z').split(b'\0')
         if any(entry and (entry[:1].islower() or entry[:1] == b'S') for entry in index_entries):
             raise BranchError('interrupted creation index hides worktree content; preserve and inspect index flags')
+        # POSIX checkout execute bits must match Q even when the user's normal
+        # status hides mode changes. Windows does not model POSIX execute bits.
+        mode_check = ('-c', 'core.filemode=true') if os.name != 'nt' else ()
         if (oid(target, 'HEAD') != pinned_tip or
-                git(target, 'status', '--porcelain', '--untracked-files=all', '--ignored')):
+                git(target, *mode_check, 'status', '--porcelain', '--untracked-files=all', '--ignored')):
             raise BranchError('interrupted creation has conflicting content; preserve and inspect')
         git(creation['worktree'], 'config', 'branch.' + name + '.remote', state['remote'])
         git(creation['worktree'], 'config', 'branch.' + name + '.merge', 'refs/heads/' + name)
