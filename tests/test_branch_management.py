@@ -660,5 +660,222 @@ s1\tcatalog.json\tenv
         self.git_at(topic, "commit", "-m", "retried")
 
 
+    def remote_fixture(self, recovery=False):
+        """An independent sender supplies Q; receiver main remains at B."""
+        sender = self.root / 'sender'
+        self.command('git', 'clone', self.remote, sender)
+        self.git_at(sender, 'config', 'user.name', 'Sender')
+        self.git_at(sender, 'config', 'user.email', 'sender@example.invalid')
+        base = self.git_at(sender, 'rev-parse', 'HEAD').stdout.strip()
+        self.git_at(sender, 'checkout', '-b', 'incoming')
+        (sender / '.gitattributes').write_bytes(b'*.bin -text\n*.txt text eol=crlf\n')
+        (sender / 'payload.bin').write_bytes(bytes(range(256)))
+        (sender / 'lines.txt').write_bytes(b'one\r\ntwo\r\n')
+        (sender / 'run.sh').write_bytes(b'#!/bin/sh\nexit 0\n')
+        self.git_at(sender, 'add', '.')
+        self.git_at(sender, 'update-index', '--chmod=+x', 'run.sh')
+        self.git_at(sender, 'commit', '-m', 'remote content')
+        tip = self.git_at(sender, 'rev-parse', 'HEAD').stdout.strip()
+        self.git_at(sender, 'push', 'origin', 'incoming')
+        if recovery:
+            receiver = self.root / 'recovery receiver'
+            self.command('git', 'clone', self.remote, receiver)
+            # Deterministic fixture-only Git failures, without changing installed hooks.
+            for hook, condition in [('reference-transaction', '[ "$1" = prepared ] &&'),
+                                    ('post-checkout', '')]:
+                marker = 'fail-' + hook
+                body = ('#!/bin/sh\ncommon=$(git rev-parse --git-common-dir)\n'
+                        + condition + ' [ -f "$common/' + marker + '" ] && exit 73\nexit 0\n')
+                path = receiver / '.git/hooks' / hook
+                path.write_text(body, encoding='utf-8', newline='\n')
+                path.chmod(0o755)
+            self.branch('install', repo=receiver)
+            self.repo = receiver
+        self.git('fetch', 'origin')
+        return sender, base, tip
+
+    def remote_begin(self, base, path=None, ok=True, **extra):
+        values = dict(task='incoming-task', request='request-89', branch='incoming',
+                      worktree=path or self.root / 'adopted', base=base)
+        values.update(extra)
+        argv = ['begin', '--mode', 'adopt', '--from-remote']
+        for key, value in values.items():
+            argv.extend(['--' + key.replace('_', '-'), str(value)])
+        return self.branch(*argv, ok=ok)
+
+    def remote_state(self):
+        return json.loads((self.repo / '.git/agent-branches/state.json').read_text())
+
+    def preserved_snapshot(self):
+        files = {}
+        for path in self.repo.rglob('*'):
+            if '.git' not in path.relative_to(self.repo).parts and path.is_file():
+                files[str(path.relative_to(self.repo))] = (path.read_bytes(), path.stat().st_mode)
+        return (self.git('show-ref').stdout, self.git('symbolic-ref', 'HEAD').stdout,
+                (self.repo / '.git/index').read_bytes(), files)
+
+    def assert_remote_result(self, base, tip):
+        state = self.remote_state()
+        task = state['tasks']['incoming-task']
+        worktree = Path(task['worktree'])
+        self.assertEqual(task['base'], base)
+        self.assertEqual(task['tip'], tip)
+        self.assertEqual(task['request'], 'request-89')
+        self.assertEqual(self.git('rev-parse', 'refs/heads/incoming').stdout.strip(), tip)
+        self.assertEqual(self.git_at(worktree, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.assertEqual(self.git_at(worktree, 'write-tree').stdout.strip(),
+                         self.git('rev-parse', tip + '^{tree}').stdout.strip())
+        self.assertEqual(self.git_at(worktree, 'status', '--porcelain').stdout, '')
+        self.assertEqual(self.git('config', 'branch.incoming.remote').stdout.strip(), 'origin')
+        self.assertEqual(self.git('config', 'branch.incoming.merge').stdout.strip(), 'refs/heads/incoming')
+        self.assertNotIn('incoming', state['permits'])
+        self.assertNotIn('creating', task)
+        self.assertEqual((worktree / 'payload.bin').read_bytes(), bytes(range(256)))
+        self.assertEqual((worktree / 'lines.txt').read_bytes(), b'one\r\ntwo\r\n')
+        if os.name != 'nt':
+            self.assertTrue((worktree / 'run.sh').stat().st_mode & 0o111)
+        return task
+
+    def test_remote_adopt_preserves_base_content_dirty_and_other_worktree(self):
+        sender, base, tip = self.remote_fixture()
+        other = Path(self.begin('other', branch='other')['worktree'])
+        (other / 'keep').write_bytes(b'other dirty\x00')
+        other_head = self.git_at(other, 'rev-parse', 'HEAD').stdout
+        (self.repo / 'README').write_bytes(b'staged\n')
+        self.git('add', 'README')
+        (self.repo / 'README').write_bytes(b'unstaged\n')
+        (self.repo / 'untracked').write_bytes(b'keep\x00\xff')
+        before = self.preserved_snapshot()
+        self.assertNotEqual(base, tip)
+        self.remote_begin(base, depends_on='other', into='other')
+        task = self.assert_remote_result(base, tip)
+        self.assertEqual((task['depends_on'], task['into']), ('other', 'other'))
+        after = self.preserved_snapshot()
+        self.assertEqual(before[1:], after[1:])
+        self.assertEqual(before[0], ''.join(line + '\n' for line in after[0].splitlines()
+                                           if not line.endswith(' refs/heads/incoming')))
+        self.remote_begin(base, path=self.root / 'second', task='second', ok=False)
+        self.assertEqual(self.preserved_snapshot(), after)
+        self.assertEqual(self.git_at(other, 'rev-parse', 'HEAD').stdout, other_head)
+        self.assertEqual((other / 'keep').read_bytes(), b'other dirty\x00')
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming-task')
+        self.assert_remote_result(base, tip)
+
+    def test_remote_adopt_rejects_missing_stale_base_and_wrong_remote(self):
+        sender, base, tip = self.remote_fixture()
+        before = self.preserved_snapshot()
+        self.remote_begin(base, branch='absent', ok=False)
+        self.remote_begin('not-a-commit', ok=False)
+        tree = self.git('rev-parse', tip + '^{tree}').stdout.strip()
+        unrelated = self.git('commit-tree', tree, '-m', 'unrelated root').stdout.strip()
+        self.remote_begin(unrelated, ok=False)
+        self.git_at(sender, 'push', 'origin', 'HEAD:unfetched')
+        self.remote_begin(base, branch='unfetched', ok=False)
+        blob = self.git('rev-parse', tip + ':payload.bin').stdout.strip()
+        self.remote_begin(blob, ok=False)
+        self.git_at(sender, 'commit', '--allow-empty', '-m', 'next')
+        next_tip = self.git_at(sender, 'rev-parse', 'HEAD').stdout.strip()
+        self.git_at(sender, 'push', 'origin', 'incoming')
+        self.remote_begin(base, ok=False)  # Local tracking still Q, advertisement Q2.
+        self.assertEqual(self.preserved_snapshot(), before)
+        self.git('fetch', 'origin')
+        before = self.preserved_snapshot()
+        self.remote_begin(next_tip, branch='main', ok=False)
+        original_url = self.git('remote', 'get-url', 'origin').stdout.strip()
+        self.git('remote', 'set-url', 'origin', str(self.root / 'wrong.git'))
+        self.remote_begin(base, ok=False)
+        self.git('remote', 'set-url', 'origin', original_url)
+        self.assertEqual(self.preserved_snapshot(), before)
+        self.assertNotIn('incoming-task', self.remote_state()['tasks'])
+        self.assertFalse((self.root / 'adopted').exists())
+        self.git('update-ref', 'refs/remotes/origin/noncommit', blob)
+        before = self.preserved_snapshot()
+        self.remote_begin(base, branch='noncommit', ok=False)
+        self.assertEqual(self.preserved_snapshot(), before)
+
+    def test_remote_adopt_rejects_existing_paths_branches_and_tasks(self):
+        sender, base, tip = self.remote_fixture()
+        empty = self.root / 'empty'; empty.mkdir()
+        occupied = self.root / 'occupied'; occupied.mkdir()
+        (occupied / 'keep').write_bytes(b'keep')
+        paths = [empty, occupied]
+        if os.name != 'nt':
+            link = self.root / 'dangling'; link.symlink_to(self.root / 'absent')
+            paths.append(link)
+        before = self.preserved_snapshot()
+        for path in paths:
+            with self.subTest(path=path):
+                self.remote_begin(base, path=path, ok=False)
+                self.assertEqual(self.preserved_snapshot(), before)
+        self.assertEqual((occupied / 'keep').read_bytes(), b'keep')
+        self.remote_begin(base, branch='main', ok=False)
+        other = self.begin('other', branch='other')
+        before = self.preserved_snapshot()
+        self.remote_begin(base, path=other['worktree'], ok=False)
+        self.remote_begin(base, task='other', ok=False)
+        self.assertEqual(self.preserved_snapshot(), before)
+
+    def test_remote_flag_is_rejected_by_new_and_continue(self):
+        before = self.preserved_snapshot()
+        self.branch('begin', '--mode', 'new', '--from-remote', '--task', 'bad',
+                    '--request', 'bad', '--branch', 'bad', '--worktree', str(self.root / 'bad'), ok=False)
+        self.branch('begin', '--mode', 'continue', '--from-remote', '--task', 'bad', ok=False)
+        self.assertEqual(self.preserved_snapshot(), before)
+        self.assertFalse(self.remote_state()['tasks'])
+
+    def test_remote_adopt_resumes_failed_creation_at_pinned_tip(self):
+        sender, base, tip = self.remote_fixture(recovery=True)
+        marker = self.repo / '.git/fail-reference-transaction'; marker.touch()
+        before = self.preserved_snapshot()
+        self.remote_begin(base, ok=False)
+        self.assertEqual(self.preserved_snapshot(), before)
+        task = self.remote_state()['tasks']['incoming-task']
+        self.assertTrue(task['creating'])
+        self.assertEqual((task['base'], task['tip']), (base, tip))
+        marker.unlink()
+        self.git_at(sender, 'commit', '--allow-empty', '-m', 'Q2')
+        self.git_at(sender, 'push', 'origin', 'incoming')
+        self.git('fetch', 'origin')
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming-task')
+        self.assert_remote_result(base, tip)
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming-task')
+        self.assert_remote_result(base, tip)
+
+    def test_remote_adopt_resumes_completed_checkout_and_refuses_changed_content(self):
+        sender, base, tip = self.remote_fixture(recovery=True)
+        marker = self.repo / '.git/fail-post-checkout'; marker.touch()
+        self.remote_begin(base, ok=False)
+        marker.unlink()
+        task = self.remote_state()['tasks']['incoming-task']
+        self.assertTrue(task['creating'])
+        path = Path(task['worktree'])
+        self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        original = (path / 'payload.bin').read_bytes()
+        (path / 'payload.bin').write_bytes(b'foreign content')
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming-task', ok=False)
+        self.assertEqual((path / 'payload.bin').read_bytes(), b'foreign content')
+        self.git_at(path, 'config', 'user.name', 'Recovery User')
+        self.git_at(path, 'config', 'user.email', 'recovery@example.invalid')
+        self.git_at(path, 'add', 'payload.bin')
+        # Git commit may refresh cache-tree metadata before invoking hooks;
+        # staged object IDs and modes are the user state that must survive.
+        index_before = self.git_at(path, 'ls-files', '--stage').stdout
+        self.git_at(path, 'commit', '--no-verify', '-m', 'must not move pinned Q', ok=False)
+        self.assertEqual(self.git_at(path, 'ls-files', '--stage').stdout, index_before)
+        self.assertEqual((path / 'payload.bin').read_bytes(), b'foreign content')
+        self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        interrupted = self.remote_state()['tasks']['incoming-task']
+        self.assertTrue(interrupted['creating'])
+        self.assertEqual(interrupted['tip'], tip)
+        self.git_at(path, 'restore', '--staged', 'payload.bin')
+        (path / 'payload.bin').write_bytes(original)
+        self.git_at(path, 'symbolic-ref', 'HEAD', 'refs/heads/main')
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming-task', ok=False)
+        self.assertEqual(self.git_at(path, 'symbolic-ref', 'HEAD').stdout.strip(), 'refs/heads/main')
+        self.git_at(path, 'symbolic-ref', 'HEAD', 'refs/heads/incoming')
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming-task')
+        self.assert_remote_result(base, tip)
+
+
 if __name__ == "__main__":
     unittest.main()
