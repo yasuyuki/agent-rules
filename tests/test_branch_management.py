@@ -101,6 +101,144 @@ class BranchManagementTests(unittest.TestCase):
         self.git("commit", "-m", "merge " + task)
         return worktree
 
+    def remote_fixture(self):
+        sender = self.root / 'sender'
+        self.command('git', 'clone', self.remote, sender)
+        self.git_at(sender, 'config', 'user.name', 'Sender')
+        self.git_at(sender, 'config', 'user.email', 'sender@example.invalid')
+        base = self.git_at(sender, 'rev-parse', 'HEAD').stdout.strip()
+        self.git_at(sender, 'checkout', '-b', 'received')
+        (sender / 'binary').write_bytes(bytes(range(256)))
+        (sender / 'lines').write_bytes(b'one\r\ntwo\n')
+        (sender / 'run').write_bytes(b'#!/bin/sh\nexit 0\n')
+        (sender / 'run').chmod(0o755)
+        self.git_at(sender, 'add', '.')
+        self.git_at(sender, 'update-index', '--chmod=+x', 'run')
+        self.git_at(sender, 'commit', '-m', 'remote contents')
+        tip = self.git_at(sender, 'rev-parse', 'HEAD').stdout.strip()
+        self.git_at(sender, 'push', 'origin', 'received')
+        self.git_at(sender, 'checkout', 'main')
+        self.git_at(sender, 'commit', '--allow-empty', '-m', 'default advance')
+        self.git_at(sender, 'push', 'origin', 'main')
+        self.git('fetch', 'origin')
+        return sender, base, tip
+
+    def remote_begin(self, base, path, *extra, ok=True):
+        return self.branch('begin', '--mode', 'adopt', '--from-remote',
+                           '--task', 'received', '--request', 'issue-89',
+                           '--branch', 'received', '--worktree', str(path),
+                           '--base', base, *extra, ok=ok)
+
+    def test_remote_adoption_pins_tip_preserves_base_and_dirty_checkout(self):
+        sender, base, tip = self.remote_fixture()
+        other = Path(self.begin('other', branch='other')['worktree'])
+        (other / 'keep').write_bytes(b'other dirty')
+        (self.repo / 'README').write_bytes(b'staged\n')
+        self.git('add', 'README')
+        (self.repo / 'README').write_bytes(b'unstaged\n')
+        (self.repo / 'untracked').write_bytes(b'keep\x00')
+        before = (self.git('status', '--porcelain').stdout,
+                  (self.repo / '.git/index').read_bytes(), self.git('rev-parse', 'HEAD').stdout)
+        path = self.root / 'received'
+        task = json.loads(self.remote_begin(base, path, '--depends-on', 'other', '--into', 'other').stdout)
+        self.assertEqual((task['base'], task['tip'], task['depends_on'], task['into']),
+                         (base, tip, 'other', 'other'))
+        self.assertNotEqual(base, tip)
+        self.assertNotEqual(self.git('rev-parse', 'origin/main').stdout.strip(), tip)
+        self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.assertEqual(self.git('rev-parse', 'received').stdout.strip(), tip)
+        self.assertEqual(self.git_at(path, 'config', 'branch.received.remote').stdout.strip(), 'origin')
+        self.assertEqual(self.git_at(path, 'config', 'branch.received.merge').stdout.strip(), 'refs/heads/received')
+        self.assertEqual(self.git_at(path, 'write-tree').stdout, self.git('rev-parse', tip + '^{tree}').stdout)
+        self.assertEqual((path / 'binary').read_bytes(), bytes(range(256)))
+        control = self.root / 'control'
+        self.git_at(sender, 'worktree', 'add', '--detach', str(control), tip)
+        self.assertEqual((path / 'lines').read_bytes(), (control / 'lines').read_bytes())
+        if os.name != 'nt':
+            self.assertEqual((path / 'run').stat().st_mode & 0o111, (control / 'run').stat().st_mode & 0o111)
+        self.assertEqual(self.git_at(path, 'status', '--porcelain').stdout, '')
+        self.assertEqual(before, (self.git('status', '--porcelain').stdout,
+                         (self.repo / '.git/index').read_bytes(), self.git('rev-parse', 'HEAD').stdout))
+        self.assertEqual((self.repo / 'README').read_bytes(), b'unstaged\n')
+        self.assertEqual((self.repo / 'untracked').read_bytes(), b'keep\x00')
+        self.assertEqual((other / 'keep').read_bytes(), b'other dirty')
+        for _ in range(2):
+            self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.remote_begin(base, path, ok=False)
+
+    def test_remote_adoption_rejects_inputs_before_registration(self):
+        sender, base, tip = self.remote_fixture()
+        path = self.root / 'received'
+        state_path = self.repo / '.git/agent-branches/state.json'
+        def rejected(base_value=base, *extra):
+            before = (state_path.read_bytes(), self.git('show-ref').stdout,
+                      (self.repo / '.git/index').read_bytes())
+            self.remote_begin(base_value, path, *extra, ok=False)
+            self.assertEqual(before, (state_path.read_bytes(), self.git('show-ref').stdout,
+                                     (self.repo / '.git/index').read_bytes()))
+        self.git_at(sender, 'tag', '-a', 'tag-base', base, '-m', 'tag')
+        self.git_at(sender, 'push', 'origin', 'refs/tags/tag-base')
+        self.git('fetch', 'origin', 'refs/tags/tag-base:refs/tags/tag-base')
+        rejected('tag-base')
+        self.git('update-ref', 'refs/remotes/origin/received', self.git('rev-parse', 'tag-base').stdout.strip())
+        rejected()
+        self.git('fetch', 'origin')
+        rejected('missing-base')
+        rejected('origin/main')
+        rejected(base, '--depends-on', 'missing')
+        rejected(base, '--into', 'missing')
+        for mode in ('new', 'continue'):
+            rejected(base, '--mode', mode)
+        path.mkdir()
+        rejected()
+        (path / 'keep').write_bytes(b'keep')
+        rejected()
+        self.assertEqual((path / 'keep').read_bytes(), b'keep')
+        (path / 'keep').unlink()
+        path.rmdir()
+        if os.name != 'nt':
+            path.symlink_to(self.root / 'absent')
+            rejected()
+            self.assertTrue(path.is_symlink())
+            path.unlink()
+        self.git('update-ref', 'refs/remotes/origin/received', base)
+        rejected()
+        self.git('update-ref', '-d', 'refs/remotes/origin/received')
+        rejected()
+        self.git('fetch', 'origin')
+        other = Path(self.begin('collision', branch='collision', worktree=path)['worktree'])
+        rejected()
+        self.assertTrue(other.exists())
+        self.git('remote', 'set-url', 'origin', str(self.root / 'wrong.git'))
+        rejected()
+
+    def test_remote_adoption_does_not_require_default_tracking_ref(self):
+        sender, base, tip = self.remote_fixture()
+        self.git('update-ref', '-d', 'refs/remotes/origin/main')
+        path = self.root / 'received'
+        result = json.loads(self.remote_begin(base, path).stdout)
+        self.assertEqual((result['base'], result['tip']), (base, tip))
+        self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.assertEqual(result['into'], 'main')
+
+    def test_remote_adoption_rejects_existing_branch_and_parent_symlink(self):
+        sender, base, tip = self.remote_fixture()
+        clone = self.root / 'existing local'
+        self.command('git', 'clone', self.remote, clone)
+        self.git_at(clone, 'branch', 'received', tip)
+        self.branch('install', repo=clone)
+        before = self.git_at(clone, 'show-ref').stdout
+        self.branch('begin', '--mode', 'adopt', '--from-remote', '--task', 'received',
+                    '--request', 'issue-89', '--branch', 'received', '--base', base,
+                    '--worktree', str(self.root / 'new path'), repo=clone, ok=False)
+        self.assertEqual(self.git_at(clone, 'show-ref').stdout, before)
+        self.assertFalse((self.root / 'new path').exists())
+        if os.name != 'nt':
+            link = self.root / 'parent-link'
+            link.symlink_to(self.root, target_is_directory=True)
+            self.remote_begin(base, link / 'child', ok=False)
+            self.assertFalse((self.root / 'child').exists())
+
     def test_install_preserves_an_existing_hook_and_detects_tampering(self):
         # Reinstall over a real hook: its args, stdin and exit status must survive.
         legacy = self.root / "legacy checkout"

@@ -17,6 +17,72 @@ spec.loader.exec_module(management)
 
 
 class RecoveryTests(BranchManagementTests):
+    def test_remote_creation_interruption_pins_q_and_rejects_changed_checkout(self):
+        sender, base, tip = self.remote_fixture()
+        path = self.root / 'received'
+        args = type('Args', (), dict(repo=str(self.repo), mode='adopt', from_remote=True,
+                    task='received', request='issue-89', branch='received', worktree=str(path),
+                    base=base, into=None, depends_on=None, sync=False))()
+        real_git = management.git
+        def fail_add(repo, *argv, **kwargs):
+            if argv[:2] == ('worktree', 'add'):
+                raise management.BranchError('injected worktree failure')
+            return real_git(repo, *argv, **kwargs)
+        with patch.object(management, 'git', side_effect=fail_add):
+            with self.assertRaisesRegex(management.BranchError, 'injected'):
+                management.begin(args)
+        state = self.read_state()
+        self.assertTrue(state['tasks']['received']['creating'])
+        self.assertEqual(state['permits']['received']['new'], tip)
+        self.assertFalse(path.exists())
+        self.git_at(sender, 'checkout', 'received')
+        self.git_at(sender, 'commit', '--allow-empty', '-m', 'Q2')
+        self.git_at(sender, 'push', 'origin', 'received')
+        self.git('fetch', 'origin')
+        self.branch('begin', '--mode', 'continue', '--task', 'received', '--sync', ok=False)
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.assertNotIn('received', self.read_state()['permits'])
+        state = self.read_state()
+        state['tasks']['received']['creating'] = True
+        self.write_state(state)  # Final bookkeeping loss.
+        (path / 'binary').write_bytes(b'changed')
+        self.branch('begin', '--mode', 'continue', '--task', 'received', ok=False)
+        self.assertEqual((path / 'binary').read_bytes(), b'changed')
+        (path / 'binary').write_bytes(bytes(range(256)))
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.assertEqual(self.read_state()['tasks']['received']['base'], base)
+        self.assertEqual(self.read_state()['tasks']['received']['tip'], tip)
+
+    def test_remote_creation_recovers_recorded_ref_but_refuses_foreign_ref(self):
+        sender, base, tip = self.remote_fixture()
+        path = self.root / 'received'
+        args = type('Args', (), dict(repo=str(self.repo), mode='adopt', from_remote=True,
+                    task='received', request='issue-89', branch='received', worktree=str(path),
+                    base=base, into=None, depends_on=None, sync=False))()
+        real_git = management.git
+        def fail_add(repo, *argv, **kwargs):
+            if argv[:2] == ('worktree', 'add'):
+                raise management.BranchError('injected before create')
+            return real_git(repo, *argv, **kwargs)
+        with patch.object(management, 'git', side_effect=fail_add):
+            with self.assertRaisesRegex(management.BranchError, 'injected'):
+                management.begin(args)
+        ref = self.repo / '.git/refs/heads/received'
+        ref.write_text(tip + '\n')  # External writer bypassed reference hooks.
+        before = self.read_state()
+        self.branch('begin', '--mode', 'continue', '--task', 'received', ok=False)
+        self.assertEqual(self.read_state(), before)
+        self.assertFalse(path.exists())
+        self.assertEqual(ref.read_text().strip(), tip)
+        ref.unlink()  # Remove only this fixture's foreign ref.
+        self.git('branch', 'received', tip)  # Recorded one-use creation transaction.
+        self.assertNotIn('received', self.read_state()['permits'])
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.assertNotIn('received', self.read_state()['permits'])
+
     def test_legacy_hook_mutation_is_revalidated_before_enforcement(self):
         clone = self.root / 'legacy mutation'
         self.command('git', 'clone', self.remote, clone)
