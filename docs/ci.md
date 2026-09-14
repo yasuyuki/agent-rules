@@ -19,6 +19,32 @@ Concurrency replaces only the same workflow/event/repository/PR-or-ref.
 | Build from sdist, wheel metadata, installed entry point | Build and strict twine check | Installed `--version`/`--help` outside checkout in addition to E2E |
 | Inspection paths, ignore/no-Git/untrusted/missing discovery, private diagnostic redaction | Entire inventory inspection suite on all four configurations | Packaged engine shares source |
 
+Remote-only adoption additionally runs `test_branch_remote_adoption` in both
+checkout and installed-wheel jobs. Its loader selects only its own cases, without
+repeating inherited branch tests. Package artifacts include `installed-paths.txt`;
+the check rejects CLI/module paths inside the source checkout. The owned
+`config.lock` failure leaves a real checkout at Q before continuation, without
+fabricating registry fields. POSIX mode cases have explicit Windows skips;
+ordinary adoption and recovery run on every OS/Python configuration.
+
+| Invariant | Normal control | Counterexample / test suffix in `RemoteAdoptionAcceptanceTests` |
+| --- | --- | --- |
+| Original Q remains fixed | `clean_checkout_keeps_original_q_after_tracking_advances` | `committed_content_and_preserves_registration` |
+| Physical bytes and index survive | `clean_checkout_uses_target_attributes_and_preserves_crlf` | `crlf_byte_change_and_preserves_it`, `assume_unchanged_content_and_preserves_index`, `skip_worktree_content_and_preserves_index`, `staged_only_content_and_preserves_index` |
+| Execution bits survive ordinary config | `clean_checkout_with_filemode_disabled` | `executable_bit_removal_hidden_by_filemode`, `executable_bit_addition_hidden_by_filemode` |
+| Unrelated files remain untouched | Clean Q control | `ordinary_content_and_preserves_it`, `hidden_untracked_content_and_preserves_it`, `ignored_content_and_preserves_it` |
+| Existing new still accepts ordinary commits | `test_existing_new_creation_can_continue_after_an_ordinary_commit` | Remote committed-content case above |
+| Validation neither rewrites the index nor runs filters under the registry lock | `stale_real_index_stays_byte_identical`, `filter_runs_without_registration_lock` (valid smudge/clean conversion) | `final_snapshot_rejects_a_validation_race` |
+| Registered physical checkout is retained | Clean Q control | `leaf_symlink_swap_without_writes`, `parent_symlink_swap_without_writes` |
+
+Except for the explicitly named existing-new case, normal suffixes begin with
+`test_remote_resume_` and negative suffixes with `test_remote_resume_rejects_`.
+The final-snapshot case also uses `test_remote_resume_`.
+Per-test PASS/FAIL/SKIP results are in the existing checkout/wheel JSON artifacts;
+test counts are not a measure of completeness. Initial target/remote/base refusal,
+existing adopt, sync and ordinary Git authorization remain in the complete branch
+suite and its selected installed-boundary cases.
+
 No existing assertion or real-Git scenario was removed. Each heavy test retains
 its own remote, index, worktrees, registration, hooks and approval tickets.
 Fixture seeding was not changed: traced repeated installation reads dominated
