@@ -961,6 +961,9 @@ the branch and worktree at Q with same-branch tracking. The explicit historical
 branches and paths (including symlinks) are rejected. If creation is interrupted,
 use ordinary `--mode continue --task ID`: it retains Q even if the remote advances,
 and refuses conflicting branches or changed checkout contents without removing them.
+The creation commit is saved separately from the mutable task tip: intervening
+commits cannot replace it. Recovery compares tracked bytes and modes directly,
+including files marked assume-unchanged or skip-worktree, without rewriting the index.
 `--from-remote` is only valid with `--mode adopt`.
 
 For independent work use `branch begin --mode new --repo REPO --task ID

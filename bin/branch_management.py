@@ -399,6 +399,39 @@ def finish(state, name, permit, new):
     state['permits'].pop(name, None)
 
 
+def creation_checkout_matches(repo, commit):
+    """Check the actual checkout, not the index's assume-unchanged/stat hints."""
+    env = dict(os.environ, GIT_OPTIONAL_LOCKS='0')
+    if (git(repo, 'status', '--porcelain', '--untracked-files=all', '--ignored', env=env)
+            or git(repo, 'diff-index', '--cached', '--quiet', commit, '--',
+                   optional=True, env=env) is None):
+        return False
+    filemode = git(repo, 'config', '--bool', 'core.filemode', optional=True) != 'false'
+    symlinks = git(repo, 'config', '--bool', 'core.symlinks', optional=True) != 'false'
+    for row in git_bytes(repo, 'ls-tree', '-rz', commit).split(b'\0'):
+        if not row:
+            continue
+        metadata, relative = row.split(b'\t', 1)
+        mode, kind, value = metadata.split()
+        path = Path(repo) / os.fsdecode(relative)
+        if kind != b'blob':
+            continue  # Submodule changes are checked by Git status above.
+        if mode == b'120000' and symlinks:
+            if not path.is_symlink() or os.fsencode(os.readlink(path)) != git_bytes(repo, 'cat-file', 'blob', value.decode()):
+                return False
+        else:
+            if path.is_symlink() or not path.is_file():
+                return False
+            expected = git_bytes(repo, 'cat-file', '--filters',
+                                 '--path=' + os.fsdecode(relative), value.decode())
+            if path.read_bytes() != expected:
+                return False
+            if os.name != 'nt' and filemode and mode in (b'100644', b'100755'):
+                if bool(path.stat().st_mode & 0o111) != (mode == b'100755'):
+                    return False
+    return True
+
+
 def begin(args):
     repo = Path(args.repo).resolve()
     creation = None
@@ -423,6 +456,8 @@ def begin(args):
                    for field, key in [('branch', 'branch'), ('worktree', 'worktree'), ('request', 'request')]):
                 raise BranchError('continuation differs from registered work')
             if task.get('creating'):
+                if task['tip'] != task.get('creation_tip', task['tip']):
+                    raise BranchError('interrupted creation branch changed from its pinned commit; preserve and inspect')
                 if args.sync:
                     raise BranchError('finish interrupted creation before importing remote updates')
                 creation = task
@@ -508,6 +543,7 @@ def begin(args):
             if args.mode == 'new' or from_remote:
                 task['retirement_guarded'] = True
                 task['creating'] = True
+                task['creation_tip'] = tip
                 state['permits'][args.branch] = {'kind': 'create', 'old': '0' * len(tip), 'new': tip,
                                                  'worktree': path}
                 creation = task
@@ -516,23 +552,28 @@ def begin(args):
     if creation:
         # Registration survives failure. Continue retries rather than cleaning up.
         name = creation['branch']
+        pinned = creation.get('creation_tip', creation['tip'])
         if os.path.lexists(creation['worktree']):
             if Path(creation['worktree']).is_symlink():
                 raise BranchError('interrupted creation has a conflicting symlink; preserve and inspect')
-            if not same_checkout(repo, creation['worktree'], name) or oid(repo, 'refs/heads/' + name) != creation['tip']:
+            if not same_checkout(repo, creation['worktree'], name) or oid(repo, 'refs/heads/' + name) != pinned:
                 raise BranchError('interrupted creation has a conflicting checkout; preserve and inspect')
-            if git(creation['worktree'], 'status', '--porcelain', '--untracked-files=all', '--ignored'):
-                raise BranchError('interrupted creation has changed content; preserve and inspect')
         elif git(repo, 'rev-parse', '--verify', 'refs/heads/' + name, optional=True):
-            if oid(repo, 'refs/heads/' + name) != creation['tip']:
+            if oid(repo, 'refs/heads/' + name) != pinned:
                 raise BranchError('interrupted creation has a conflicting branch; preserve and inspect')
             git(repo, 'worktree', 'add', creation['worktree'], name)
         else:
-            git(repo, 'worktree', 'add', '-b', name, creation['worktree'], creation['tip'])
+            git(repo, 'worktree', 'add', '-b', name, creation['worktree'], pinned)
+        if not creation_checkout_matches(creation['worktree'], pinned):
+            raise BranchError('interrupted creation has changed content; preserve and inspect')
         git(creation['worktree'], 'config', 'branch.' + name + '.remote', state['remote'])
         git(creation['worktree'], 'config', 'branch.' + name + '.merge', 'refs/heads/' + name)
         with locked(repo) as (directory, current):
-            current['tasks'][args.task].pop('creating', None)
+            task = current['tasks'][args.task]
+            if task['tip'] != pinned or oid(repo, 'refs/heads/' + name) != pinned:
+                raise BranchError('interrupted creation branch changed from its pinned commit; preserve and inspect')
+            task.pop('creating', None)
+            task.pop('creation_tip', None)
             save(directory, current)
             output = {'task': args.task, **current['tasks'][args.task]}
     return output

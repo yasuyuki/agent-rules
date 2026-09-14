@@ -198,6 +198,79 @@ class RecoveryTests(BranchManagementTests):
         self.assertEqual((target / 'preserve').read_text(encoding='utf-8'), 'user work\n')
         self.assertTrue(self.read_state()['tasks']['post-branch']['creating'])
 
+    def interrupted_remote_checkout(self, task):
+        """Leave a real Q checkout behind by failing a disposable post-checkout hook."""
+        self.begin('integration', 'adopt', branch='main', into='main')
+        base = self.git('rev-parse', 'HEAD').stdout.strip()
+        q = self.publish_remote_topic(task, base=base)
+        self.git('fetch', 'origin')
+        target = self.root / (task + ' target')
+        hook = self.repo / '.git' / 'agent-branches' / 'hooks' / 'post-checkout'
+        hook.write_text('#!/bin/sh\nexit 71\n', encoding='utf-8', newline='\n')
+        hook.chmod(0o755)
+        self.addCleanup(lambda: hook.unlink(missing_ok=True))
+        self.remote_begin(task, branch=task, worktree=target, base=base, into='main', ok=False)
+        hook.unlink()
+        state = self.read_state()
+        self.assertTrue(state['tasks'][task]['creating'])
+        self.assertEqual(state['tasks'][task]['tip'], q)
+        self.assertEqual(state['tasks'][task]['creation_tip'], q)
+        self.assertEqual(self.git_at(target, 'rev-parse', 'HEAD').stdout.strip(), q)
+        return target, q, self.state_path().read_bytes()
+
+    def test_remote_adoption_continue_refuses_an_ordinary_hooked_commit_during_creation(self):
+        """R8/R9: the immutable Q survives a normal intervening Git commit."""
+        target, q, initial_state = self.interrupted_remote_checkout('hooked-change')
+        (target / 'README').write_text('intervening user commit\n', encoding='utf-8')
+        self.git_at(target, 'add', 'README')
+        self.git_at(target, 'commit', '-m', 'intervening user commit')
+        changed_head = self.git_at(target, 'rev-parse', 'HEAD').stdout.strip()
+        self.assertNotEqual(changed_head, q)
+        before = self.state_path().read_bytes()
+        self.branch('begin', '--mode', 'continue', '--task', 'hooked-change', ok=False)
+        self.assertEqual(self.state_path().read_bytes(), before)
+        self.assertNotEqual(before, initial_state)
+        self.assertEqual(self.read_state()['tasks']['hooked-change']['creation_tip'], q)
+        self.assertEqual(self.git_at(target, 'rev-parse', 'HEAD').stdout.strip(), changed_head)
+        self.assertEqual((target / 'README').read_text(encoding='utf-8'), 'intervening user commit\n')
+
+    def _assert_hidden_tracked_change_is_preserved(self, flag):
+        task = 'hidden-' + flag
+        target, q, _ = self.interrupted_remote_checkout(task)
+        self.git_at(target, 'update-index', '--' + flag, 'README')
+        index_path = Path(self.git_at(target, 'rev-parse', '--git-path', 'index').stdout.strip())
+        if not index_path.is_absolute():
+            index_path = target / index_path
+        before_index = index_path.read_bytes()
+        before_flags = self.git_at(target, 'ls-files', '--debug', 'README').stdout
+        (target / 'README').write_bytes(b'hidden tracked bytes\x00\r\n')
+        before_state = self.state_path().read_bytes()
+        self.assertEqual(self.git_at(target, 'status', '--porcelain').stdout, '')
+        self.branch('begin', '--mode', 'continue', '--task', task, ok=False)
+        self.assertEqual(self.state_path().read_bytes(), before_state)
+        self.assertEqual(self.read_state()['tasks'][task]['creation_tip'], q)
+        self.assertEqual(index_path.read_bytes(), before_index)
+        self.assertEqual(self.git_at(target, 'ls-files', '--debug', 'README').stdout, before_flags)
+        self.assertEqual((target / 'README').read_bytes(), b'hidden tracked bytes\x00\r\n')
+
+    def test_remote_adoption_continue_refuses_assume_unchanged_tracked_change(self):
+        """R9: status-hidden assume-unchanged bytes cannot complete creation."""
+        self._assert_hidden_tracked_change_is_preserved('assume-unchanged')
+
+    def test_remote_adoption_continue_refuses_skip_worktree_tracked_change(self):
+        """R9: status-hidden skip-worktree bytes cannot complete creation."""
+        self._assert_hidden_tracked_change_is_preserved('skip-worktree')
+
+    def test_remote_adoption_clean_post_checkout_failure_continues_at_original_q(self):
+        """A clean post-checkout interruption still resumes the recorded Q."""
+        target, q, _ = self.interrupted_remote_checkout('clean-control')
+        self.branch('begin', '--mode', 'continue', '--task', 'clean-control')
+        self.assertEqual(self.git_at(target, 'rev-parse', 'HEAD').stdout.strip(), q)
+        task = self.read_state()['tasks']['clean-control']
+        self.assertNotIn('creating', task)
+        self.assertEqual(task['tip'], q)
+        self.assertNotIn('creation_tip', task)
+
     def test_install_retries_after_config_write_interruption(self):
         clone = self.root / 'install interrupted'
         self.command('git', 'clone', self.remote, clone)
