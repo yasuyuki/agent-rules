@@ -92,6 +92,57 @@ class RecoveryTests(BranchManagementTests):
         self.branch('begin', '--mode', 'continue', '--task', 'received')
         self.assert_remote_adopted()
 
+    def assert_hidden_creation_change_rejected(self, filename, contents):
+        index = Path(self.git_at(self.target, 'rev-parse', '--path-format=absolute',
+                                 '--git-path', 'index').stdout.strip())
+        index_before = index.read_bytes()
+        state_before = self.read_state()
+        caller_before = self.preserved_state()
+        self.branch('begin', '--mode', 'continue', '--task', 'received', ok=False)
+        self.assertEqual(self.read_state(), state_before)
+        self.assertTrue(state_before['tasks']['received']['creating'])
+        self.assertEqual(state_before['tasks']['received']['tip'], self.q)
+        self.assertEqual(self.git_at(self.target, 'rev-parse', 'HEAD').stdout.strip(), self.q)
+        self.assertEqual(self.git('rev-parse', 'incoming').stdout.strip(), self.q)
+        self.assertEqual((self.target / filename).read_bytes(), contents)
+        self.assertEqual(index.read_bytes(), index_before)
+        self.assertEqual(self.preserved_state(), caller_before)
+
+    def test_remote_adopt_resume_rejects_hidden_untracked(self):
+        self.remote_adoption_fixture()
+        self.interrupt_remote_adopt(after=True)
+        self.git_at(self.target, 'config', 'status.showUntrackedFiles', 'no')
+        (self.target / 'foreign.txt').write_bytes(b'foreign untracked bytes')
+        self.assertEqual(self.git_at(self.target, 'status', '--porcelain').stdout, '')
+        self.assert_hidden_creation_change_rejected('foreign.txt', b'foreign untracked bytes')
+        self.assertEqual(self.git_at(self.target, 'config', 'status.showUntrackedFiles').stdout.strip(), 'no')
+
+    def test_remote_adopt_resume_rejects_assume_unchanged(self):
+        self.remote_adoption_fixture()
+        self.interrupt_remote_adopt(after=True)
+        self.git_at(self.target, 'update-index', '--assume-unchanged', 'payload.bin')
+        (self.target / 'payload.bin').write_bytes(b'hidden tracked bytes')
+        self.assertEqual(self.git_at(self.target, 'status', '--porcelain').stdout, '')
+        self.assert_hidden_creation_change_rejected('payload.bin', b'hidden tracked bytes')
+
+    def test_remote_adopt_resume_rejects_skip_worktree(self):
+        self.remote_adoption_fixture()
+        self.interrupt_remote_adopt(after=True)
+        self.git_at(self.target, 'update-index', '--skip-worktree', 'payload.bin')
+        (self.target / 'payload.bin').write_bytes(b'skipped tracked bytes')
+        self.assertEqual(self.git_at(self.target, 'status', '--porcelain').stdout, '')
+        self.assert_hidden_creation_change_rejected('payload.bin', b'skipped tracked bytes')
+
+    def test_remote_adopt_resume_rejects_ignored_content(self):
+        self.remote_adoption_fixture()
+        self.interrupt_remote_adopt(after=True)
+        excludes = self.repo / '.git/info/exclude'
+        with excludes.open('a') as stream:
+            stream.write('\nforeign.txt\n')
+        (self.target / 'foreign.txt').write_bytes(b'ignored foreign bytes')
+        self.assertEqual(self.git_at(self.target, 'status', '--porcelain').stdout, '')
+        self.assert_hidden_creation_change_rejected('foreign.txt', b'ignored foreign bytes')
+
     def test_remote_adopt_resume_rejects_replaced_branch_and_path(self):
         self.remote_adoption_fixture()
         self.interrupt_remote_adopt()

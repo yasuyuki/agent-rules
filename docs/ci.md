@@ -20,8 +20,12 @@ Concurrency replaces only the same workflow/event/repository/PR-or-ref.
 | Remote-only adoption at a pinned commit with a distinct historical base | Branch suite content, rejection and interrupted-creation cases | Same content/rejection and creation-recovery cases, including Q2-pinned continuation, post-creation interruption and conflicting content/branch/path; fault injection loads the installed engine selected by the CLI |
 | Inspection paths, ignore/no-Git/untrusted/missing discovery, private diagnostic redaction | Entire inventory inspection suite on all four configurations | Packaged engine shares source |
 
-No existing assertion or real-Git scenario was removed. Each heavy test retains
-its own remote, index, worktrees, registration, hooks and approval tickets.
+No existing assertion or real-Git scenario was removed. Recovery cases in source
+and wheel explicitly reject untracked
+content hidden by status configuration, ignored files, and tracked edits hidden
+by assume-unchanged or skip-worktree bits while retaining intent and index bytes.
+Each heavy test retains its own remote, index, worktrees, registration, hooks
+and approval tickets.
 Fixture seeding was not changed: traced repeated installation reads dominated
 process counts, while a shared seed would remove only a few setup processes.
 The dispatcher bytes, fsync, locks, source hashes and remote/ref checks remain.

@@ -399,6 +399,33 @@ def finish(state, name, permit, new):
     state['permits'].pop(name, None)
 
 
+def creation_content_matches(repo, tip):
+    """Check recovery content without trusting status preferences or index hints.
+
+    The user's index is read only. A fresh index at the pinned commit has no
+    assume-unchanged/skip-worktree bits or cached stat data to hide disk edits.
+    Git still applies the checkout's normal attributes and platform semantics.
+    """
+    if git(repo, 'ls-files', '--others', '-z'):
+        return False  # Include ignored files; do not consult status preferences.
+    if git(repo, 'diff-index', '--cached', '--quiet', '--ignore-submodules=none',
+           tip, '--', optional=True) is None:
+        return False
+    with tempfile.TemporaryDirectory(prefix='creation-check-',
+                                     dir=common(repo) / 'agent-branches') as tmp:
+        env = dict(os.environ, GIT_INDEX_FILE=str(Path(tmp) / 'index'))
+        options = ('-c', 'core.sparseCheckout=false', '-c', 'core.ignoreStat=false',
+                   '-c', 'core.splitIndex=false')
+        git(repo, *options, 'read-tree', tip, env=env)
+        # Populate stat data only after checking disk content against Q. This
+        # refresh affects our temporary index, never the user's cached hints.
+        if git(repo, *options, 'update-index', '--really-refresh',
+               optional=True, env=env) is None:
+            return False
+        return git(repo, *options, 'diff-files', '--quiet', '--ignore-submodules=none',
+                   '--', optional=True, env=env) is not None
+
+
 def begin(args):
     repo = Path(args.repo).resolve()
     creation = None
@@ -528,7 +555,7 @@ def begin(args):
         if Path(creation['worktree']).exists():
             if not same_checkout(repo, creation['worktree'], name) or oid(repo, 'refs/heads/' + name) != creation['tip']:
                 raise BranchError('interrupted creation has a conflicting checkout; preserve and inspect')
-            if git(target, 'status', '--porcelain', '--ignored'):
+            if not creation_content_matches(target, creation['tip']):
                 raise BranchError('interrupted creation checkout content has changed; preserve and inspect')
         elif git(repo, 'rev-parse', '--verify', 'refs/heads/' + name, optional=True):
             git(repo, 'worktree', 'add', creation['worktree'], name)

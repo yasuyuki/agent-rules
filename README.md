@@ -965,6 +965,9 @@ are refused; use ordinary adoption for an existing local checkout.
 If creation fails, use the existing `--mode continue --task ID --repo REPO`
 entry. It resumes the recorded commit even if the remote has since advanced.
 Changed branch tips or interrupted checkout content are preserved and refused.
+Recovery includes ignored/untracked files and checks tracked content with a
+temporary index at the pinned commit, independently of status preferences and
+assume-unchanged/skip-worktree hints. The user's index is preserved.
 Finish creation before requesting `--sync`; continuation never implicitly
 replaces its recorded target with a newer remote tip.
 

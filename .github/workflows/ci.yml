@@ -100,7 +100,11 @@ jobs:
             test_branch_recovery.RecoveryTests.test_remote_adopt_resume_pins_original_commit \
             test_branch_recovery.RecoveryTests.test_remote_adopt_resume_rejects_changed_content \
             test_branch_recovery.RecoveryTests.test_remote_adopt_resume_after_completed_git_creation \
-            test_branch_recovery.RecoveryTests.test_remote_adopt_resume_rejects_replaced_branch_and_path
+            test_branch_recovery.RecoveryTests.test_remote_adopt_resume_rejects_replaced_branch_and_path \
+            test_branch_recovery.RecoveryTests.test_remote_adopt_resume_rejects_hidden_untracked \
+            test_branch_recovery.RecoveryTests.test_remote_adopt_resume_rejects_assume_unchanged \
+            test_branch_recovery.RecoveryTests.test_remote_adopt_resume_rejects_skip_worktree \
+            test_branch_recovery.RecoveryTests.test_remote_adopt_resume_rejects_ignored_content
           cd "$RUNNER_TEMP"
           "$runtime/agent-rules" --version
           "$runtime/agent-rules" --help
