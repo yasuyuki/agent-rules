@@ -399,6 +399,26 @@ def finish(state, name, permit, new):
     state['permits'].pop(name, None)
 
 
+def creation_contents_match(repo, tip):
+    """Compare the checkout to Q without trusting the user's index stat/flags.
+
+    A fresh, disposable index has neither assume-unchanged nor skip-worktree
+    entries. Git still applies the checkout's normal EOL/filter semantics. The
+    real index, including its flags and staged changes, is never refreshed.
+    """
+    env = os.environ.copy()
+    env['GIT_OPTIONAL_LOCKS'] = '0'
+    if git(repo, 'status', '--porcelain', '--untracked-files=all', '--ignored', env=env):
+        return False
+    with tempfile.TemporaryDirectory(prefix='creation-index-', dir=common(repo) / 'agent-branches') as tmp:
+        env['GIT_INDEX_FILE'] = str(Path(tmp) / 'index')
+        options = ('-c', 'core.sparseCheckout=false', '-c', 'core.splitIndex=false',
+                   '-c', 'core.ignorestat=false', '-c', 'core.fsmonitor=false')
+        git(repo, *options, 'read-tree', tip, env=env)
+        return git(repo, *options, 'diff', '--quiet', '--no-ext-diff', '--no-textconv',
+                   '--ignore-submodules=none', '--', optional=True, env=env) is not None
+
+
 def begin(args):
     repo = Path(args.repo).resolve()
     creation = None
@@ -530,7 +550,7 @@ def begin(args):
         if path.exists():
             if (not same_checkout(repo, path, name) or current_tip != creation['tip']
                     or oid(path, 'HEAD') != creation['tip']
-                    or git(path, 'status', '--porcelain', '--untracked-files=all', '--ignored')):
+                    or not creation_contents_match(path, creation['tip'])):
                 raise BranchError('interrupted creation has a conflicting checkout; preserve and inspect')
         elif current_tip:
             git(repo, 'worktree', 'add', creation['worktree'], name)

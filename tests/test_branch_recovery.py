@@ -83,6 +83,43 @@ class RecoveryTests(BranchManagementTests):
         self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
         self.assertNotIn('received', self.read_state()['permits'])
 
+    def test_remote_resume_checks_content_despite_index_flags(self):
+        sender, base, tip = self.remote_fixture()
+        path = self.root / 'received'
+        args = type('Args', (), dict(repo=str(self.repo), mode='adopt', from_remote=True,
+                    task='received', request='issue-89', branch='received', worktree=str(path),
+                    base=base, into=None, depends_on=None, sync=False))()
+        real_git = management.git
+        def interrupt_after_checkout(repo, *argv, **kwargs):
+            if argv[:2] == ('config', 'branch.received.remote'):
+                raise management.BranchError('injected after checkout')
+            return real_git(repo, *argv, **kwargs)
+        with patch.object(management, 'git', side_effect=interrupt_after_checkout):
+            with self.assertRaisesRegex(management.BranchError, 'injected'):
+                management.begin(args)
+        self.assertTrue(self.read_state()['tasks']['received']['creating'])
+        index = Path(self.git_at(path, 'rev-parse', '--path-format=absolute', '--git-path', 'index').stdout.strip())
+        for flag in ('assume-unchanged', 'skip-worktree'):
+            with self.subTest(flag=flag):
+                (path / 'binary').write_bytes(b'foreign edit\x00')
+                self.git_at(path, 'update-index', '--' + flag, 'binary')
+                self.assertEqual(self.git_at(path, 'status', '--porcelain').stdout, '')
+                before = index.read_bytes()
+                self.branch('begin', '--mode', 'continue', '--task', 'received', ok=False)
+                self.assertEqual(index.read_bytes(), before)
+                self.assertEqual((path / 'binary').read_bytes(), b'foreign edit\x00')
+                self.assertTrue(self.read_state()['tasks']['received']['creating'])
+                self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+                self.git_at(path, 'update-index', '--no-' + flag, 'binary')
+                (path / 'binary').write_bytes(bytes(range(256)))
+        self.git_at(path, 'update-index', '--assume-unchanged', 'binary')
+        self.git_at(path, 'status', '--porcelain')
+        before = index.read_bytes()
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.assertEqual(index.read_bytes(), before)
+        self.assertNotIn('creating', self.read_state()['tasks']['received'])
+        self.assertEqual((path / 'binary').read_bytes(), bytes(range(256)))
+
     def test_legacy_hook_mutation_is_revalidated_before_enforcement(self):
         clone = self.root / 'legacy mutation'
         self.command('git', 'clone', self.remote, clone)
