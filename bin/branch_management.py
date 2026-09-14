@@ -399,6 +399,25 @@ def finish(state, name, permit, new):
     state['permits'].pop(name, None)
 
 
+def verify_creation_checkout(repo, task, expected):
+    path, name = task['worktree'], task['branch']
+    if (Path(path).is_symlink() or not same_checkout(repo, path, name)
+            or oid(repo, 'refs/heads/' + name) != expected):
+        raise BranchError('interrupted creation has a conflicting checkout; preserve and inspect')
+    if git(path, 'status', '--porcelain', '--untracked-files=all', '--ignored'):
+        raise BranchError('interrupted creation has changed content; preserve and inspect')
+    # A fresh, private index has neither assume-unchanged nor skip-worktree
+    # flags. Compare the actual checkout to Q without rewriting the user index.
+    with tempfile.TemporaryDirectory(prefix='creation-index-',
+                                     dir=common(repo) / 'agent-branches') as temporary:
+        env = dict(os.environ, GIT_INDEX_FILE=str(Path(temporary) / 'index'))
+        git(path, '-c', 'core.sparseCheckout=false', 'read-tree', expected, env=env)
+        git(path, 'update-index', '--refresh', optional=True, env=env)
+        if git(path, 'diff-files', '--quiet', '--ignore-submodules=none',
+               optional=True, env=env) is None:
+            raise BranchError('interrupted creation has changed tracked content; preserve and inspect')
+
+
 def begin(args):
     repo = Path(args.repo).resolve()
     creation = None
@@ -506,6 +525,8 @@ def begin(args):
             if args.mode == 'new' or args.from_remote:
                 task['retirement_guarded'] = True
                 task['creating'] = True
+                if args.from_remote:
+                    task['creation_tip'] = tip
                 state['permits'][args.branch] = {'kind': 'create', 'old': '0' * len(tip), 'new': tip,
                                                  'worktree': path}
                 creation = task
@@ -514,24 +535,29 @@ def begin(args):
     if creation:
         # Registration survives failure. Continue retries rather than cleaning up.
         name = creation['branch']
+        expected = creation.get('creation_tip', creation['tip'])
+        if creation['tip'] != expected:
+            raise BranchError('interrupted creation tip changed from its recorded intent; preserve and inspect')
         existing = git(repo, 'rev-parse', '--verify', 'refs/heads/' + name, optional=True)
-        if existing is not None and existing != creation['tip']:
+        if existing is not None and existing != expected:
             raise BranchError('interrupted creation has a conflicting branch tip; preserve and inspect')
         if Path(creation['worktree']).is_symlink():
             raise BranchError('interrupted creation has a conflicting symlink; preserve and inspect')
         if Path(creation['worktree']).exists():
-            if not same_checkout(repo, creation['worktree'], name) or oid(repo, 'refs/heads/' + name) != creation['tip']:
-                raise BranchError('interrupted creation has a conflicting checkout; preserve and inspect')
-            if git(creation['worktree'], 'status', '--porcelain', '--untracked-files=all', '--ignored'):
-                raise BranchError('interrupted creation has changed content; preserve and inspect')
+            verify_creation_checkout(repo, creation, expected)
         elif existing:
             git(repo, 'worktree', 'add', creation['worktree'], name)
         else:
-            git(repo, 'worktree', 'add', '-b', name, creation['worktree'], creation['tip'])
+            git(repo, 'worktree', 'add', '-b', name, creation['worktree'], expected)
         git(creation['worktree'], 'config', 'branch.' + name + '.remote', state['remote'])
         git(creation['worktree'], 'config', 'branch.' + name + '.merge', 'refs/heads/' + name)
         with locked(repo) as (directory, current):
-            current['tasks'][args.task].pop('creating', None)
+            resumed = current['tasks'][args.task]
+            if resumed['tip'] != expected or resumed.get('creation_tip', expected) != expected:
+                raise BranchError('interrupted creation tip changed from its recorded intent; preserve and inspect')
+            verify_creation_checkout(repo, resumed, expected)
+            resumed.pop('creating', None)
+            resumed.pop('creation_tip', None)
             save(directory, current)
             output = {'task': args.task, **current['tasks'][args.task]}
     return output

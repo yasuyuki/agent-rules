@@ -104,6 +104,80 @@ class RecoveryTests(BranchManagementTests):
         self.assertNotIn('incoming', state['permits'])
         self.assertNotIn('creating', state['tasks']['incoming'])
 
+    def test_remote_adopt_config_failure_preserves_original_intent(self):
+        seed, base, tip = self.remote_topic()
+        lock = self.repo / '.git/config.lock'
+        lock.write_text('fixture lock')
+        try:
+            self.remote_begin(base, ok=False)
+        finally:
+            lock.unlink()
+        path = self.root / 'received'
+        self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.assertEqual(self.read_state()['tasks']['incoming']['creation_tip'], tip)
+        # A normal approved commit updates the registration tip, but must not
+        # change the original creation intent or make continuation accept Q2.
+        (path / 'README').write_text('intervening commit')
+        self.git_at(path, 'add', 'README')
+        self.git_at(path, 'commit', '-m', 'intervening')
+        changed = self.git_at(path, 'rev-parse', 'HEAD').stdout.strip()
+        self.assertNotEqual(changed, tip)
+        before = self.read_state()
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming', ok=False)
+        self.assertEqual(self.read_state(), before)
+        self.assertTrue(before['tasks']['incoming']['creating'])
+        self.assertEqual(before['tasks']['incoming']['creation_tip'], tip)
+        self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), changed)
+        self.assertEqual((path / 'README').read_text(), 'intervening commit')
+
+    def test_remote_adopt_resume_checks_bytes_hidden_by_index_flags(self):
+        seed, base, tip = self.remote_topic()
+        lock = self.repo / '.git/config.lock'
+        lock.write_text('fixture lock')
+        try:
+            self.remote_begin(base, ok=False)
+        finally:
+            lock.unlink()
+        path = self.root / 'received'
+        tracked = path / 'README'
+        original = tracked.read_bytes()
+        index = Path(self.git_at(path, 'rev-parse', '--path-format=absolute', '--git-path', 'index').stdout.strip())
+        for flag in ('assume-unchanged', 'skip-worktree'):
+            with self.subTest(flag=flag):
+                self.git_at(path, 'update-index', '--' + flag, 'README')
+                tracked.write_bytes(b'hidden change')
+                self.assertEqual(self.git_at(path, 'status', '--porcelain').stdout, '')
+                before_index, before_state = index.read_bytes(), self.read_state()
+                self.branch('begin', '--mode', 'continue', '--task', 'incoming', ok=False)
+                self.assertEqual(tracked.read_bytes(), b'hidden change')
+                self.assertEqual(index.read_bytes(), before_index)
+                self.assertEqual(self.read_state(), before_state)
+                tracked.write_bytes(original)
+                self.git_at(path, 'update-index', '--no-' + flag, 'README')
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming')
+        self.assertNotIn('creating', self.read_state()['tasks']['incoming'])
+        self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+
+    def test_new_creation_can_resume_after_an_approved_commit(self):
+        path = self.root / 'new worktree'
+        lock = self.repo / '.git/config.lock'
+        lock.write_text('fixture lock')
+        try:
+            self.branch('begin', '--mode', 'new', '--task', 'new', '--request', 'new-work',
+                        '--branch', 'new', '--worktree', str(path), ok=False)
+        finally:
+            lock.unlink()
+        self.assertTrue(self.read_state()['tasks']['new']['creating'])
+        self.assertNotIn('creation_tip', self.read_state()['tasks']['new'])
+        (path / 'README').write_text('approved new work')
+        self.git_at(path, 'add', 'README')
+        self.git_at(path, 'commit', '-m', 'approved new work')
+        tip = self.git_at(path, 'rev-parse', 'HEAD').stdout.strip()
+        self.branch('begin', '--mode', 'continue', '--task', 'new')
+        self.assertEqual(self.read_state()['tasks']['new']['tip'], tip)
+        self.assertNotIn('creating', self.read_state()['tasks']['new'])
+        self.assertEqual((path / 'README').read_text(), 'approved new work')
+
     def test_legacy_hook_mutation_is_revalidated_before_enforcement(self):
         clone = self.root / 'legacy mutation'
         self.command('git', 'clone', self.remote, clone)
