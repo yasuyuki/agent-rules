@@ -401,6 +401,17 @@ def finish(state, name, permit, new):
     state['permits'].pop(name, None)
 
 
+def creation_checkout_clean(repo):
+    # Status deliberately trusts these index flags. Refuse an unverifiable
+    # recovery checkout without clearing flags or refreshing the user's index.
+    entries = git_bytes(repo, 'ls-files', '-v', '-z').split(b'\0')
+    if any(entry and (entry[:1] == b'S' or entry[:1].islower()) for entry in entries):
+        return False
+    return not git(repo, '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false',
+                   'status', '--porcelain', '--ignored', '--untracked-files=all',
+                   env=dict(os.environ, GIT_OPTIONAL_LOCKS='0'))
+
+
 def begin(args):
     repo = Path(args.repo).resolve()
     creation = None
@@ -525,8 +536,6 @@ def begin(args):
         if Path(creation['worktree']).exists():
             if not same_checkout(repo, creation['worktree'], name) or oid(repo, 'refs/heads/' + name) != creation['tip']:
                 raise BranchError('interrupted creation has a conflicting checkout; preserve and inspect')
-            if git(creation['worktree'], 'status', '--porcelain', '--ignored'):
-                raise BranchError('interrupted creation checkout contains changes; preserve and inspect')
         elif git(repo, 'rev-parse', '--verify', 'refs/heads/' + name, optional=True):
             if oid(repo, 'refs/heads/' + name) != creation['tip']:
                 raise BranchError('interrupted creation branch has changed; preserve and inspect')
@@ -535,8 +544,8 @@ def begin(args):
             git(repo, 'worktree', 'add', '-b', name, creation['worktree'], creation['tip'])
         if (not same_checkout(repo, creation['worktree'], name)
                 or oid(repo, 'refs/heads/' + name) != creation['tip']
-                or git(creation['worktree'], 'status', '--porcelain', '--ignored')):
-            raise BranchError('created checkout differs from intent; preserve and inspect')
+                or not creation_checkout_clean(creation['worktree'])):
+            raise BranchError('created checkout differs from intent or has unverifiable index flags; preserve and inspect')
         git(creation['worktree'], 'config', 'branch.' + name + '.remote', state['remote'])
         git(creation['worktree'], 'config', 'branch.' + name + '.merge', 'refs/heads/' + name)
         with locked(repo) as (directory, current):

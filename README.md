@@ -961,6 +961,9 @@ commit, while `--base` remains the historical ancestor. Existing branches and pa
 its intent: `begin --mode continue --repo REPO --task ID` resumes the same commit
 even if the remote advances. Changed recovery checkouts are preserved and refused;
 finish creation before requesting a separate `--sync` import.
+Recovery includes untracked and ignored files regardless of status display
+settings. Index entries marked skip-worktree or assume-unchanged prevent recovery
+verification and are refused without changing their flags or the index.
 
 For independent work use `branch begin --mode new --repo REPO --task ID
 --request REQUEST --branch TOPIC --worktree NEW_PATH`. Fetch the remote default

@@ -33,6 +33,31 @@ class RecoveryTests(BranchManagementTests):
         self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
         self.git_at(path, 'commit', '--allow-empty', '-m', 'must not change Q', ok=False)
         self.assertEqual(self.read_state()['tasks']['received']['tip'], tip)
+        original = (path / 'binary').read_bytes()
+        index = Path(self.git_at(path, 'rev-parse', '--path-format=absolute', '--git-path', 'index').stdout.strip())
+        for variation in ('ordinary', 'skip-worktree', 'assume-unchanged', 'hidden-untracked'):
+            with self.subTest(variation=variation):
+                changed = path / ('additional-work' if variation == 'hidden-untracked' else 'binary')
+                if variation in ('skip-worktree', 'assume-unchanged'):
+                    self.git_at(path, 'update-index', '--' + variation, 'binary')
+                if variation == 'hidden-untracked':
+                    self.git_at(path, 'config', 'status.showUntrackedFiles', 'no')
+                changed.write_bytes(b'work after interruption\x00\xff')
+                if variation != 'ordinary':
+                    self.assertEqual(self.git_at(path, 'status', '--porcelain', '--ignored').stdout, '')
+                before = (self.state_path().read_bytes(), index.read_bytes(), changed.read_bytes(),
+                          self.git_at(path, 'config', '--local', '--list').stdout)
+                self.branch('begin', '--mode', 'continue', '--task', 'received', ok=False)
+                self.assertEqual(before, (self.state_path().read_bytes(), index.read_bytes(), changed.read_bytes(),
+                                         self.git_at(path, 'config', '--local', '--list').stdout))
+                self.assertTrue(self.read_state()['tasks']['received']['creating'])
+                self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+                if variation == 'hidden-untracked':
+                    changed.unlink()
+                else:
+                    changed.write_bytes(original)
+                if variation in ('skip-worktree', 'assume-unchanged'):
+                    self.git_at(path, 'update-index', '--no-' + variation, 'binary')
         self.branch('begin', '--mode', 'continue', '--task', 'received')
         self.branch('begin', '--mode', 'continue', '--task', 'received')
         self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
