@@ -961,8 +961,10 @@ worktree and registered tip start at Q while the historical base remains B.
 Existing local branches and paths (including empty directories and symlinks)
 are refused. No fetch or merge is performed. A saved creation intent resumes
 through `--mode continue --task ID` at the same Q even if the remote advances.
-Conflicting refs or checkout content are preserved and refused; finish creation
-before using `--sync` to explicitly import a later remote update.
+Conflicting refs or checkout content are preserved and refused. Index flags that
+hide content (`assume-unchanged` or `skip-worktree`) also require inspection before
+continuation. Finish creation before committing or using `--sync` to explicitly
+import a later remote update.
 
 For independent work use `branch begin --mode new --repo REPO --task ID
 --request REQUEST --branch TOPIC --worktree NEW_PATH`. Fetch the remote default

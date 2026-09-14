@@ -233,6 +233,60 @@ class BranchManagementTests(unittest.TestCase):
         other = self.begin('other', branch='other')
         self.branch(*self.remote_adoption_args(base, Path(other['worktree'])), ok=False)
 
+    def interrupted_remote_checkout(self):
+        seed, base, tip = self.remote_adoption_fixture()
+        hooks = Path(self.git('config', '--get', 'core.hooksPath').stdout.strip())
+        failure = hooks / 'post-checkout'
+        failure.write_text('#!/bin/sh\nexit 73\n', encoding='utf-8', newline='\n')
+        failure.chmod(0o755)
+        self.branch(*self.remote_adoption_args(base), ok=False)
+        failure.unlink()  # Disable only the fixture's deterministic failure.
+        state_path = self.repo / '.git/agent-branches/state.json'
+        state = json.loads(state_path.read_text())
+        self.assertTrue(state['tasks']['received']['creating'])
+        self.assertEqual(state['tasks']['received']['creation_tip'], tip)
+        path = self.root / 'received worktree'
+        self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        return path, state_path, tip
+
+    def test_remote_adoption_real_failure_blocks_intervening_commit(self):
+        path, state_path, tip = self.interrupted_remote_checkout()
+        (path / 'intervening').write_bytes(b'preserve staged work')
+        self.git_at(path, 'add', 'intervening')
+        self.git_at(path, 'commit', '-m', 'intervening', ok=False)
+        self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.assertEqual(json.loads(state_path.read_text())['tasks']['received']['tip'], tip)
+        index_path = Path(self.git_at(path, 'rev-parse', '--path-format=absolute', '--git-path', 'index').stdout.strip())
+        before = index_path.read_bytes()
+        self.branch('begin', '--mode', 'continue', '--task', 'received', ok=False)
+        self.assertEqual(index_path.read_bytes(), before)
+        self.assertEqual((path / 'intervening').read_bytes(), b'preserve staged work')
+        self.git_at(path, 'rm', '--cached', 'intervening')
+        (path / 'intervening').unlink()
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.assertNotIn('creation_tip', json.loads(state_path.read_text())['tasks']['received'])
+
+    def test_remote_adoption_real_failure_rejects_hidden_content(self):
+        path, state_path, tip = self.interrupted_remote_checkout()
+        for flag in ('assume-unchanged', 'skip-worktree'):
+            with self.subTest(flag=flag):
+                self.git_at(path, 'update-index', '--' + flag, 'binary')
+                (path / 'binary').write_bytes(b'hidden conflicting bytes')
+                self.assertEqual(self.git_at(path, 'status', '--porcelain').stdout, '')
+                index_path = Path(self.git_at(path, 'rev-parse', '--path-format=absolute', '--git-path', 'index').stdout.strip())
+                before = index_path.read_bytes()
+                self.branch('begin', '--mode', 'continue', '--task', 'received', ok=False)
+                self.assertEqual(index_path.read_bytes(), before)
+                self.assertEqual((path / 'binary').read_bytes(), b'hidden conflicting bytes')
+                self.assertTrue(json.loads(state_path.read_text())['tasks']['received']['creating'])
+                self.git_at(path, 'update-index', '--no-' + flag, 'binary')
+                (path / 'binary').write_bytes(bytes(range(256)))
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.assertNotIn('received', json.loads(state_path.read_text())['permits'])
+
     def test_install_preserves_an_existing_hook_and_detects_tampering(self):
         # Reinstall over a real hook: its args, stdin and exit status must survive.
         legacy = self.root / "legacy checkout"

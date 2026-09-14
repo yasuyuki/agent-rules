@@ -509,6 +509,7 @@ def begin(args):
             if args.mode == 'new' or from_remote:
                 task['retirement_guarded'] = True
                 task['creating'] = True
+                task['creation_tip'] = tip
                 state['permits'][args.branch] = {'kind': 'create', 'old': '0' * len(tip), 'new': tip,
                                                  'worktree': path}
                 creation = task
@@ -517,6 +518,9 @@ def begin(args):
     if creation:
         # Registration survives failure. Continue retries rather than cleaning up.
         name = creation['branch']
+        pinned_tip = creation.get('creation_tip', creation['tip'])
+        if creation['tip'] != pinned_tip:
+            raise BranchError('interrupted creation tip differs from its original commit; preserve and inspect')
         target = Path(creation['worktree'])
         if any(p.is_symlink() for p in (target, *target.parents)):
             raise BranchError('interrupted creation path contains a symlink')
@@ -530,13 +534,17 @@ def begin(args):
             git(repo, 'worktree', 'add', creation['worktree'], name)
         else:
             git(repo, 'worktree', 'add', '-b', name, creation['worktree'], creation['tip'])
-        if (oid(target, 'HEAD') != creation['tip'] or
+        index_entries = git_bytes(target, 'ls-files', '-v', '-z').split(b'\0')
+        if any(entry and (entry[:1].islower() or entry[:1] == b'S') for entry in index_entries):
+            raise BranchError('interrupted creation index hides worktree content; preserve and inspect index flags')
+        if (oid(target, 'HEAD') != pinned_tip or
                 git(target, 'status', '--porcelain', '--untracked-files=all', '--ignored')):
             raise BranchError('interrupted creation has conflicting content; preserve and inspect')
         git(creation['worktree'], 'config', 'branch.' + name + '.remote', state['remote'])
         git(creation['worktree'], 'config', 'branch.' + name + '.merge', 'refs/heads/' + name)
         with locked(repo) as (directory, current):
             current['tasks'][args.task].pop('creating', None)
+            current['tasks'][args.task].pop('creation_tip', None)
             save(directory, current)
             output = {'task': args.task, **current['tasks'][args.task]}
     return output
@@ -685,6 +693,8 @@ def allow_pick(args):
 
 def prepare_commit(repo, directory, state):
     _, task = checkout(repo, state)
+    if task.get('creating'):
+        raise BranchError('finish interrupted worktree creation before committing')
     name = task['branch']
     old = oid(repo, 'HEAD')
     if task['tip'] != old:
