@@ -965,8 +965,13 @@ changes the adopted tip. Tracking uses the registered remote and same branch.
 
 If creation fails, use the existing `branch begin --mode continue --repo REPO
 --task ID` entry. It resumes the recorded commit even if the remote advances.
-Changed branch tips, conflicting checkouts and changed checkout contents are
-preserved and refused. Finish creation before requesting `--sync`.
+The recorded commit stays pinned while creation is pending: a hooked commit
+made in the interrupted checkout leaves the pending operation resumable, and
+continuation refuses the changed branch without changing its bytes. Continuation
+also compares the checkout with the recorded commit directly, so tracked bytes
+changed under `assume-unchanged` are detected. Changed branch tips, conflicting
+checkouts and changed checkout contents are preserved and refused. Finish
+creation before requesting `--sync`.
 `--from-remote` is valid only with adopt; ordinary local adoption is unchanged.
 
 For independent work use `branch begin --mode new --repo REPO --task ID

@@ -113,6 +113,8 @@ class BranchManagementTests(unittest.TestCase):
         (producer / '.gitattributes').write_text('lines -text\n', encoding='utf-8')
         (producer / 'executable').write_bytes(b'#!/bin/sh\nexit 0\n')
         (producer / 'executable').chmod(0o755)
+        (producer / 'nested').mkdir()
+        (producer / 'nested' / 'value').write_bytes(b'nested\x00value')
         self.git_at(producer, 'add', '.')
         self.git_at(producer, 'update-index', '--chmod=+x', 'executable')
         self.git_at(producer, 'commit', '-m', 'remote work')

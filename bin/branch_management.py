@@ -13,6 +13,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import stat
 import shutil
 import subprocess
 import sys
@@ -389,7 +390,13 @@ def reconcile(repo, state):
 
 def finish(state, name, permit, new):
     _, task = task_for(state, name)
-    task['tip'] = new
+    # Remote-only creation pins the selected remote commit until the worktree
+    # has been accepted by continuation.  A normal commit can complete its
+    # hook transaction while creation is still marked in-flight; recording
+    # that commit as the task tip would make resume silently adopt it.
+    if not (task.get('creating') and task.get('creation_tip')
+            and new != task['creation_tip']):
+        task['tip'] = new
     if permit.get('pick'):
         state['picks'].pop(name + ':' + permit['pick'], None)
     if permit.get('merge'):
@@ -397,6 +404,57 @@ def finish(state, name, permit, new):
         source['integrated'] = {'source': permit['parents'][1], 'destination': name, 'commit': new}
         state['merges'].pop(name, None)
     state['permits'].pop(name, None)
+
+
+def _tree_entries(root):
+    entries = {}
+    for current, directories, files in os.walk(root, followlinks=False):
+        for name in (*directories, *files):
+            path = Path(current) / name
+            entries[str(path.relative_to(root))] = path
+    return entries
+
+
+def checkout_matches_commit(repo, path, commit, directory):
+    """Compare a recovery checkout with a commit without changing its index.
+
+    Git's assume-unchanged and skip-worktree bits intentionally suppress the
+    ordinary status/diff checks.  A throwaway index populated from the pinned
+    commit lets checkout-index produce the expected checkout representation;
+    only that representation is compared with the target.  The throwaway
+    index and files live below the registration directory and are removed on
+    return, while the target checkout and its real index are never written.
+    """
+    with tempfile.TemporaryDirectory(prefix='resume-check-', dir=directory) as temporary:
+        scratch = Path(temporary)
+        expected = scratch / 'tree'
+        expected.mkdir()
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith('GIT_')}
+        env['GIT_INDEX_FILE'] = str(scratch / 'index')
+        git(repo, 'read-tree', commit, env=env)
+        git(repo, 'checkout-index', '--all', '--prefix=' + str(expected) + os.sep, env=env)
+        for relative, expected_path in _tree_entries(expected).items():
+            actual_path = Path(path) / relative
+            if not os.path.lexists(actual_path):
+                return False
+            expected_stat = expected_path.lstat()
+            actual_stat = actual_path.lstat()
+            if stat.S_ISLNK(expected_stat.st_mode):
+                if (not stat.S_ISLNK(actual_stat.st_mode)
+                        or os.readlink(expected_path) != os.readlink(actual_path)):
+                    return False
+            elif stat.S_ISDIR(expected_stat.st_mode):
+                if not stat.S_ISDIR(actual_stat.st_mode):
+                    return False
+                continue  # Directory modes are not part of a Git tree.
+            elif (not stat.S_ISREG(expected_stat.st_mode)
+                  or not stat.S_ISREG(actual_stat.st_mode)
+                  or expected_path.read_bytes() != actual_path.read_bytes()):
+                return False
+            if ((expected_stat.st_mode & 0o111) != (actual_stat.st_mode & 0o111)):
+                return False
+        return True
 
 
 def begin(args):
@@ -507,6 +565,8 @@ def begin(args):
                     raise BranchError('adoption checkout does not match branch/worktree')
             task = {'request': args.request, 'branch': args.branch, 'worktree': path,
                     'base': base, 'depends_on': args.depends_on, 'into': into, 'tip': tip}
+            if from_remote:
+                task['creation_tip'] = tip
             tasks[args.task] = task
             if args.mode == 'new' or from_remote:
                 task['retirement_guarded'] = True
@@ -530,6 +590,11 @@ def begin(args):
                 raise BranchError('interrupted creation has a conflicting checkout; preserve and inspect')
             if git(creation['worktree'], 'status', '--porcelain', '--untracked-files=all', '--ignored'):
                 raise BranchError('interrupted creation checkout has changed content; preserve and inspect')
+            if (creation.get('creation_tip')
+                    and not checkout_matches_commit(repo, creation['worktree'],
+                                                    creation['creation_tip'],
+                                                    common(repo) / 'agent-branches')):
+                raise BranchError('interrupted creation checkout content differs from recorded remote commit; preserve and inspect')
         elif git(repo, 'rev-parse', '--verify', 'refs/heads/' + name, optional=True):
             git(repo, 'worktree', 'add', creation['worktree'], name)
         else:
@@ -537,9 +602,22 @@ def begin(args):
         git(creation['worktree'], 'config', 'branch.' + name + '.remote', state['remote'])
         git(creation['worktree'], 'config', 'branch.' + name + '.merge', 'refs/heads/' + name)
         with locked(repo) as (directory, current):
-            current['tasks'][args.task].pop('creating', None)
+            current_task = current['tasks'][args.task]
+            if current_task.get('creation_tip'):
+                # Revalidate while holding the registration lock. A hooked
+                # commit may have completed after the first check above.
+                if (oid(repo, 'refs/heads/' + name) != current_task['creation_tip']
+                        or not same_checkout(repo, current_task['worktree'], name)
+                        or git(current_task['worktree'], 'status', '--porcelain',
+                               '--untracked-files=all', '--ignored')
+                        or not checkout_matches_commit(repo, current_task['worktree'],
+                                                        current_task['creation_tip'],
+                                                        directory)):
+                    raise BranchError('interrupted remote adoption changed during resume; preserve and inspect')
+            current_task.pop('creating', None)
+            current_task.pop('creation_tip', None)
             save(directory, current)
-            output = {'task': args.task, **current['tasks'][args.task]}
+            output = {'task': args.task, **current_task}
     return output
 
 

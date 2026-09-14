@@ -56,6 +56,44 @@ class RecoveryTests(BranchManagementTests):
             self.assertNotIn('creating', state['tasks']['incoming-task'])
             self.assertEqual(state['permits'], {})
 
+    def test_remote_adoption_rejects_hooked_commit_during_creation(self):
+        _, base, tip, target = self.remote_adoption_fixture()
+        self.interrupt_remote_adoption(base, target, 'checkout')
+        (target / 'intervening').write_text('separate work\n', encoding='utf-8')
+        self.git_at(target, 'add', 'intervening')
+        self.git_at(target, 'commit', '-m', 'intervening work')
+        state_path = self.state_path()
+        after_commit = json.loads(state_path.read_text(encoding='utf-8'))
+        intervening = self.git_at(target, 'rev-parse', 'HEAD').stdout.strip()
+        self.assertNotEqual(intervening, tip)
+        self.assertTrue(after_commit['tasks']['incoming-task']['creating'])
+        self.assertEqual(after_commit['tasks']['incoming-task']['tip'], tip)
+        before = (state_path.read_bytes(), self.git('show-ref').stdout,
+                  self.git_at(target, 'rev-parse', 'HEAD').stdout,
+                  (target / 'intervening').read_bytes())
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming-task', ok=False)
+        self.assertEqual((state_path.read_bytes(), self.git('show-ref').stdout,
+                          self.git_at(target, 'rev-parse', 'HEAD').stdout,
+                          (target / 'intervening').read_bytes()), before)
+        self.assertEqual(json.loads(state_path.read_text(encoding='utf-8'))['tasks']['incoming-task']['tip'], tip)
+
+    def test_remote_adoption_rejects_assume_unchanged_content_during_creation(self):
+        _, base, tip, target = self.remote_adoption_fixture()
+        self.interrupt_remote_adoption(base, target, 'checkout')
+        index = Path(self.git_at(target, 'rev-parse', '--path-format=absolute', '--git-path', 'index').stdout.strip())
+        self.git_at(target, 'update-index', '--assume-unchanged', 'binary')
+        (target / 'binary').write_bytes(b'intervening bytes\x00')
+        status = self.git_at(target, 'status', '--porcelain', '--untracked-files=all', '--ignored').stdout
+        self.assertEqual(status, '')
+        state_path = self.state_path()
+        before = (state_path.read_bytes(), index.read_bytes(),
+                  (target / 'binary').read_bytes(), self.git_at(target, 'rev-parse', 'HEAD').stdout)
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming-task', ok=False)
+        self.assertEqual((state_path.read_bytes(), index.read_bytes(),
+                          (target / 'binary').read_bytes(), self.git_at(target, 'rev-parse', 'HEAD').stdout), before)
+        self.assertTrue(json.loads(state_path.read_text(encoding='utf-8'))['tasks']['incoming-task']['creating'])
+        self.assertEqual(json.loads(state_path.read_text(encoding='utf-8'))['tasks']['incoming-task']['tip'], tip)
+
     def test_remote_adoption_resume_after_branch_creation(self):
         _, base, tip, target = self.remote_adoption_fixture()
         self.interrupt_remote_adoption(base, target, 'branch')
