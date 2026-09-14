@@ -213,6 +213,8 @@ def task_for(state, name):
 def checkout(repo, state):
     name = branch(repo)
     key, task = task_for(state, name)
+    if task.get('creating'):
+        raise BranchError('finish interrupted creation with --mode continue before updating work')
     if task['worktree'] != top(repo):
         raise BranchError('checkout does not match registered worktree: ' + name)
     return key, task
@@ -402,6 +404,9 @@ def finish(state, name, permit, new):
 def begin(args):
     repo = Path(args.repo).resolve()
     creation = None
+    from_remote = getattr(args, 'from_remote', False)
+    if from_remote and args.mode != 'adopt':
+        raise BranchError('--from-remote is only valid for adoption')
     if args.sync and args.mode != 'continue':
         raise BranchError('--sync is only valid for continuation')
     if not args.task.strip():
@@ -420,6 +425,8 @@ def begin(args):
                    for field, key in [('branch', 'branch'), ('worktree', 'worktree'), ('request', 'request')]):
                 raise BranchError('continuation differs from registered work')
             if task.get('creating'):
+                if args.sync:
+                    raise BranchError('finish interrupted creation before importing updates')
                 creation = task
             else:
                 # Inspect named worktree without inheriting hook-local Git environment.
@@ -442,6 +449,8 @@ def begin(args):
             if not args.request or not args.branch or not args.worktree:
                 raise BranchError('new/adopt requires --request, --branch and --worktree')
             git(repo, 'check-ref-format', '--branch', args.branch)
+            if from_remote and (Path(args.worktree).exists() or Path(args.worktree).is_symlink()):
+                raise BranchError('remote adoption requires an absent worktree path')
             path = str(Path(args.worktree).resolve())
             if any(t['branch'] == args.branch or t['worktree'] == path for t in tasks.values()):
                 raise BranchError('branch or worktree already belongs to another work item')
@@ -453,7 +462,7 @@ def begin(args):
                     raise BranchError('dependency must already be registered')
                 parent = tasks[args.depends_on]
                 base = oid(repo, 'refs/heads/' + parent['branch'])
-            else:
+            elif args.mode == 'new':
                 base = oid(repo, 'refs/remotes/' + state['remote'] + '/' + state['default'])
             if args.mode == 'new':
                 if not args.depends_on:
@@ -476,22 +485,34 @@ def begin(args):
                 if not args.base:
                     raise BranchError('adoption requires explicit historical --base')
                 base = oid(repo, args.base)
-                tip = oid(repo, 'refs/heads/' + args.branch)
+                if from_remote:
+                    if git(repo, 'rev-parse', '--verify', 'refs/heads/' + args.branch, optional=True):
+                        raise BranchError('remote adoption requires an absent local branch')
+                    ref = 'refs/remotes/' + state['remote'] + '/' + args.branch
+                    tip = oid(repo, ref)
+                    if git(repo, 'cat-file', '-t', ref) != 'commit':
+                        raise BranchError('remote tracking ref is not a commit')
+                    advertised = git(repo, 'ls-remote', state['remote'], 'refs/heads/' + args.branch).split()
+                    if not advertised or advertised[0] != tip:
+                        raise BranchError('fetch the remote branch before adoption; tracking ref differs from advertised commit')
+                else:
+                    tip = oid(repo, 'refs/heads/' + args.branch)
                 if not ancestor(repo, base, tip):
                     raise BranchError('adoption base is not an ancestor of branch')
                 remote_tip = git(repo, 'rev-parse', '--verify', 'refs/remotes/' + state['remote'] + '/' + args.branch, optional=True)
                 remote_base = remote_tip or oid(repo, 'refs/remotes/' + state['remote'] + '/' + state['default'])
                 if not ancestor(repo, base, remote_base):
                     raise BranchError('adoption base does not agree with remote history')
-                if not same_checkout(repo, path, args.branch):
+                if not from_remote and not same_checkout(repo, path, args.branch):
                     raise BranchError('adoption checkout does not match branch/worktree')
             task = {'request': args.request, 'branch': args.branch, 'worktree': path,
                     'base': base, 'depends_on': args.depends_on, 'into': into, 'tip': tip}
             tasks[args.task] = task
-            if args.mode == 'new':
-                task['retirement_guarded'] = True
+            if args.mode == 'new' or from_remote:
+                if args.mode == 'new':
+                    task['retirement_guarded'] = True
                 task['creating'] = True
-                state['permits'][args.branch] = {'kind': 'create', 'old': '0' * len(base), 'new': base,
+                state['permits'][args.branch] = {'kind': 'create', 'old': '0' * len(tip), 'new': tip,
                                                  'worktree': path}
                 creation = task
         save(directory, state)
@@ -499,13 +520,23 @@ def begin(args):
     if creation:
         # Registration survives failure. Continue retries rather than cleaning up.
         name = creation['branch']
+        if Path(creation['worktree']).is_symlink():
+            raise BranchError('interrupted creation has a symlink collision')
         if Path(creation['worktree']).exists():
             if not same_checkout(repo, creation['worktree'], name) or oid(repo, 'refs/heads/' + name) != creation['tip']:
                 raise BranchError('interrupted creation has a conflicting checkout; preserve and inspect')
+            if git(creation['worktree'], 'status', '--porcelain', '--ignored'):
+                raise BranchError('interrupted creation checkout contains changes; preserve and inspect')
         elif git(repo, 'rev-parse', '--verify', 'refs/heads/' + name, optional=True):
+            if oid(repo, 'refs/heads/' + name) != creation['tip']:
+                raise BranchError('interrupted creation branch has changed; preserve and inspect')
             git(repo, 'worktree', 'add', creation['worktree'], name)
         else:
-            git(repo, 'worktree', 'add', '-b', name, creation['worktree'], creation['base'])
+            git(repo, 'worktree', 'add', '-b', name, creation['worktree'], creation['tip'])
+        if (not same_checkout(repo, creation['worktree'], name)
+                or oid(repo, 'refs/heads/' + name) != creation['tip']
+                or git(creation['worktree'], 'status', '--porcelain', '--ignored')):
+            raise BranchError('created checkout differs from intent; preserve and inspect')
         git(creation['worktree'], 'config', 'branch.' + name + '.remote', state['remote'])
         git(creation['worktree'], 'config', 'branch.' + name + '.merge', 'refs/heads/' + name)
         with locked(repo) as (directory, current):
@@ -948,6 +979,7 @@ def main(argv=None):
                 for flag in ('request', 'branch', 'worktree', 'base', 'into', 'depends-on'):
                     p.add_argument('--' + flag)
                 p.add_argument('--sync', action='store_true')
+                p.add_argument('--from-remote', action='store_true')
             elif name in ('retire', 'prepare-merge'):
                 p.add_argument('--task', required=True)
             elif name == 'allow-cherry-pick':

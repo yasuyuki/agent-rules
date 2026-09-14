@@ -13,6 +13,7 @@ Concurrency replaces only the same workflow/event/repository/PR-or-ref.
 | --- | --- | --- |
 | Ref/commit/push rejection, remote identities, one-use merge/pick/tag approval, worktree protection and non-destructive retirement | Entire `test_branch_management` | Real unregistered-ref/no-verify/alternate-index rejection scenario |
 | Crash recovery, locks, concurrent operations, legacy-hook mutation revalidation | Entire `test_branch_recovery`, collected through its existing `load_tests` | Same shipped branch engine, exercised through installed hooks |
+| Remote-only adoption: historical base versus tip, content, collisions, retained intent and pinned-tip recovery | All seven remote-adoption cases in the existing branch/recovery modules | The same seven cases; recovery imports follow `AGENT_RULES_PLACE` to exercise the installed engine |
 | Existing hook arguments/status and modified-hook detection | Entire branch suite | `test_install_preserves_an_existing_hook_and_detects_tampering` |
 | Source-only inventory catalog versus installed branch engine (previous wheel regression) | Entire branch suite | `test_declare_agent_updates_only_a_registered_source_catalog` |
 | Imports, package data, project CLI apply/check/update and non-destructive failures | Existing source tests | Entire `test_project`, installed in a clean venv; subprocess cwd is outside checkout |

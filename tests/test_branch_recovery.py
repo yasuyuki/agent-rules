@@ -9,14 +9,113 @@ import unittest
 from unittest.mock import patch
 import importlib.util
 
-from test_branch_management import BranchManagementTests, ROOT
+from test_branch_management import BranchManagementTests, ROOT, PLACE
 
-spec = importlib.util.spec_from_file_location('branch_management', ROOT / 'bin/branch_management.py')
+spec = importlib.util.spec_from_file_location('branch_management', PLACE.with_name('branch_management.py'))
 management = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(management)
 
 
 class RecoveryTests(BranchManagementTests):
+    def test_remote_adoption_post_checkout_interruption_keeps_target_immutable(self):
+        sender, base, tip = self.remote_adoption_fixture()
+        path = self.root / 'received'
+        args = ['begin', '--repo', str(self.repo), '--mode', 'adopt', '--from-remote',
+                '--task', 'received', '--branch', 'received', '--request', 'issue-89',
+                '--base', base, '--worktree', str(path)]
+        real_git = management.git
+        def fail_tracking(repo, *argv, **kwargs):
+            if argv[:2] == ('config', 'branch.received.remote'):
+                raise management.BranchError('fixture interruption after checkout')
+            return real_git(repo, *argv, **kwargs)
+        with patch.object(management, 'git', side_effect=fail_tracking):
+            self.assertEqual(management.main(args), 1)
+        self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.git_at(path, 'commit', '--allow-empty', '-m', 'must not change Q', ok=False)
+        self.assertEqual(self.read_state()['tasks']['received']['tip'], tip)
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.assertEqual(self.git('config', 'branch.received.remote').stdout.strip(), 'origin')
+        self.assertNotIn('received', self.read_state()['permits'])
+
+    def test_remote_adoption_resumes_after_branch_created_without_checkout(self):
+        sender, base, tip = self.remote_adoption_fixture()
+        args = ['begin', '--repo', str(self.repo), '--mode', 'adopt', '--from-remote',
+                '--task', 'received', '--branch', 'received', '--request', 'issue-89',
+                '--base', base, '--worktree', str(self.root / 'received')]
+        real_git = management.git
+        def partial_creation(repo, *argv, **kwargs):
+            if argv[:2] == ('worktree', 'add'):
+                real_git(repo, 'branch', 'received', tip)
+                raise management.BranchError('fixture interruption after ref creation')
+            return real_git(repo, *argv, **kwargs)
+        with patch.object(management, 'git', side_effect=partial_creation):
+            self.assertEqual(management.main(args), 1)
+        self.assertNotIn('received', self.read_state()['permits'])
+        self.assertFalse((self.root / 'received').exists())
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.assertEqual(self.git_at(self.root / 'received', 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.assertNotIn('creating', self.read_state()['tasks']['received'])
+
+    def test_remote_adoption_recovery_refuses_changed_branch_without_path(self):
+        sender, base, tip = self.remote_adoption_fixture()
+        path = self.root / 'received'
+        args = ['begin', '--repo', str(self.repo), '--mode', 'adopt', '--from-remote',
+                '--task', 'received', '--branch', 'received', '--request', 'issue-89',
+                '--base', base, '--worktree', str(path)]
+        real_git = management.git
+        def fail_creation(repo, *argv, **kwargs):
+            if argv[:2] == ('worktree', 'add'):
+                raise management.BranchError('fixture interruption')
+            return real_git(repo, *argv, **kwargs)
+        with patch.object(management, 'git', side_effect=fail_creation):
+            self.assertEqual(management.main(args), 1)
+        # Model external tampering only in this disposable fixture. The public
+        # continuation must detect it even though the normal hooks prevent it.
+        self.git('-c', 'core.hooksPath=' + str(self.root / 'no-hooks'),
+                 'update-ref', 'refs/heads/received', base)
+        before = self.read_state()
+        self.branch('begin', '--mode', 'continue', '--task', 'received', ok=False)
+        self.assertEqual(self.git('rev-parse', 'received').stdout.strip(), base)
+        self.assertFalse(path.exists())
+        self.assertEqual(self.read_state(), before)
+
+    def test_remote_adoption_recovers_pinned_tip_after_creation_failure(self):
+        sender, base, tip = self.remote_adoption_fixture()
+        args = ['begin', '--repo', str(self.repo), '--mode', 'adopt', '--from-remote',
+                '--task', 'received', '--branch', 'received', '--request', 'issue-89',
+                '--base', base, '--worktree', str(self.root / 'received')]
+        real_git = management.git
+        def fail_creation(repo, *argv, **kwargs):
+            if argv[:2] == ('worktree', 'add'):
+                raise management.BranchError('fixture creation failure')
+            return real_git(repo, *argv, **kwargs)
+        with patch.object(management, 'git', side_effect=fail_creation):
+            self.assertEqual(management.main(args), 1)
+        state = self.read_state()
+        self.assertTrue(state['tasks']['received']['creating'])
+        self.assertEqual(state['permits']['received']['new'], tip)
+        (sender / 'later').write_text('Q2', encoding='utf-8')
+        self.git_at(sender, 'add', 'later')
+        self.git_at(sender, 'commit', '-m', 'later')
+        self.git_at(sender, 'push', 'origin', 'received')
+        self.git('fetch', 'origin')
+        self.branch('begin', '--mode', 'continue', '--task', 'received', '--sync', ok=False)
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.assertEqual(self.git('rev-parse', 'received').stdout.strip(), tip)
+        self.assertEqual(self.read_state()['tasks']['received']['base'], base)
+        self.assertNotIn('received', self.read_state()['permits'])
+        state = self.read_state()
+        state['tasks']['received']['creating'] = True
+        self.write_state(state)
+        path = self.root / 'received'
+        (path / 'binary').write_bytes(b'changed')
+        self.branch('begin', '--mode', 'continue', '--task', 'received', ok=False)
+        self.assertEqual((path / 'binary').read_bytes(), b'changed')
+        self.assertTrue(self.read_state()['tasks']['received']['creating'])
+
     def test_legacy_hook_mutation_is_revalidated_before_enforcement(self):
         clone = self.root / 'legacy mutation'
         self.command('git', 'clone', self.remote, clone)
