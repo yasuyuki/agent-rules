@@ -117,6 +117,21 @@ class RecoveryTests(BranchManagementTests):
         self.assert_hidden_creation_change_rejected('foreign.txt', b'foreign untracked bytes')
         self.assertEqual(self.git_at(self.target, 'config', 'status.showUntrackedFiles').stdout.strip(), 'no')
 
+    def test_remote_adopt_resume_rejects_normalized_line_endings(self):
+        self.remote_adoption_fixture()
+        self.interrupt_remote_adopt(after=True)
+        original = (self.target / 'crlf').read_bytes()
+        self.assertEqual(original, b'one\r\ntwo\r\n')
+        # Expand the committed index under this checkout's exact attributes.
+        control = self.root / 'line-ending-control'
+        control.mkdir()
+        self.git_at(self.target, 'checkout-index', '--all', '--prefix', str(control) + '/')
+        self.assertEqual((control / 'crlf').read_bytes(), original)
+        (self.target / 'crlf').write_bytes(b'one\ntwo\n')
+        self.assertEqual(self.git_at(self.target, 'hash-object', '--path=crlf', 'crlf').stdout,
+                         self.git('rev-parse', self.q + ':crlf').stdout)
+        self.assert_hidden_creation_change_rejected('crlf', b'one\ntwo\n')
+
     def test_remote_adopt_resume_rejects_assume_unchanged(self):
         self.remote_adoption_fixture()
         self.interrupt_remote_adopt(after=True)

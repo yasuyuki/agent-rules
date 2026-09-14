@@ -104,7 +104,8 @@ jobs:
             test_branch_recovery.RecoveryTests.test_remote_adopt_resume_rejects_hidden_untracked \
             test_branch_recovery.RecoveryTests.test_remote_adopt_resume_rejects_assume_unchanged \
             test_branch_recovery.RecoveryTests.test_remote_adopt_resume_rejects_skip_worktree \
-            test_branch_recovery.RecoveryTests.test_remote_adopt_resume_rejects_ignored_content
+            test_branch_recovery.RecoveryTests.test_remote_adopt_resume_rejects_ignored_content \
+            test_branch_recovery.RecoveryTests.test_remote_adopt_resume_rejects_normalized_line_endings
           cd "$RUNNER_TEMP"
           "$runtime/agent-rules" --version
           "$runtime/agent-rules" --help

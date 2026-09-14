@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -422,8 +423,40 @@ def creation_content_matches(repo, tip):
         if git(repo, *options, 'update-index', '--really-refresh',
                optional=True, env=env) is None:
             return False
-        return git(repo, *options, 'diff-files', '--quiet', '--ignore-submodules=none',
-                   '--', optional=True, env=env) is not None
+        if git(repo, *options, 'diff-files', '--quiet', '--ignore-submodules=none',
+               '--', optional=True, env=env) is None:
+            return False
+        # Clean filters and EOL conversion can hide byte changes from diff.
+        # Expand Q with the same checkout attributes/configuration, then compare
+        # actual files, not their normalized blobs. No user file is rewritten.
+        control = Path(tmp) / 'checkout'
+        control.mkdir()
+        git(repo, *options, 'checkout-index', '--all', '--prefix',
+            str(control) + '/', env=env)
+        for entry in git_bytes(repo, 'ls-tree', '-r', '-z', tip).split(b'\0'):
+            if not entry:
+                continue
+            metadata, raw_path = entry.split(b'\t', 1)
+            if metadata.split()[0] == b'160000':
+                continue  # Gitlink HEAD/dirty state was checked by diff-files.
+            relative = Path(os.fsdecode(raw_path))
+            actual, expected = Path(repo) / relative, control / relative
+            if any((Path(repo) / parent).is_symlink() for parent in relative.parents):
+                return False
+            try:
+                actual_mode, expected_mode = actual.lstat().st_mode, expected.lstat().st_mode
+                if stat.S_IFMT(actual_mode) != stat.S_IFMT(expected_mode):
+                    return False
+                if expected.is_symlink():
+                    if os.readlink(actual) != os.readlink(expected):
+                        return False
+                elif (not stat.S_ISREG(actual_mode)
+                      or actual_mode & 0o111 != expected_mode & 0o111
+                      or actual.read_bytes() != expected.read_bytes()):
+                    return False
+            except FileNotFoundError:
+                return False
+        return True
 
 
 def begin(args):

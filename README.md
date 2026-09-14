@@ -968,6 +968,8 @@ Changed branch tips or interrupted checkout content are preserved and refused.
 Recovery includes ignored/untracked files and checks tracked content with a
 temporary index at the pinned commit, independently of status preferences and
 assume-unchanged/skip-worktree hints. The user's index is preserved.
+It also compares actual file bytes with a temporary expansion of Q under the
+same checkout attributes, so normalized-equal LF/CRLF changes are refused.
 Finish creation before requesting `--sync`; continuation never implicitly
 replaces its recorded target with a newer remote tip.
 

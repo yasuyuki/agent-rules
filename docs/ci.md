@@ -24,6 +24,8 @@ No existing assertion or real-Git scenario was removed. Recovery cases in source
 and wheel explicitly reject untracked
 content hidden by status configuration, ignored files, and tracked edits hidden
 by assume-unchanged or skip-worktree bits while retaining intent and index bytes.
+Source and wheel also reject LF bytes where the same Q and checkout attributes
+produce CRLF, while retaining the clean post-creation recovery control.
 Each heavy test retains its own remote, index, worktrees, registration, hooks
 and approval tickets.
 Fixture seeding was not changed: traced repeated installation reads dominated
