@@ -953,6 +953,22 @@ integration destination. No historical commits before adoption are retroactively
 classified as violations. Unregistered retained branches remain untouched; their
 future updates are refused.
 
+To receive a remote-only branch, fetch it from the installed registration's remote,
+then use `branch begin --mode adopt --from-remote --repo REPO --task ID
+--request REQUEST --branch BRANCH --worktree NEW_PATH --base COMMIT`.
+The local branch and path must both be absent; existing paths (including empty
+directories and symlinks) are refused. The fetched branch must match the commit
+advertised by that remote when beginning. The new branch and worktree start at
+that commit, while `--base` retains the explicit historical ancestor, which may
+be older. `--into` and `--depends-on` retain their registration meanings; neither
+changes the adopted tip. Tracking uses the registered remote and same branch.
+
+If creation fails, use the existing `branch begin --mode continue --repo REPO
+--task ID` entry. It resumes the recorded commit even if the remote advances.
+Changed branch tips, conflicting checkouts and changed checkout contents are
+preserved and refused. Finish creation before requesting `--sync`.
+`--from-remote` is valid only with adopt; ordinary local adoption is unchanged.
+
 For independent work use `branch begin --mode new --repo REPO --task ID
 --request REQUEST --branch TOPIC --worktree NEW_PATH`. Fetch the remote default
 first; the command verifies that the fetched commit still agrees with the remote.
@@ -992,7 +1008,7 @@ paths with representative operations, without adding per-task reports. This
 requirement does not extend this tool's responsibility or authority boundaries.
 
 Retirement is enabled only for work created by the dependency-protecting version
-of `begin --mode new`. Existing and adopted registrations are retained: older
+of `begin --mode new` or remote-only adoption. Existing local adopted registrations are retained: older
 consumers may not have locked their source or runtime worktrees. Reinstallation
 alone does not certify their migration, and continuation does not silently lift
 this restriction. Resolving those legacy dependencies is separate migration work;

@@ -101,6 +101,175 @@ class BranchManagementTests(unittest.TestCase):
         self.git("commit", "-m", "merge " + task)
         return worktree
 
+    def remote_adoption_fixture(self):
+        producer = self.root / 'producer'
+        self.command('git', 'clone', self.remote, producer)
+        self.git_at(producer, 'config', 'user.name', 'Test User')
+        self.git_at(producer, 'config', 'user.email', 'test@example.invalid')
+        base = self.git_at(producer, 'rev-parse', 'HEAD').stdout.strip()
+        self.git_at(producer, 'checkout', '-b', 'incoming')
+        (producer / 'binary').write_bytes(bytes(range(256)))
+        (producer / 'lines').write_bytes(b'one\r\ntwo\r\n')
+        (producer / '.gitattributes').write_text('lines -text\n', encoding='utf-8')
+        (producer / 'executable').write_bytes(b'#!/bin/sh\nexit 0\n')
+        (producer / 'executable').chmod(0o755)
+        self.git_at(producer, 'add', '.')
+        self.git_at(producer, 'update-index', '--chmod=+x', 'executable')
+        self.git_at(producer, 'commit', '-m', 'remote work')
+        tip = self.git_at(producer, 'rev-parse', 'HEAD').stdout.strip()
+        self.git_at(producer, 'push', 'origin', 'incoming')
+        self.git_at(producer, 'checkout', 'main')
+        (producer / 'default-only').write_text('different default', encoding='utf-8')
+        self.git_at(producer, 'add', '.')
+        self.git_at(producer, 'commit', '-m', 'advance default independently')
+        self.git_at(producer, 'push', 'origin', 'main')
+        self.git('fetch', 'origin')
+        return producer, base, tip, self.root / 'incoming worktree'
+
+    def remote_adoption_args(self, base, target):
+        return ['begin', '--mode', 'adopt', '--from-remote', '--task', 'incoming-task',
+                '--request', 'issue-89', '--branch', 'incoming', '--worktree', str(target),
+                '--base', base]
+
+    def adoption_preserved_state(self):
+        return (self.git('show-ref').stdout, self.git('rev-parse', 'HEAD').stdout,
+                (self.repo / '.git/index').read_bytes(),
+                self.git('status', '--porcelain=v1', '--untracked-files=all').stdout,
+                {str(p.relative_to(self.repo)): (p.read_bytes(), p.stat().st_mode)
+                 for p in self.repo.rglob('*') if p.is_file() and '.git' not in p.relative_to(self.repo).parts},
+                (self.repo / '.git/agent-branches/state.json').read_bytes())
+
+    def test_remote_adoption_exact_tip_contents_and_dirty_preservation(self):
+        producer, base, tip, target = self.remote_adoption_fixture()
+        self.begin('main-task', 'adopt', branch='main', into='main')
+        other = Path(self.begin('other', branch='other')['worktree'])
+        other_head = self.git_at(other, 'rev-parse', 'HEAD').stdout
+        (self.repo / 'README').write_text('staged\n', encoding='utf-8')
+        self.git('add', 'README')
+        (self.repo / 'README').write_text('unstaged\n', encoding='utf-8')
+        (self.repo / 'untracked').write_bytes(b'\x00keep\xff')
+        before = self.adoption_preserved_state()
+        args = self.remote_adoption_args(base, target) + ['--depends-on', 'main-task', '--into', 'other']
+        result = json.loads(self.branch(*args).stdout)
+        self.assertNotEqual(base, tip)
+        self.assertNotEqual(self.git('rev-parse', 'origin/main').stdout.strip(), tip)
+        self.assertEqual((result['base'], result['tip'], result['request'], result['depends_on'], result['into']),
+                         (base, tip, 'issue-89', 'main-task', 'other'))
+        self.assertEqual(self.git('rev-parse', 'incoming').stdout.strip(), tip)
+        self.assertEqual(self.git_at(target, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.assertEqual(self.git_at(target, 'write-tree').stdout.strip(),
+                         self.git('rev-parse', tip + '^{tree}').stdout.strip())
+        self.assertEqual((target / 'binary').read_bytes(), bytes(range(256)))
+        self.assertEqual((target / 'lines').read_bytes(), b'one\r\ntwo\r\n')
+        if os.name != 'nt':
+            self.assertTrue((target / 'executable').stat().st_mode & 0o111)
+        self.assertEqual(self.git('config', 'branch.incoming.remote').stdout.strip(), 'origin')
+        self.assertEqual(self.git('config', 'branch.incoming.merge').stdout.strip(), 'refs/heads/incoming')
+        after = self.adoption_preserved_state()
+        self.assertEqual(before[1:5], after[1:5])
+        self.assertEqual(self.git_at(other, 'rev-parse', 'HEAD').stdout, other_head)
+        old_state, state = json.loads(before[5]), json.loads(after[5])
+        for key, task in old_state['tasks'].items():
+            self.assertEqual(state['tasks'][key], task)
+        self.assertEqual(state['permits'], {})
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming-task')
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming-task')
+        self.assertEqual(self.git_at(target, 'rev-parse', 'HEAD').stdout.strip(), tip)
+
+    def test_remote_adoption_rejects_invalid_inputs_without_mutation(self):
+        producer, base, tip, target = self.remote_adoption_fixture()
+        args = self.remote_adoption_args(base, target)
+        cases = [args[:-1] + ['origin/main'], args[:-1] + ['missing-base'],
+                 args[:-1] + [tip + ':binary'],
+                 [value if value != 'incoming' else 'missing' for value in args],
+                 [value if value != 'adopt' else 'new' for value in args],
+                 [value if value != 'adopt' else 'continue' for value in args]]
+        for invalid in cases:
+            with self.subTest(args=invalid):
+                before = self.adoption_preserved_state()
+                self.branch(*invalid, ok=False)
+                self.assertEqual(self.adoption_preserved_state(), before)
+                self.assertFalse(target.exists())
+        self.git_at(producer, 'checkout', 'incoming')
+        (producer / 'advance').write_text('Q2', encoding='utf-8')
+        self.git_at(producer, 'add', '.')
+        self.git_at(producer, 'commit', '-m', 'advance incoming')
+        self.git_at(producer, 'push', 'origin', 'incoming')
+        before = self.adoption_preserved_state()
+        self.branch(*args, ok=False)  # stale tracking ref
+        self.assertEqual(self.adoption_preserved_state(), before)
+        self.git('fetch', 'origin')
+        self.git('remote', 'set-url', 'origin', str(self.root / 'wrong.git'))
+        before = self.adoption_preserved_state()
+        self.branch(*args, ok=False)
+        self.assertEqual(self.adoption_preserved_state(), before)
+
+    def test_remote_adoption_rejects_each_target_collision(self):
+        _, base, tip, target = self.remote_adoption_fixture()
+        args = self.remote_adoption_args(base, target)
+        for populated in (False, True):
+            target.mkdir()
+            if populated:
+                (target / 'keep').write_bytes(b'keep')
+            before = self.adoption_preserved_state()
+            self.branch(*args, ok=False)
+            self.assertEqual(self.adoption_preserved_state(), before)
+            if populated:
+                self.assertEqual((target / 'keep').read_bytes(), b'keep')
+                (target / 'keep').unlink()
+            target.rmdir()
+        if os.name != 'nt':
+            target.symlink_to(self.root / 'absent')
+            before = self.adoption_preserved_state()
+            self.branch(*args, ok=False)
+            self.assertEqual(self.adoption_preserved_state(), before)
+            self.assertTrue(target.is_symlink())
+            target.unlink()
+        # A pre-existing unregistered local branch, even at Q, is not adopted.
+        clone = self.root / 'collision clone'
+        self.command('git', 'clone', self.remote, clone)
+        self.git_at(clone, 'branch', 'incoming', tip)
+        self.branch('install', repo=clone)
+        before_refs = self.git_at(clone, 'show-ref').stdout
+        self.branch(*args, repo=clone, ok=False)
+        self.assertEqual(self.git_at(clone, 'show-ref').stdout, before_refs)
+        self.begin('other-task', branch='other', worktree=target)
+        before = self.adoption_preserved_state()
+        self.branch(*args, ok=False)
+        self.assertEqual(self.adoption_preserved_state(), before)
+
+    def test_remote_adoption_recovers_from_real_git_hook_failure(self):
+        _, base, tip, target = self.remote_adoption_fixture()
+        receiver = self.root / 'interrupted receiver'
+        self.command('git', 'clone', self.remote, receiver)
+        hook = receiver / '.git/hooks/post-checkout'
+        hook.write_text('#!/bin/sh\n'
+                        'common=$(git rev-parse --git-common-dir) || exit 1\n'
+                        'if test ! -f "$common/fixture-stopped"; then\n'
+                        '  touch "$common/fixture-stopped"\n'
+                        '  echo "fixture post-checkout interruption" >&2\n'
+                        '  exit 73\n'
+                        'fi\n', encoding='utf-8', newline='\n')
+        hook.chmod(0o755)
+        self.branch('install', repo=receiver)
+        index = (receiver / '.git/index').read_bytes()
+        head = self.git_at(receiver, 'rev-parse', 'HEAD').stdout
+        rejected = self.branch(*self.remote_adoption_args(base, target), repo=receiver, ok=False)
+        self.assertIn('fixture post-checkout interruption', rejected.stderr)
+        state_path = receiver / '.git/agent-branches/state.json'
+        state = json.loads(state_path.read_text(encoding='utf-8'))
+        self.assertTrue(state['tasks']['incoming-task']['creating'])
+        self.assertEqual(state['permits'], {})
+        self.assertEqual((receiver / '.git/index').read_bytes(), index)
+        self.assertEqual(self.git_at(receiver, 'rev-parse', 'HEAD').stdout, head)
+        for _ in range(2):
+            self.branch('begin', '--mode', 'continue', '--task', 'incoming-task', repo=receiver)
+            self.assertEqual(self.git_at(target, 'rev-parse', 'HEAD').stdout.strip(), tip)
+            state = json.loads(state_path.read_text(encoding='utf-8'))
+            self.assertNotIn('creating', state['tasks']['incoming-task'])
+            self.assertEqual(state['tasks']['incoming-task']['base'], base)
+            self.assertEqual(state['permits'], {})
+
     def test_install_preserves_an_existing_hook_and_detects_tampering(self):
         # Reinstall over a real hook: its args, stdin and exit status must survive.
         legacy = self.root / "legacy checkout"

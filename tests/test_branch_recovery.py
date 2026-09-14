@@ -17,6 +17,115 @@ spec.loader.exec_module(management)
 
 
 class RecoveryTests(BranchManagementTests):
+    def interrupt_remote_adoption(self, base, target, stage):
+        real_git = management.git
+        def interrupted(repo, *argv, **kwargs):
+            if argv[:2] == ('worktree', 'add'):
+                if stage == 'branch':
+                    real_git(repo, 'branch', 'incoming', argv[-1])
+                elif stage == 'checkout':
+                    real_git(repo, *argv, **kwargs)
+                raise management.BranchError('fixture interruption after intent: ' + stage)
+            return real_git(repo, *argv, **kwargs)
+        with patch.object(management, 'git', side_effect=interrupted):
+            self.assertNotEqual(management.main(self.remote_adoption_args(base, target)
+                                               + ['--repo', str(self.repo)]), 0)
+        self.assertTrue(self.read_state()['tasks']['incoming-task']['creating'])
+
+    def test_remote_adoption_resume_pins_q_after_remote_advances(self):
+        producer, base, tip, target = self.remote_adoption_fixture()
+        before = self.adoption_preserved_state()
+        self.interrupt_remote_adoption(base, target, 'intent')
+        self.assertEqual(self.adoption_preserved_state()[:5], before[:5])
+        self.assertFalse(target.exists())
+        self.assertEqual(self.read_state()['permits']['incoming']['new'], tip)
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming-task', '--sync', ok=False)
+        self.git_at(producer, 'checkout', 'incoming')
+        (producer / 'new-remote').write_text('Q2', encoding='utf-8')
+        self.git_at(producer, 'add', '.')
+        self.git_at(producer, 'commit', '-m', 'Q2')
+        self.git_at(producer, 'push', 'origin', 'incoming')
+        self.git('fetch', 'origin')
+        self.assertNotEqual(self.git('rev-parse', 'origin/incoming').stdout.strip(), tip)
+        for _ in range(2):
+            self.branch('begin', '--mode', 'continue', '--task', 'incoming-task')
+            self.assertEqual(self.git_at(target, 'rev-parse', 'HEAD').stdout.strip(), tip)
+            state = self.read_state()
+            self.assertEqual(state['tasks']['incoming-task']['base'], base)
+            self.assertEqual(state['tasks']['incoming-task']['tip'], tip)
+            self.assertNotIn('creating', state['tasks']['incoming-task'])
+            self.assertEqual(state['permits'], {})
+
+    def test_remote_adoption_resume_after_branch_creation(self):
+        _, base, tip, target = self.remote_adoption_fixture()
+        self.interrupt_remote_adoption(base, target, 'branch')
+        self.assertFalse(target.exists())
+        self.assertEqual(self.read_state()['permits'], {})
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming-task')
+        self.assertEqual(self.git_at(target, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.assertEqual(self.read_state()['permits'], {})
+
+    def test_remote_adoption_resume_preserves_changed_checkout(self):
+        _, base, tip, target = self.remote_adoption_fixture()
+        self.interrupt_remote_adoption(base, target, 'checkout')
+        (target / 'binary').write_bytes(b'changed\x00')
+        self.git_at(target, 'add', 'binary')
+        (target / 'binary').write_bytes(b'unstaged\xff')
+        (target / 'untracked').write_text('keep', encoding='utf-8')
+        index = Path(self.git_at(target, 'rev-parse', '--path-format=absolute', '--git-path', 'index').stdout.strip())
+        before = (index.read_bytes(), (target / 'binary').read_bytes(), self.read_state())
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming-task', ok=False)
+        self.assertEqual((index.read_bytes(), (target / 'binary').read_bytes(), self.read_state()), before)
+        self.assertEqual((target / 'untracked').read_text(encoding='utf-8'), 'keep')
+        self.assertEqual(self.git_at(target, 'rev-parse', 'HEAD').stdout.strip(), tip)
+
+    def test_remote_adoption_resume_preserves_foreign_path(self):
+        _, base, _, target = self.remote_adoption_fixture()
+        self.interrupt_remote_adoption(base, target, 'intent')
+        target.mkdir()
+        (target / 'keep').write_text('foreign', encoding='utf-8')
+        before = self.adoption_preserved_state()
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming-task', ok=False)
+        self.assertEqual(self.adoption_preserved_state(), before)
+        self.assertEqual((target / 'keep').read_text(encoding='utf-8'), 'foreign')
+
+    def test_remote_adoption_resume_rejects_changed_branch_without_checkout(self):
+        _, base, tip, target = self.remote_adoption_fixture()
+        self.interrupt_remote_adoption(base, target, 'branch')
+        # Simulate an out-of-band ref change only in this disposable fixture.
+        ref = self.repo / '.git/refs/heads/incoming'
+        ref.write_text(base + '\n', encoding='ascii')
+        before = self.adoption_preserved_state()
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming-task', ok=False)
+        self.assertEqual(self.adoption_preserved_state(), before)
+        self.assertFalse(target.exists())
+        self.assertEqual(self.read_state()['tasks']['incoming-task']['tip'], tip)
+
+    def test_remote_adoption_resume_completed_checkout_without_new_permit(self):
+        _, base, tip, target = self.remote_adoption_fixture()
+        self.interrupt_remote_adoption(base, target, 'checkout')
+        self.assertEqual(self.read_state()['permits'], {})
+        for _ in range(2):
+            self.branch('begin', '--mode', 'continue', '--task', 'incoming-task')
+            self.assertEqual(self.git_at(target, 'rev-parse', 'HEAD').stdout.strip(), tip)
+            self.assertEqual(self.read_state()['permits'], {})
+            self.assertNotIn('creating', self.read_state()['tasks']['incoming-task'])
+
+    def test_remote_adoption_missing_and_noncommit_tracking_ref(self):
+        _, base, tip, target = self.remote_adoption_fixture()
+        args = self.remote_adoption_args(base, target)
+        ref = 'refs/remotes/origin/incoming'
+        self.git('update-ref', '-d', ref)
+        before = self.adoption_preserved_state()
+        self.branch(*args, ok=False)
+        self.assertEqual(self.adoption_preserved_state(), before)
+        blob = self.git('rev-parse', tip + ':binary').stdout.strip()
+        self.git('update-ref', ref, blob)
+        before = self.adoption_preserved_state()
+        self.branch(*args, ok=False)
+        self.assertEqual(self.adoption_preserved_state(), before)
+        self.assertFalse(target.exists())
+
     def test_legacy_hook_mutation_is_revalidated_before_enforcement(self):
         clone = self.root / 'legacy mutation'
         self.command('git', 'clone', self.remote, clone)
