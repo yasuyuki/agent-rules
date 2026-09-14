@@ -96,7 +96,8 @@ jobs:
             test_branch_management.BranchManagementTests.test_unregistered_refs_no_verify_and_alternate_index_are_rejected \
             test_branch_management.BranchManagementTests.test_remote_adopt_preserves_base_content_dirty_and_other_worktree \
             test_branch_management.BranchManagementTests.test_remote_adopt_resumes_failed_creation_at_pinned_tip \
-            test_branch_management.BranchManagementTests.test_remote_adopt_resumes_completed_checkout_and_refuses_changed_content
+            test_branch_management.BranchManagementTests.test_remote_adopt_resumes_completed_checkout_and_refuses_changed_content \
+            test_branch_management.BranchManagementTests.test_remote_adopt_refuses_content_hidden_by_index_flags
           cd "$RUNNER_TEMP"
           "$runtime/agent-rules" --version
           "$runtime/agent-rules" --help

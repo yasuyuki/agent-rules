@@ -69,6 +69,52 @@ def ancestor(repo, a, b):
     return git(repo, 'merge-base', '--is-ancestor', a, b, optional=True) is not None
 
 
+def checkout_matches(repo, commit):
+    """Check a worktree against a commit without trusting its real index.
+
+    A caller can mark a path skip-worktree or assume-unchanged in its index.
+    Build an independent index from the pinned commit instead, so status sees
+    every tracked path, mode, and blob and cannot mutate the caller's index.
+    """
+    directory = common(repo) / 'agent-branches'
+    fd, name = tempfile.mkstemp(prefix='verify-', dir=directory)
+    os.close(fd)
+    index = Path(name)
+    env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+    env['GIT_INDEX_FILE'] = str(index)
+    try:
+        for args in (('read-tree', commit),
+                     ('status', '--porcelain', '--ignored', '--untracked-files=all')):
+            result = subprocess.run(['git', '-C', str(repo), '-c', 'core.sparseCheckout=false', *args],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+            if result.returncode:
+                raise BranchError(result.stderr.decode('utf-8', 'replace').strip()
+                                  or 'git checkout verification failed')
+            if args[0] == 'status':
+                return not result.stdout
+    finally:
+        for path in (index, Path(str(index) + '.lock')):
+            if path.exists():
+                os.unlink(path)
+
+
+def index_matches(repo, commit):
+    """Compare the caller's actual index with a commit without refreshing it."""
+    unmerged = subprocess.run(['git', '-C', str(repo), 'ls-files', '-u', '-z'],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if unmerged.returncode:
+        raise BranchError(unmerged.stderr.decode('utf-8', 'replace').strip()
+                          or 'git index verification failed')
+    if unmerged.stdout:
+        return False
+    compared = subprocess.run(['git', '-C', str(repo), 'diff-index', '--cached', '--quiet', commit, '--'],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if compared.returncode in (0, 1):
+        return compared.returncode == 0
+    raise BranchError(compared.stderr.decode('utf-8', 'replace').strip()
+                      or 'git index verification failed')
+
+
 def atomic(path, data):
     fd, name = tempfile.mkstemp(prefix='state-', dir=path.parent)
     try:
@@ -545,7 +591,9 @@ def begin(args):
             git(repo, 'worktree', 'add', creation['worktree'], name)
         else:
             git(repo, 'worktree', 'add', '-b', name, creation['worktree'], pinned)
-        if creation.get('from_remote') and git(creation['worktree'], 'status', '--porcelain', '--ignored'):
+        if (creation.get('from_remote')
+                and (not checkout_matches(creation['worktree'], pinned)
+                     or not index_matches(creation['worktree'], pinned))):
             raise BranchError('interrupted remote adoption has uncommitted files; preserve and inspect')
         git(creation['worktree'], 'config', 'branch.' + name + '.remote', state['remote'])
         git(creation['worktree'], 'config', 'branch.' + name + '.merge', 'refs/heads/' + name)
@@ -557,7 +605,8 @@ def begin(args):
                         or not same_checkout(repo, task['worktree'], name)
                         or oid(task['worktree'], 'HEAD') != pinned
                         or oid(repo, 'refs/heads/' + name) != pinned
-                        or git(task['worktree'], 'status', '--porcelain', '--ignored')):
+                        or not checkout_matches(task['worktree'], pinned)
+                        or not index_matches(task['worktree'], pinned)):
                     raise BranchError('interrupted remote adoption changed before completion; preserve and inspect')
                 task.pop('pinned_tip', None)
             task.pop('creating', None)

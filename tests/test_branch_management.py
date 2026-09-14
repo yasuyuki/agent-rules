@@ -877,5 +877,40 @@ s1\tcatalog.json\tenv
         self.assert_remote_result(base, tip)
 
 
+    def test_remote_adopt_refuses_content_hidden_by_index_flags(self):
+        sender, base, tip = self.remote_fixture(recovery=True)
+        marker = self.repo / '.git/fail-post-checkout'; marker.touch()
+        self.remote_begin(base, ok=False)
+        marker.unlink()
+        task = self.remote_state()['tasks']['incoming-task']
+        path = Path(task['worktree'])
+        original = (path / 'payload.bin').read_bytes()
+        (path / 'payload.bin').write_bytes(b'conflict hidden by index flags')
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming-task', ok=False)
+        for flag in ('skip-worktree', 'assume-unchanged'):
+            with self.subTest(flag=flag):
+                self.git_at(path, 'update-index', '--' + flag, 'payload.bin')
+                self.assertEqual(self.git_at(path, 'status', '--porcelain').stdout, '')
+                entries = self.git_at(path, 'ls-files', '-v', '--stage').stdout
+                before = self.remote_state()
+                self.branch('begin', '--mode', 'continue', '--task', 'incoming-task', ok=False)
+                self.assertEqual(self.remote_state(), before)
+                self.assertEqual(self.git_at(path, 'ls-files', '-v', '--stage').stdout, entries)
+                self.assertEqual((path / 'payload.bin').read_bytes(), b'conflict hidden by index flags')
+                self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+                self.git_at(path, 'update-index', '--no-' + flag, 'payload.bin')
+        (path / 'payload.bin').write_bytes(b'staged conflict only')
+        self.git_at(path, 'add', 'payload.bin')
+        (path / 'payload.bin').write_bytes(original)
+        entries = self.git_at(path, 'ls-files', '-v', '--stage').stdout
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming-task', ok=False)
+        self.assertEqual(self.git_at(path, 'ls-files', '-v', '--stage').stdout, entries)
+        self.assertEqual((path / 'payload.bin').read_bytes(), original)
+        self.assertTrue(self.remote_state()['tasks']['incoming-task']['creating'])
+        self.git_at(path, 'restore', '--staged', 'payload.bin')
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming-task')
+        self.assert_remote_result(base, tip)
+
+
 if __name__ == "__main__":
     unittest.main()
