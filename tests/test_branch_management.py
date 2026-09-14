@@ -101,6 +101,138 @@ class BranchManagementTests(unittest.TestCase):
         self.git("commit", "-m", "merge " + task)
         return worktree
 
+    def remote_adoption_fixture(self):
+        """Publish Q without creating a local topic in the receiving repository."""
+        seed = self.root / 'publisher'
+        self.command('git', 'clone', self.remote, seed)
+        self.git_at(seed, 'config', 'user.name', 'Test User')
+        self.git_at(seed, 'config', 'user.email', 'test@example.invalid')
+        base = self.git_at(seed, 'rev-parse', 'HEAD').stdout.strip()
+        self.git_at(seed, 'checkout', '-b', 'received')
+        (seed / 'binary').write_bytes(bytes(range(256)))
+        (seed / 'lines').write_bytes(b'one\r\ntwo\r\n')
+        (seed / 'run').write_bytes(b'#!/bin/sh\nexit 0\n')
+        (seed / 'run').chmod(0o755)
+        self.git_at(seed, 'add', '.')
+        self.git_at(seed, 'update-index', '--chmod=+x', 'run')
+        self.git_at(seed, 'commit', '-m', 'remote work')
+        tip = self.git_at(seed, 'rev-parse', 'HEAD').stdout.strip()
+        self.git_at(seed, 'push', 'origin', 'received')
+        self.git('fetch', 'origin')
+        return seed, base, tip
+
+    def remote_adoption_args(self, base, path=None, task='received'):
+        return ['begin', '--mode', 'adopt', '--from-remote', '--task', task,
+                '--request', 'issue-89', '--branch', 'received', '--worktree',
+                str(path or self.root / 'received worktree'), '--base', base]
+
+    def test_remote_adoption_pins_tip_and_preserves_caller(self):
+        seed, base, tip = self.remote_adoption_fixture()
+        self.begin('integration', 'adopt', branch='main', into='main')
+        other = Path(self.begin('other', branch='other')['worktree'])
+        (other / 'untracked').write_bytes(b'other work')
+        (self.repo / 'README').write_bytes(b'staged\n')
+        self.git('add', 'README')
+        (self.repo / 'README').write_bytes(b'unstaged\n')
+        (self.repo / 'untracked').write_bytes(b'keep\x00')
+        index = (self.repo / '.git/index').read_bytes()
+        before = self.git('status', '--porcelain').stdout
+        result = json.loads(self.branch(*self.remote_adoption_args(base),
+                                       '--depends-on', 'other', '--into', 'other').stdout)
+        target = Path(result['worktree'])
+        self.assertNotEqual(base, tip)
+        self.assertEqual(result['base'], base)
+        self.assertEqual(result['tip'], tip)
+        self.assertEqual(result['request'], 'issue-89')
+        self.assertEqual(result['depends_on'], 'other')
+        self.assertEqual(result['into'], 'other')
+        self.assertEqual(self.git_at(target, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.assertEqual(self.git('rev-parse', 'received').stdout.strip(), tip)
+        self.assertEqual(self.git_at(target, 'config', 'branch.received.remote').stdout.strip(), 'origin')
+        self.assertEqual(self.git_at(target, 'config', 'branch.received.merge').stdout.strip(), 'refs/heads/received')
+        self.assertEqual(self.git_at(target, 'ls-files', '--stage').stdout,
+                         self.git_at(seed, 'ls-files', '--stage').stdout)
+        self.assertEqual((target / 'binary').read_bytes(), bytes(range(256)))
+        self.assertEqual(self.git_at(target, 'status', '--porcelain').stdout, '')
+        self.assertEqual((self.repo / '.git/index').read_bytes(), index)
+        self.assertEqual(self.git('status', '--porcelain').stdout, before)
+        self.assertEqual((self.repo / 'README').read_bytes(), b'unstaged\n')
+        self.assertEqual((self.repo / 'untracked').read_bytes(), b'keep\x00')
+        self.assertEqual((other / 'untracked').read_bytes(), b'other work')
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.branch(*self.remote_adoption_args(base), ok=False)
+
+    def test_remote_adoption_rejects_inputs_without_creation(self):
+        seed, base, tip = self.remote_adoption_fixture()
+        path = self.root / 'received worktree'
+        state_path = self.repo / '.git/agent-branches/state.json'
+        before = state_path.read_bytes()
+        refs = self.git('show-ref').stdout
+        for bad in ('missing-base', tip + '~99'):
+            self.branch(*self.remote_adoption_args(bad), ok=False)
+        self.branch(*self.remote_adoption_args(base), '--mode', 'new', ok=False)
+        self.branch(*self.remote_adoption_args(base), '--mode', 'continue', ok=False)
+        path.mkdir()
+        self.branch(*self.remote_adoption_args(base), ok=False)
+        (path / 'keep').write_bytes(b'preserve')
+        self.branch(*self.remote_adoption_args(base), ok=False)
+        self.assertEqual((path / 'keep').read_bytes(), b'preserve')
+        link = self.root / 'link'
+        try:
+            link.symlink_to(self.root / 'absent', target_is_directory=True)
+        except OSError:
+            pass  # Symlink availability is platform-specific; Linux exercises it.
+        else:
+            self.branch(*self.remote_adoption_args(base, link), ok=False)
+            self.assertTrue(link.is_symlink())
+        self.assertEqual(state_path.read_bytes(), before)
+        self.assertEqual(self.git('show-ref').stdout, refs)
+        self.git_at(seed, 'commit', '--allow-empty', '-m', 'Q2')
+        self.git_at(seed, 'push', 'origin', 'received')
+        self.branch(*self.remote_adoption_args(base, self.root / 'fresh'), ok=False)
+        self.assertEqual(state_path.read_bytes(), before)
+        self.assertFalse((self.root / 'fresh').exists())
+        self.git('update-ref', '-d', 'refs/remotes/origin/received')
+        self.branch(*self.remote_adoption_args(base, self.root / 'fresh'), ok=False)
+        self.assertEqual(state_path.read_bytes(), before)
+
+    def test_remote_adoption_rejects_existing_branch_and_wrong_history(self):
+        seed, base, tip = self.remote_adoption_fixture()
+        state_path = self.repo / '.git/agent-branches/state.json'
+        # A real commit on default after divergence is not a historical base of Q.
+        self.git_at(seed, 'checkout', 'main')
+        self.git_at(seed, 'commit', '--allow-empty', '-m', 'unrelated default')
+        wrong = self.git_at(seed, 'rev-parse', 'HEAD').stdout.strip()
+        self.git_at(seed, 'push', 'origin', 'main')
+        self.git('fetch', 'origin')
+        before = state_path.read_bytes()
+        refs = self.git('show-ref').stdout
+        index = (self.repo / '.git/index').read_bytes()
+        self.branch(*self.remote_adoption_args(wrong), ok=False)
+        self.branch(*self.remote_adoption_args(base), '--depends-on', 'unknown', ok=False)
+        self.branch(*self.remote_adoption_args(base), '--into', 'unknown', ok=False)
+        self.git('remote', 'set-url', 'origin', str(self.root / 'wrong.git'))
+        self.branch(*self.remote_adoption_args(base), ok=False)
+        self.git('remote', 'set-url', 'origin', str(self.remote))
+        self.assertEqual(state_path.read_bytes(), before)
+        self.assertEqual(self.git('show-ref').stdout, refs)
+        self.assertEqual((self.repo / '.git/index').read_bytes(), index)
+        self.assertFalse((self.root / 'received worktree').exists())
+        # Retained, unregistered local branch at exactly Q is still a collision.
+        clone = self.root / 'retained clone'
+        self.command('git', 'clone', self.remote, clone)
+        self.git_at(clone, 'branch', 'received', 'origin/received')
+        self.branch('install', repo=clone)
+        before = (clone / '.git/agent-branches/state.json').read_bytes()
+        self.branch(*self.remote_adoption_args(base), repo=clone, ok=False)
+        self.assertEqual((clone / '.git/agent-branches/state.json').read_bytes(), before)
+        self.assertEqual(self.git_at(clone, 'rev-parse', 'received').stdout.strip(), tip)
+        self.assertFalse((self.root / 'received worktree').exists())
+        # An existing registration owns the path, independently of branch name.
+        other = self.begin('other', branch='other')
+        self.branch(*self.remote_adoption_args(base, Path(other['worktree'])), ok=False)
+
     def test_install_preserves_an_existing_hook_and_detects_tampering(self):
         # Reinstall over a real hook: its args, stdin and exit status must survive.
         legacy = self.root / "legacy checkout"

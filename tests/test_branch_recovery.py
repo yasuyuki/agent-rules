@@ -17,6 +17,66 @@ spec.loader.exec_module(management)
 
 
 class RecoveryTests(BranchManagementTests):
+    def test_remote_adoption_interruption_keeps_q_and_rejects_content(self):
+        seed, base, tip = self.remote_adoption_fixture()
+        argv = self.remote_adoption_args(base) + ['--repo', str(self.repo)]
+        real_git = management.git
+        def fail_add(repo, *args, **kwargs):
+            if args[:2] == ('worktree', 'add'):
+                raise management.BranchError('injected worktree interruption')
+            return real_git(repo, *args, **kwargs)
+        with patch.object(management, 'git', side_effect=fail_add):
+            self.assertEqual(management.main(argv), 1)
+        state = self.read_state()
+        self.assertTrue(state['tasks']['received']['creating'])
+        self.assertEqual(state['tasks']['received']['base'], base)
+        self.assertEqual(state['permits']['received']['new'], tip)
+        self.branch('begin', '--mode', 'continue', '--task', 'received', '--sync', ok=False)
+        self.git_at(seed, 'commit', '--allow-empty', '-m', 'Q2')
+        self.git_at(seed, 'push', 'origin', 'received')
+        self.git('fetch', 'origin')
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        path = Path(self.read_state()['tasks']['received']['worktree'])
+        self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.assertNotIn('received', self.read_state()['permits'])
+        # Deterministic loss of the final bookkeeping after Git completed.
+        state = self.read_state()
+        state['tasks']['received']['creating'] = True
+        self.write_state(state)
+        (path / 'binary').write_bytes(b'changed')
+        self.branch('begin', '--mode', 'continue', '--task', 'received', ok=False)
+        self.assertEqual((path / 'binary').read_bytes(), b'changed')
+        self.assertTrue(self.read_state()['tasks']['received']['creating'])
+        (path / 'binary').write_bytes(bytes(range(256)))
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.assertEqual(self.read_state()['tasks']['received']['tip'], tip)
+        self.assertNotIn('received', self.read_state()['permits'])
+
+    def test_remote_adoption_resumes_branch_only_and_preserves_ref_conflict(self):
+        seed, base, tip = self.remote_adoption_fixture()
+        argv = self.remote_adoption_args(base) + ['--repo', str(self.repo)]
+        real_git = management.git
+        def fail_after_branch(repo, *args, **kwargs):
+            if args[:2] == ('worktree', 'add'):
+                real_git(repo, 'branch', 'received', tip)
+                raise management.BranchError('injected after branch creation')
+            return real_git(repo, *args, **kwargs)
+        with patch.object(management, 'git', side_effect=fail_after_branch):
+            self.assertEqual(management.main(argv), 1)
+        self.assertNotIn('received', self.read_state()['permits'])
+        self.assertTrue(self.read_state()['tasks']['received']['creating'])
+        # Model an out-of-band ref replacement, not an authorized product update.
+        ref = self.repo / '.git/refs/heads/received'
+        ref.write_text(base + '\n', encoding='ascii')
+        self.branch('begin', '--mode', 'continue', '--task', 'received', ok=False)
+        self.assertEqual(ref.read_text().strip(), base)
+        self.assertFalse((self.root / 'received worktree').exists())
+        ref.write_text(tip + '\n', encoding='ascii')
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.assertEqual(self.git_at(self.root / 'received worktree', 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.assertNotIn('received', self.read_state()['permits'])
+
     def test_legacy_hook_mutation_is_revalidated_before_enforcement(self):
         clone = self.root / 'legacy mutation'
         self.command('git', 'clone', self.remote, clone)
