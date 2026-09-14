@@ -17,6 +17,93 @@ spec.loader.exec_module(management)
 
 
 class RecoveryTests(BranchManagementTests):
+    def test_remote_adopt_interruption_keeps_q_and_rejects_content_conflicts(self):
+        seed, base, tip = self.remote_topic()
+        path = self.root / 'received'
+        args = type('Args', (), dict(repo=str(self.repo), task='incoming', mode='adopt',
+                    from_remote=True, sync=False, request='issue-89', branch='incoming',
+                    worktree=str(path), base=base, into=None, depends_on=None))()
+        real_git = management.git
+        def fail_add(repo, *argv, **kwargs):
+            if argv[:2] == ('worktree', 'add'):
+                raise management.BranchError('fixture interrupted before worktree add')
+            return real_git(repo, *argv, **kwargs)
+        with patch.object(management, 'git', side_effect=fail_add):
+            with self.assertRaisesRegex(management.BranchError, 'fixture interrupted'):
+                management.begin(args)
+        state = self.read_state()
+        self.assertTrue(state['tasks']['incoming']['creating'])
+        self.assertEqual(state['permits']['incoming']['new'], tip)
+        self.assertFalse(path.exists())
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming', '--sync', ok=False)
+        (seed / 'advance').write_text('Q2')
+        self.git_at(seed, 'add', '.')
+        self.git_at(seed, 'commit', '-m', 'Q2')
+        self.git_at(seed, 'push', 'origin', 'incoming')
+        self.git('fetch', 'origin')
+        self.assertNotEqual(self.git('rev-parse', 'origin/incoming').stdout.strip(), tip)
+        args.mode, args.from_remote = 'continue', False
+        args.base, args.request, args.branch, args.worktree = None, None, None, None
+        def fail_config(repo, *argv, **kwargs):
+            if argv[:2] == ('config', 'branch.incoming.remote'):
+                raise management.BranchError('fixture interrupted after worktree add')
+            return real_git(repo, *argv, **kwargs)
+        with patch.object(management, 'git', side_effect=fail_config):
+            with self.assertRaisesRegex(management.BranchError, 'fixture interrupted'):
+                management.begin(args)
+        self.assertEqual(self.git_at(path, 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.assertNotIn('incoming', self.read_state()['permits'])
+        (path / 'foreign').write_bytes(b'preserve')
+        self.branch('begin', '--mode', 'continue', '--task', 'incoming', ok=False)
+        self.assertEqual((path / 'foreign').read_bytes(), b'preserve')
+        self.assertTrue(self.read_state()['tasks']['incoming']['creating'])
+        (path / 'foreign').unlink()
+        for _ in range(2):
+            self.branch('begin', '--mode', 'continue', '--task', 'incoming')
+        task = self.read_state()['tasks']['incoming']
+        self.assertEqual((task['base'], task['tip']), (base, tip))
+        self.assertNotIn('creating', task)
+        self.assertNotIn('incoming', self.read_state()['permits'])
+
+    def test_remote_adopt_cli_git_failure_is_resumable(self):
+        seed, base, tip = self.remote_topic()
+        receiver = self.root / 'cli receiver'
+        self.command('git', 'clone', self.remote, receiver)
+        hook = receiver / '.git/hooks/reference-transaction'
+        hook.write_text('#!/bin/sh\n'
+                        'common=$(git rev-parse --git-common-dir)\n'
+                        'if [ "$1" = prepared ] && [ -f "$common/deny-create" ]; then\n'
+                        '  echo "fixture denied creation" >&2\n  exit 41\nfi\nexit 0\n',
+                        encoding='utf-8', newline='\n')
+        hook.chmod(0o755)
+        self.branch('install', repo=receiver)
+        marker = receiver / '.git/deny-create'
+        marker.touch()
+        before = ((receiver / '.git/index').read_bytes(),
+                  self.git_at(receiver, 'show-ref').stdout, (receiver / 'README').read_bytes())
+        result = self.remote_begin(base, repo=receiver, ok=False)
+        self.assertIn('fixture denied creation', result.stderr)
+        state_path = receiver / '.git/agent-branches/state.json'
+        state = json.loads(state_path.read_text())
+        self.assertTrue(state['tasks']['incoming']['creating'])
+        self.assertEqual(state['permits']['incoming']['new'], tip)
+        self.assertEqual(before, ((receiver / '.git/index').read_bytes(),
+                         self.git_at(receiver, 'show-ref').stdout, (receiver / 'README').read_bytes()))
+        self.assertFalse((self.root / 'received').exists())
+        marker.unlink()
+        (seed / 'advance').write_text('Q2')
+        self.git_at(seed, 'add', '.')
+        self.git_at(seed, 'commit', '-m', 'Q2')
+        self.git_at(seed, 'push', 'origin', 'incoming')
+        self.git_at(receiver, 'fetch', 'origin')
+        for _ in range(2):
+            self.branch('begin', '--mode', 'continue', '--task', 'incoming', repo=receiver)
+        state = json.loads(state_path.read_text())
+        self.assertEqual((state['tasks']['incoming']['base'], state['tasks']['incoming']['tip']), (base, tip))
+        self.assertEqual(self.git_at(self.root / 'received', 'rev-parse', 'HEAD').stdout.strip(), tip)
+        self.assertNotIn('incoming', state['permits'])
+        self.assertNotIn('creating', state['tasks']['incoming'])
+
     def test_legacy_hook_mutation_is_revalidated_before_enforcement(self):
         clone = self.root / 'legacy mutation'
         self.command('git', 'clone', self.remote, clone)

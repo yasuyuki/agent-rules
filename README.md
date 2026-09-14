@@ -953,6 +953,16 @@ integration destination. No historical commits before adoption are retroactively
 classified as violations. Unregistered retained branches remain untouched; their
 future updates are refused.
 
+For a fetched remote-only branch, use `branch begin --mode adopt --from-remote
+--repo REPO --task ID --request REQUEST --branch BRANCH --worktree NEW_PATH
+--base HISTORICAL_COMMIT`, optionally with `--into` and `--depends-on`. The
+registered remote must advertise the fetched branch tip. The local branch and
+path must both be absent (including empty directories and symlinks). Creation
+uses that verified tip, while base retains the explicit historical ancestor.
+On interruption, use ordinary `--mode continue --task ID`: it keeps the recorded
+tip even if the remote advances, and refuses conflicting branches or changed
+checkout contents. Finish creation before requesting a separate `--sync`.
+
 For independent work use `branch begin --mode new --repo REPO --task ID
 --request REQUEST --branch TOPIC --worktree NEW_PATH`. Fetch the remote default
 first; the command verifies that the fetched commit still agrees with the remote.
