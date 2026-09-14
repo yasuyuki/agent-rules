@@ -101,6 +101,133 @@ class BranchManagementTests(unittest.TestCase):
         self.git("commit", "-m", "merge " + task)
         return worktree
 
+    def remote_adoption_fixture(self):
+        self.base = self.git('rev-parse', 'HEAD').stdout.strip()
+        self.supplier = self.root / 'supplier'
+        self.command('git', 'clone', self.remote, self.supplier)
+        self.git_at(self.supplier, 'config', 'user.name', 'Test')
+        self.git_at(self.supplier, 'config', 'user.email', 'test@example.invalid')
+        self.git_at(self.supplier, 'checkout', '-b', 'incoming')
+        for name, data in {'.gitattributes': b'crlf text eol=crlf\n*.bin -text\n',
+                           'crlf': b'one\r\ntwo\r\n', 'payload.bin': bytes(range(256)),
+                           'run.sh': b'#!/bin/sh\nexit 0\n'}.items():
+            (self.supplier / name).write_bytes(data)
+        (self.supplier / 'run.sh').chmod(0o755)
+        self.git_at(self.supplier, 'add', '.')
+        self.git_at(self.supplier, 'update-index', '--chmod=+x', 'run.sh')
+        self.git_at(self.supplier, 'commit', '-m', 'incoming content')
+        self.q = self.git_at(self.supplier, 'rev-parse', 'HEAD').stdout.strip()
+        self.git_at(self.supplier, 'push', 'origin', 'incoming')
+        self.git('fetch', 'origin')
+        self.target = self.root / 'received'
+
+    def remote_adopt(self, *extra, ok=True):
+        return self.branch('begin', '--mode', 'adopt', '--from-remote', '--task', 'received',
+                           '--request', 'issue89', '--branch', 'incoming', '--worktree',
+                           str(self.target), '--base', self.base, *extra, ok=ok)
+
+    def preserved_state(self):
+        return (self.git('show-ref').stdout, self.git('rev-parse', 'HEAD').stdout,
+                (self.repo / '.git/index').read_bytes(),
+                {str(p.relative_to(self.repo)): (p.read_bytes(), p.stat().st_mode)
+                 for p in self.repo.rglob('*') if p.is_file() and '.git' not in p.parts})
+
+    def assert_remote_adopted(self):
+        state = json.loads((self.repo / '.git/agent-branches/state.json').read_text())
+        task = state['tasks']['received']
+        self.assertEqual((task['base'], task['tip'], task['request']), (self.base, self.q, 'issue89'))
+        self.assertNotEqual(self.base, self.q)
+        self.assertEqual(self.git('rev-parse', 'incoming').stdout.strip(), self.q)
+        self.assertEqual(self.git_at(self.target, 'rev-parse', 'HEAD').stdout.strip(), self.q)
+        self.assertEqual(self.git_at(self.target, 'write-tree').stdout,
+                         self.git('rev-parse', self.q + '^{tree}').stdout)
+        self.assertEqual(self.git_at(self.target, 'config', 'branch.incoming.remote').stdout.strip(), 'origin')
+        self.assertEqual(self.git_at(self.target, 'config', 'branch.incoming.merge').stdout.strip(), 'refs/heads/incoming')
+        self.assertNotIn('incoming', state['permits'])
+        self.assertNotIn('creating', task)
+        self.assertEqual((self.target / 'payload.bin').read_bytes(), bytes(range(256)))
+        self.assertEqual((self.target / 'crlf').read_bytes(), b'one\r\ntwo\r\n')
+        self.assertTrue(self.git_at(self.target, 'ls-files', '--stage', 'run.sh').stdout.startswith('100755 '))
+        if os.name != 'nt':
+            self.assertTrue((self.target / 'run.sh').stat().st_mode & 0o111)
+        self.assertEqual(self.git_at(self.target, 'status', '--porcelain').stdout, '')
+
+    def test_remote_adopt_content_and_dirty_preservation(self):
+        self.remote_adoption_fixture()
+        self.git_at(self.supplier, 'checkout', 'main')
+        (self.supplier / 'default-only').write_bytes(b'default advances independently')
+        self.git_at(self.supplier, 'add', '.')
+        self.git_at(self.supplier, 'commit', '-m', 'default advance')
+        self.git_at(self.supplier, 'push', 'origin', 'main')
+        self.git('fetch', 'origin')
+        self.assertNotIn(self.git('rev-parse', 'origin/main').stdout.strip(), (self.base, self.q))
+        self.begin('main', 'adopt', branch='main', into='main')
+        other = Path(self.begin('other', branch='other')['worktree'])
+        (other / 'untracked').write_bytes(b'other\x00')
+        other_head = self.git_at(other, 'rev-parse', 'HEAD').stdout
+        (self.repo / 'README').write_bytes(b'staged\n')
+        self.git('add', 'README')
+        (self.repo / 'README').write_bytes(b'unstaged\r\n')
+        (self.repo / 'untracked').write_bytes(b'\x00dirty')
+        before = self.preserved_state()
+        self.remote_adopt('--depends-on', 'other', '--into', 'other')
+        self.assert_remote_adopted()
+        after = self.preserved_state()
+        self.assertEqual(before[1:], after[1:])
+        self.assertTrue(set(before[0].splitlines()).issubset(after[0].splitlines()))
+        self.assertEqual(self.git_at(other, 'rev-parse', 'HEAD').stdout, other_head)
+        self.assertEqual((other / 'untracked').read_bytes(), b'other\x00')
+        task = json.loads((self.repo / '.git/agent-branches/state.json').read_text())['tasks']['received']
+        self.assertEqual((task['depends_on'], task['into']), ('other', 'other'))
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.assert_remote_adopted()
+
+    def test_remote_adopt_rejections_preserve_git_and_files(self):
+        self.remote_adoption_fixture()
+        def rejected(*extra):
+            before = self.preserved_state()
+            self.remote_adopt(*extra, ok=False)
+            self.assertEqual(self.preserved_state(), before)
+            self.assertNotIn('received', json.loads((self.repo / '.git/agent-branches/state.json').read_text())['tasks'])
+        rejected('--base', 'missing')
+        rejected('--base', self.q + ':payload.bin')
+        rejected('--branch', 'missing')
+        rejected('--branch', 'main')
+        self.target.mkdir()
+        rejected()
+        (self.target / 'keep').write_bytes(b'keep')
+        rejected()
+        self.assertEqual((self.target / 'keep').read_bytes(), b'keep')
+        self.target = self.root / 'link'
+        if os.name != 'nt':
+            self.target.symlink_to(self.root / 'absent')
+            rejected()
+            self.assertTrue(self.target.is_symlink())
+        self.target = self.root / 'unused'
+        self.git('update-ref', '-d', 'refs/remotes/origin/incoming')
+        rejected()
+        blob = self.git('rev-parse', self.q + ':payload.bin').stdout.strip()
+        self.git('update-ref', 'refs/remotes/origin/incoming', blob)
+        rejected()
+        self.git('update-ref', 'refs/remotes/origin/incoming', self.base)
+        rejected()
+        self.git('fetch', 'origin')
+        self.git('remote', 'set-url', 'origin', str(self.root / 'wrong.git'))
+        rejected()
+        self.git('remote', 'set-url', 'origin', str(self.remote))
+        occupied = self.begin('occupied', branch='occupied')
+        rejected('--branch', 'occupied')
+        rejected('--worktree', occupied['worktree'])
+        rejected('--mode', 'new')
+        rejected('--mode', 'continue')
+        self.git_at(self.supplier, 'checkout', 'main')
+        (self.supplier / 'unrelated').write_text('default advances')
+        self.git_at(self.supplier, 'add', '.')
+        self.git_at(self.supplier, 'commit', '-m', 'unrelated base')
+        self.git_at(self.supplier, 'push', 'origin', 'main')
+        self.git('fetch', 'origin')
+        rejected('--base', 'origin/main')
+
     def test_install_preserves_an_existing_hook_and_detects_tampering(self):
         # Reinstall over a real hook: its args, stdin and exit status must survive.
         legacy = self.root / "legacy checkout"

@@ -93,7 +93,14 @@ jobs:
           AGENT_RULES_PLACE="$installed_place" "$runtime/python" tests/ci_runner.py --output ci-results/wheel.json --timeout 600 --workers 3 \
             test_branch_management.BranchManagementTests.test_install_preserves_an_existing_hook_and_detects_tampering \
             test_branch_management.BranchManagementTests.test_declare_agent_updates_only_a_registered_source_catalog \
-            test_branch_management.BranchManagementTests.test_unregistered_refs_no_verify_and_alternate_index_are_rejected
+            test_branch_management.BranchManagementTests.test_unregistered_refs_no_verify_and_alternate_index_are_rejected \
+            test_branch_management.BranchManagementTests.test_remote_adopt_content_and_dirty_preservation \
+            test_branch_management.BranchManagementTests.test_remote_adopt_rejections_preserve_git_and_files \
+            test_branch_recovery.RecoveryTests.test_remote_adopt_cli_creation_failure_is_resumable \
+            test_branch_recovery.RecoveryTests.test_remote_adopt_resume_pins_original_commit \
+            test_branch_recovery.RecoveryTests.test_remote_adopt_resume_rejects_changed_content \
+            test_branch_recovery.RecoveryTests.test_remote_adopt_resume_after_completed_git_creation \
+            test_branch_recovery.RecoveryTests.test_remote_adopt_resume_rejects_replaced_branch_and_path
           cd "$RUNNER_TEMP"
           "$runtime/agent-rules" --version
           "$runtime/agent-rules" --help

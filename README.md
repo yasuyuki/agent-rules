@@ -953,6 +953,21 @@ integration destination. No historical commits before adoption are retroactively
 classified as violations. Unregistered retained branches remain untouched; their
 future updates are refused.
 
+For a fetched remote branch with no local branch or checkout, use `branch begin
+--mode adopt --from-remote --repo REPO --task ID --request REQUEST --branch BRANCH
+--worktree NEW_PATH --base COMMIT`. The installed remote is used; fetch first.
+The tracking commit must match the commit advertised by that remote. The command
+creates the branch and worktree at that verified commit, while retaining the
+explicit historical base (an ancestor of that commit). `--into` and `--depends-on`
+retain their registration meanings. Existing branches, paths and symlink paths
+are refused; use ordinary adoption for an existing local checkout.
+
+If creation fails, use the existing `--mode continue --task ID --repo REPO`
+entry. It resumes the recorded commit even if the remote has since advanced.
+Changed branch tips or interrupted checkout content are preserved and refused.
+Finish creation before requesting `--sync`; continuation never implicitly
+replaces its recorded target with a newer remote tip.
+
 For independent work use `branch begin --mode new --repo REPO --task ID
 --request REQUEST --branch TOPIC --worktree NEW_PATH`. Fetch the remote default
 first; the command verifies that the fetched commit still agrees with the remote.

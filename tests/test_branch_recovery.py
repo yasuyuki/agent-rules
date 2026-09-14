@@ -9,14 +9,104 @@ import unittest
 from unittest.mock import patch
 import importlib.util
 
-from test_branch_management import BranchManagementTests, ROOT
+from test_branch_management import BranchManagementTests, ROOT, PLACE
 
-spec = importlib.util.spec_from_file_location('branch_management', ROOT / 'bin/branch_management.py')
+# Fault injection must load the same engine as the selected public CLI. In
+# wheel jobs PLACE points into site-packages, not into this test checkout.
+spec = importlib.util.spec_from_file_location('branch_management', PLACE.with_name('branch_management.py'))
 management = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(management)
 
 
 class RecoveryTests(BranchManagementTests):
+    def test_remote_adopt_cli_creation_failure_is_resumable(self):
+        self.remote_adoption_fixture()
+        obstruction = self.root / 'parent'
+        obstruction.write_bytes(b'preserve obstruction')
+        self.target = obstruction / 'received'
+        before = self.preserved_state()
+        self.remote_adopt(ok=False)
+        self.assertTrue(self.read_state()['tasks']['received']['creating'])
+        self.assertEqual(self.preserved_state()[1:], before[1:])
+        self.assertEqual(obstruction.read_bytes(), b'preserve obstruction')
+        obstruction.rename(self.root / 'retained obstruction')
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.assert_remote_adopted()
+
+    def interrupt_remote_adopt(self, after=False):
+        engine = Path(management.__file__).resolve()
+        self.assertEqual(engine, PLACE.with_name('branch_management.py').resolve())
+        state = self.read_state()
+        self.assertEqual(engine, Path(state['source']) / 'bin/branch_management.py')
+        self.assertEqual(management.digest(engine), state['source_hashes']['bin/branch_management.py'])
+        args = type('Args', (), dict(repo=str(self.repo), mode='adopt', from_remote=True,
+            sync=False, task='received', request='issue89', branch='incoming',
+            worktree=str(self.target), base=self.base, into=None, depends_on=None))()
+        real_git = management.git
+        def interrupted(repo, *argv, **kwargs):
+            if argv[:2] == ('worktree', 'add'):
+                if after:
+                    real_git(repo, *argv, **kwargs)
+                raise management.BranchError('fixture creation interruption')
+            return real_git(repo, *argv, **kwargs)
+        with patch.object(management, 'git', side_effect=interrupted):
+            with self.assertRaisesRegex(management.BranchError, 'fixture creation interruption'):
+                management.begin(args)
+        self.assertTrue(self.read_state()['tasks']['received']['creating'])
+        if after:
+            self.assertEqual(self.git_at(self.target, 'rev-parse', 'HEAD').stdout.strip(), self.q)
+            self.assertNotIn('incoming', self.read_state()['permits'])
+
+    def test_remote_adopt_resume_pins_original_commit(self):
+        self.remote_adoption_fixture()
+        before = self.preserved_state()
+        self.interrupt_remote_adopt()
+        self.assertEqual(self.preserved_state(), before)
+        (self.supplier / 'later').write_bytes(b'Q2')
+        self.git_at(self.supplier, 'add', '.')
+        self.git_at(self.supplier, 'commit', '-m', 'Q2')
+        self.git_at(self.supplier, 'push', 'origin', 'incoming')
+        self.git('fetch', 'origin')
+        self.assertNotEqual(self.git('rev-parse', 'origin/incoming').stdout.strip(), self.q)
+        self.branch('begin', '--mode', 'continue', '--task', 'received', '--sync', ok=False)
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.assert_remote_adopted()
+        state = self.read_state()
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.assertEqual(self.read_state(), state)
+        self.assertFalse((self.target / 'later').exists())
+
+    def test_remote_adopt_resume_rejects_changed_content(self):
+        self.remote_adoption_fixture()
+        self.interrupt_remote_adopt(after=True)
+        self.assertNotIn('incoming', self.read_state()['permits'])
+        (self.target / 'payload.bin').write_bytes(b'keep changed content')
+        before = (self.target / 'payload.bin').read_bytes()
+        self.branch('begin', '--mode', 'continue', '--task', 'received', ok=False)
+        self.assertEqual((self.target / 'payload.bin').read_bytes(), before)
+        self.assertTrue(self.read_state()['tasks']['received']['creating'])
+
+    def test_remote_adopt_resume_after_completed_git_creation(self):
+        self.remote_adoption_fixture()
+        self.interrupt_remote_adopt(after=True)
+        self.branch('begin', '--mode', 'continue', '--task', 'received')
+        self.assert_remote_adopted()
+
+    def test_remote_adopt_resume_rejects_replaced_branch_and_path(self):
+        self.remote_adoption_fixture()
+        self.interrupt_remote_adopt()
+        self.target.mkdir()
+        (self.target / 'keep').write_bytes(b'foreign')
+        self.branch('begin', '--mode', 'continue', '--task', 'received', ok=False)
+        self.assertEqual((self.target / 'keep').read_bytes(), b'foreign')
+        # A different reference value can result from external Git use; inject
+        # it only in this disposable fixture, never bypass deployed hooks.
+        ref = self.repo / '.git/refs/heads/incoming'
+        ref.write_text(self.base + '\n')
+        self.branch('begin', '--mode', 'continue', '--task', 'received', ok=False)
+        self.assertEqual(ref.read_text().strip(), self.base)
+        self.assertEqual((self.target / 'keep').read_bytes(), b'foreign')
+
     def test_legacy_hook_mutation_is_revalidated_before_enforcement(self):
         clone = self.root / 'legacy mutation'
         self.command('git', 'clone', self.remote, clone)

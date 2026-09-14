@@ -17,6 +17,7 @@ Concurrency replaces only the same workflow/event/repository/PR-or-ref.
 | Source-only inventory catalog versus installed branch engine (previous wheel regression) | Entire branch suite | `test_declare_agent_updates_only_a_registered_source_catalog` |
 | Imports, package data, project CLI apply/check/update and non-destructive failures | Existing source tests | Entire `test_project`, installed in a clean venv; subprocess cwd is outside checkout |
 | Build from sdist, wheel metadata, installed entry point | Build and strict twine check | Installed `--version`/`--help` outside checkout in addition to E2E |
+| Remote-only adoption at a pinned commit with a distinct historical base | Branch suite content, rejection and interrupted-creation cases | Same content/rejection and creation-recovery cases, including Q2-pinned continuation, post-creation interruption and conflicting content/branch/path; fault injection loads the installed engine selected by the CLI |
 | Inspection paths, ignore/no-Git/untrusted/missing discovery, private diagnostic redaction | Entire inventory inspection suite on all four configurations | Packaged engine shares source |
 
 No existing assertion or real-Git scenario was removed. Each heavy test retains
