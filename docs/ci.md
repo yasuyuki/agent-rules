@@ -12,6 +12,7 @@ Concurrency replaces only the same workflow/event/repository/PR-or-ref.
 | Contract | Checkout | Installed wheel |
 | --- | --- | --- |
 | Ref/commit/push rejection, remote identities, one-use merge/pick/tag approval, worktree protection and non-destructive retirement | Entire `test_branch_management` | Real unregistered-ref/no-verify/alternate-index rejection scenario |
+| Remote-only adoption at verified Q with historical B, contents and tracking | Real-Git adoption and interruption tests in branch/recovery suites | `test_remote_only_adopt_pins_verified_tip_and_historical_base` |
 | Crash recovery, locks, concurrent operations, legacy-hook mutation revalidation | Entire `test_branch_recovery`, collected through its existing `load_tests` | Same shipped branch engine, exercised through installed hooks |
 | Existing hook arguments/status and modified-hook detection | Entire branch suite | `test_install_preserves_an_existing_hook_and_detects_tampering` |
 | Source-only inventory catalog versus installed branch engine (previous wheel regression) | Entire branch suite | `test_declare_agent_updates_only_a_registered_source_catalog` |
@@ -74,7 +75,7 @@ The source/handoff/rules contracts run in checkout partition 0; both partitions
 run their disjoint part of the complete real-Git collection. Package jobs have
 no dependency on checkout tests: each builds its own sdist and wheel, performs
 strict metadata validation, and runs the entire installed project suite and the
-same three wheel-specific E2Es. Separate runners isolate build output, source
+same four wheel-specific E2Es. Separate runners isolate build output, source
 hash checks, installed environments and every mutable Git fixture. There is no
 artifact transfer or shared mutable checkout between verification jobs.
 

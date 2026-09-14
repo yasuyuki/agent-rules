@@ -77,6 +77,127 @@ class RecoveryTests(BranchManagementTests):
         self.assertNotIn('creating', self.read_state()['tasks']['feature'])
         self.assertTrue(Path(work['worktree']).is_dir())
 
+    def test_remote_adoption_retries_the_pinned_tip_after_worktree_add_failure(self):
+        """R7/R8/R9: an interrupted remote adoption resumes Q, never later Q2."""
+        self.begin('integration', 'adopt', branch='main', into='main')
+        base = self.git('rev-parse', 'HEAD').stdout.strip()
+        pinned = self.publish_remote_topic('pinned-remote', base=base)
+        self.git('fetch', 'origin')
+        target = self.root / 'pinned target'
+        args = type('Args', (), {
+            'repo': str(self.repo), 'mode': 'adopt', 'from_remote': True,
+            'sync': False, 'task': 'pinned-remote', 'request': 'fixture',
+            'branch': 'pinned-remote', 'worktree': str(target), 'base': base,
+            'into': 'main', 'depends_on': None,
+        })()
+        real_git = management.git
+
+        def interrupted(repo, *argv, **kwargs):
+            if argv[:2] == ('worktree', 'add'):
+                raise management.BranchError('injected worktree creation failure')
+            return real_git(repo, *argv, **kwargs)
+
+        with patch.object(management, 'git', side_effect=interrupted):
+            with self.assertRaisesRegex(management.BranchError, 'injected worktree'):
+                management.begin(args)
+        recorded = self.read_state()['tasks']['pinned-remote']
+        self.assertTrue(recorded['creating'])
+        self.assertEqual(recorded['tip'], pinned)
+        self.assertFalse(target.exists())
+        # The advertised branch advances after intent has been saved. Continue
+        # must not silently substitute that new remote commit for its pin.
+        publisher = self.root / 'q2 publisher'
+        self.command('git', 'clone', self.remote, publisher)
+        self.git_at(publisher, 'config', 'user.name', 'Publisher')
+        self.git_at(publisher, 'config', 'user.email', 'publisher@example.invalid')
+        self.git_at(publisher, 'switch', '-c', 'pinned-remote', 'origin/pinned-remote')
+        (publisher / 'q2').write_text('new remote tip\n', encoding='utf-8')
+        self.git_at(publisher, 'add', 'q2')
+        self.git_at(publisher, 'commit', '-m', 'advance remote')
+        q2 = self.git_at(publisher, 'rev-parse', 'HEAD').stdout.strip()
+        self.git_at(publisher, 'push', 'origin', 'pinned-remote')
+        self.git('fetch', 'origin')
+        self.assertNotEqual(q2, pinned)
+        self.branch('begin', '--mode', 'continue', '--task', 'pinned-remote')
+        self.assertEqual(self.git_at(target, 'rev-parse', 'HEAD').stdout.strip(), pinned)
+        self.assertFalse((target / 'q2').exists())
+        completed = self.read_state()['tasks']['pinned-remote']
+        self.assertNotIn('creating', completed)
+        self.assertEqual(completed['tip'], pinned)
+        self.assertNotIn('pinned-remote', self.read_state()['permits'])
+        # A repeated continue is idempotent: it neither consumes a second
+        # creation permission nor substitutes the now-advertised Q2.
+        self.branch('begin', '--mode', 'continue', '--task', 'pinned-remote')
+        self.assertEqual(self.git_at(target, 'rev-parse', 'HEAD').stdout.strip(), pinned)
+        self.assertNotIn('pinned-remote', self.read_state()['permits'])
+
+    def test_remote_adoption_continue_preserves_conflicting_checkout(self):
+        """R9: a user-created path after interruption is retained and refused."""
+        self.begin('integration', 'adopt', branch='main', into='main')
+        base = self.git('rev-parse', 'HEAD').stdout.strip()
+        self.publish_remote_topic('conflicted-remote', base=base)
+        self.git('fetch', 'origin')
+        target = self.root / 'conflicting target'
+        args = type('Args', (), {
+            'repo': str(self.repo), 'mode': 'adopt', 'from_remote': True,
+            'sync': False, 'task': 'conflicted-remote', 'request': 'fixture',
+            'branch': 'conflicted-remote', 'worktree': str(target), 'base': base,
+            'into': 'main', 'depends_on': None,
+        })()
+        real_git = management.git
+        with patch.object(management, 'git', side_effect=lambda repo, *argv, **kwargs:
+                          (_ for _ in ()).throw(management.BranchError('injected failure'))
+                          if argv[:2] == ('worktree', 'add') else real_git(repo, *argv, **kwargs)):
+            with self.assertRaisesRegex(management.BranchError, 'injected failure'):
+                management.begin(args)
+        self.command('git', 'clone', self.remote, target)
+        (target / 'keep').write_text('do not overwrite\n', encoding='utf-8')
+        denied = self.branch('begin', '--mode', 'continue', '--task', 'conflicted-remote', ok=False)
+        self.assertIn('conflicting checkout', denied.stderr)
+        self.assertEqual((target / 'keep').read_text(encoding='utf-8'), 'do not overwrite\n')
+        self.assertTrue(self.read_state()['tasks']['conflicted-remote']['creating'])
+
+    def test_remote_adoption_recovers_post_branch_failure_but_refuses_dirty_registered_checkout(self):
+        """R7/R9: retain a Q branch after failure and never overwrite its checkout."""
+        self.begin('integration', 'adopt', branch='main', into='main')
+        base = self.git('rev-parse', 'HEAD').stdout.strip()
+        pinned = self.publish_remote_topic('post-branch', base=base)
+        self.git('fetch', 'origin')
+        target = self.root / 'post branch target'
+        args = type('Args', (), {
+            'repo': str(self.repo), 'mode': 'adopt', 'from_remote': True,
+            'sync': False, 'task': 'post-branch', 'request': 'fixture',
+            'branch': 'post-branch', 'worktree': str(target), 'base': base,
+            'into': 'main', 'depends_on': None,
+        })()
+        real_git = management.git
+        def after_branch(repo, *argv, **kwargs):
+            if argv[:2] == ('worktree', 'add'):
+                # The durable create permit must authorize this ordinary ref
+                # update; no hook bypass is used in the recovery fixture.
+                real_git(self.repo, 'branch', 'post-branch', pinned)
+                raise management.BranchError('injected after branch before checkout')
+            return real_git(repo, *argv, **kwargs)
+
+        with patch.object(management, 'git', side_effect=after_branch):
+            with self.assertRaisesRegex(management.BranchError, 'after branch'):
+                management.begin(args)
+        self.assertEqual(self.git('rev-parse', 'post-branch').stdout.strip(), pinned)
+        self.assertFalse(target.exists())
+        self.branch('begin', '--mode', 'continue', '--task', 'post-branch')
+        self.assertEqual(self.git_at(target, 'rev-parse', 'HEAD').stdout.strip(), pinned)
+        self.assertNotIn('post-branch', self.read_state()['permits'])
+        # Model a crash after the completed checkout but before final state
+        # bookkeeping, then prove user content blocks a second continuation.
+        state = self.read_state()
+        state['tasks']['post-branch']['creating'] = True
+        self.write_state(state)
+        (target / 'preserve').write_text('user work\n', encoding='utf-8')
+        denied = self.branch('begin', '--mode', 'continue', '--task', 'post-branch', ok=False)
+        self.assertIn('changed content', denied.stderr)
+        self.assertEqual((target / 'preserve').read_text(encoding='utf-8'), 'user work\n')
+        self.assertTrue(self.read_state()['tasks']['post-branch']['creating'])
+
     def test_install_retries_after_config_write_interruption(self):
         clone = self.root / 'install interrupted'
         self.command('git', 'clone', self.remote, clone)

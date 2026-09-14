@@ -89,11 +89,12 @@ jobs:
           "$runtime/python" tests/ci_runner.py --output ci-results/project.json --timeout 300 test_project
           installed_place=$("$runtime/python" -c 'import agent_rules_manager.bin.place as p; print(p.__file__)')
           # Checkout jobs cover full behavior. Retain the distinct installed boundary:
-          # packaged hook/data, legacy hook, source-only catalog, and real ref guards.
+          # packaged hook/data, legacy hook, source-only catalog, real ref guards and remote adoption.
           AGENT_RULES_PLACE="$installed_place" "$runtime/python" tests/ci_runner.py --output ci-results/wheel.json --timeout 600 --workers 3 \
             test_branch_management.BranchManagementTests.test_install_preserves_an_existing_hook_and_detects_tampering \
             test_branch_management.BranchManagementTests.test_declare_agent_updates_only_a_registered_source_catalog \
-            test_branch_management.BranchManagementTests.test_unregistered_refs_no_verify_and_alternate_index_are_rejected
+            test_branch_management.BranchManagementTests.test_unregistered_refs_no_verify_and_alternate_index_are_rejected \
+            test_branch_management.BranchManagementTests.test_remote_only_adopt_pins_verified_tip_and_historical_base
           cd "$RUNNER_TEMP"
           "$runtime/agent-rules" --version
           "$runtime/agent-rules" --help

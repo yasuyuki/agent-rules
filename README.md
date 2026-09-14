@@ -953,6 +953,16 @@ integration destination. No historical commits before adoption are retroactively
 classified as violations. Unregistered retained branches remain untouched; their
 future updates are refused.
 
+For a fetched remote-only topic, use the same adoption command with
+`--from-remote`, an absent local branch and an absent worktree path. The command
+verifies the registered remote advertises the fetched topic commit Q, then creates
+the branch and worktree at Q with same-branch tracking. The explicit historical
+`--base` B must be an ancestor of Q and remains B in the registration. Existing
+branches and paths (including symlinks) are rejected. If creation is interrupted,
+use ordinary `--mode continue --task ID`: it retains Q even if the remote advances,
+and refuses conflicting branches or changed checkout contents without removing them.
+`--from-remote` is only valid with `--mode adopt`.
+
 For independent work use `branch begin --mode new --repo REPO --task ID
 --request REQUEST --branch TOPIC --worktree NEW_PATH`. Fetch the remote default
 first; the command verifies that the fetched commit still agrees with the remote.

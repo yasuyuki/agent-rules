@@ -101,6 +101,218 @@ class BranchManagementTests(unittest.TestCase):
         self.git("commit", "-m", "merge " + task)
         return worktree
 
+    def publish_remote_topic(self, name, *, base, contents=b"remote topic\n"):
+        """Publish a topic without creating its local branch in ``self.repo``."""
+        publisher = self.root / (name + " publisher")
+        self.command("git", "clone", self.remote, publisher)
+        self.git_at(publisher, "config", "user.name", "Publisher")
+        self.git_at(publisher, "config", "user.email", "publisher@example.invalid")
+        self.git_at(publisher, "switch", "-c", name, base)
+        payload = publisher / "payload.bin"
+        payload.write_bytes(contents)
+        executable = publisher / "run-topic"
+        executable.write_text("#!/bin/sh\nprintf remote\\n", encoding="utf-8", newline="\n")
+        executable.chmod(0o755)
+        self.git_at(publisher, "add", "payload.bin", "run-topic")
+        self.git_at(publisher, "commit", "-m", "publish " + name)
+        self.git_at(publisher, "push", "origin", "HEAD:refs/heads/" + name)
+        return self.git_at(publisher, "rev-parse", "HEAD").stdout.strip()
+
+    def advance_remote_topic(self, name):
+        publisher = self.root / (name + " advance publisher")
+        self.command("git", "clone", self.remote, publisher)
+        self.git_at(publisher, "config", "user.name", "Publisher")
+        self.git_at(publisher, "config", "user.email", "publisher@example.invalid")
+        self.git_at(publisher, "switch", "-c", name, "origin/" + name)
+        (publisher / "advanced").write_text("advanced remote\n", encoding="utf-8")
+        self.git_at(publisher, "add", "advanced")
+        self.git_at(publisher, "commit", "-m", "advance " + name)
+        self.git_at(publisher, "push", "origin", name)
+        return self.git_at(publisher, "rev-parse", "HEAD").stdout.strip()
+
+    def remote_begin(self, task, *, branch, worktree, base, repo=None, ok=True, **extra):
+        """Invoke the public remote-only adoption entry point exactly once."""
+        repo = self.repo if repo is None else Path(repo)
+        argv = ["begin", "--mode", "adopt", "--from-remote", "--task", task,
+                "--request", extra.pop("request", "request-" + task), "--branch", branch,
+                "--worktree", str(worktree), "--base", str(base)]
+        for key, value in extra.items():
+            argv += ["--" + key.replace("_", "-"), str(value)]
+        result = self.branch(*argv, repo=repo, ok=ok)
+        return result if not ok else json.loads(result.stdout)
+
+    def test_remote_only_adopt_pins_verified_tip_and_historical_base(self):
+        """R1/R2/R10: Q is checked out verbatim while B remains historical."""
+        self.begin("integration", "adopt", branch="main", into="main")
+        base = self.git("rev-parse", "HEAD").stdout.strip()
+        # Make the default remote head differ from both B and the topic tip.
+        publisher = self.root / "default publisher"
+        self.command("git", "clone", self.remote, publisher)
+        self.git_at(publisher, "config", "user.name", "Publisher")
+        self.git_at(publisher, "config", "user.email", "publisher@example.invalid")
+        (publisher / "default-only").write_text("later default\n", encoding="utf-8")
+        self.git_at(publisher, "add", "default-only")
+        self.git_at(publisher, "commit", "-m", "advance default")
+        self.git_at(publisher, "push", "origin", "main")
+        default_tip = self.git_at(publisher, "rev-parse", "HEAD").stdout.strip()
+        topic_tip = self.publish_remote_topic("remote-topic", base=base, contents=b"\x00topic\r\nbytes\n")
+        self.git("fetch", "origin")
+        self.assertNotEqual(base, topic_tip)
+        self.assertNotEqual(default_tip, topic_tip)
+        worktree = self.root / "remote topic worktree"
+        result = self.remote_begin("remote-topic", branch="remote-topic", worktree=worktree,
+                                   base=base, into="main")
+        self.assertEqual(result["base"], base)
+        self.assertEqual(result["tip"], topic_tip)
+        self.assertEqual(result["request"], "request-remote-topic")
+        self.assertEqual(result["depends_on"], None)
+        self.assertEqual(self.git("rev-parse", "refs/heads/remote-topic").stdout.strip(), topic_tip)
+        self.assertEqual(self.git_at(worktree, "rev-parse", "HEAD").stdout.strip(), topic_tip)
+        self.assertEqual(self.git_at(worktree, "config", "--get", "branch.remote-topic.remote").stdout.strip(), "origin")
+        self.assertEqual(self.git_at(worktree, "config", "--get", "branch.remote-topic.merge").stdout.strip(),
+                         "refs/heads/remote-topic")
+        self.assertEqual((worktree / "payload.bin").read_bytes(), b"\x00topic\r\nbytes\n")
+        self.assertTrue(os.access(worktree / "run-topic", os.X_OK))
+        self.assertEqual(self.git_at(worktree, "rev-list", "--parents", "-n", "1", "HEAD").stdout.split()[0], topic_tip)
+
+    def test_remote_only_adopt_rejects_missing_tracking_base_and_collisions_without_mutation(self):
+        """R3/R4: validation happens before any branch, path, or state overwrite."""
+        self.begin("integration", "adopt", branch="main", into="main")
+        base = self.git("rev-parse", "HEAD").stdout.strip()
+        topic_tip = self.publish_remote_topic("unfetched", base=base)
+        before_refs = self.git("show-ref").stdout
+        before_state = (self.repo / ".git" / "agent-branches" / "state.json").read_bytes()
+        missing_path = self.root / "missing tracking"
+        self.remote_begin("missing", branch="unfetched", worktree=missing_path, base=base, ok=False)
+        self.assertFalse(missing_path.exists())
+        self.assertEqual(self.git("show-ref").stdout, before_refs)
+        self.assertEqual((self.repo / ".git" / "agent-branches" / "state.json").read_bytes(), before_state)
+        self.git("fetch", "origin")
+        state_before_stale = (self.repo / ".git" / "agent-branches" / "state.json").read_bytes()
+        q2 = self.advance_remote_topic("unfetched")
+        self.remote_begin("stale", branch="unfetched", worktree=self.root / "stale tracking", base=base, ok=False)
+        self.assertFalse((self.root / "stale tracking").exists())
+        self.assertEqual((self.repo / ".git" / "agent-branches" / "state.json").read_bytes(), state_before_stale)
+        self.git("fetch", "origin")
+        self.assertEqual(self.git("rev-parse", "origin/unfetched").stdout.strip(), q2)
+        tree = self.git("rev-parse", "HEAD^{tree}").stdout.strip()
+        non_ancestor = self.git("commit-tree", tree, "-m", "unrelated base").stdout.strip()
+        self.remote_begin("bad-base", branch="unfetched", worktree=self.root / "bad base", base=non_ancestor, ok=False)
+        self.remote_begin("noncommit-base", branch="unfetched", worktree=self.root / "noncommit base", base=tree, ok=False)
+        existing = self.root / "occupied"
+        existing.mkdir()
+        (existing / "keep").write_text("keep\n", encoding="utf-8")
+        self.remote_begin("occupied", branch="unfetched", worktree=existing, base=base, ok=False)
+        self.assertEqual((existing / "keep").read_text(encoding="utf-8"), "keep\n")
+        link = self.root / "occupied link"
+        link.symlink_to(existing, target_is_directory=True)
+        self.remote_begin("linked", branch="unfetched", worktree=link, base=base, ok=False)
+        self.assertTrue(link.is_symlink())
+        # Fixture setup needs a retained local branch; ordinary ref updates are
+        # intentionally rejected by the installed enforcement hook.
+        empty_hooks = self.root / "empty hooks"
+        empty_hooks.mkdir()
+        self.command("git", "-C", str(self.repo), "-c", "core.hooksPath=" + str(empty_hooks),
+                     "branch", "unfetched", q2)
+        self.remote_begin("existing-branch", branch="unfetched", worktree=self.root / "new path", base=base, ok=False)
+        self.assertEqual(self.git("rev-parse", "unfetched").stdout.strip(), q2)
+
+    def test_remote_only_adopt_preserves_dirty_caller_and_does_not_leak_to_other_modes(self):
+        """R5/R6: caller contents survive and the flag is not accepted by old modes."""
+        self.begin("integration", "adopt", branch="main", into="main")
+        base = self.git("rev-parse", "HEAD").stdout.strip()
+        self.publish_remote_topic("dirty-safe", base=base)
+        self.git("fetch", "origin")
+        (self.repo / "README").write_text("staged change\n", encoding="utf-8")
+        self.git("add", "README")
+        (self.repo / "README").write_text("staged change\nunstaged tail\n", encoding="utf-8")
+        (self.repo / "untracked").write_text("untracked\n", encoding="utf-8")
+        index_before = self.git("write-tree").stdout.strip()
+        status_before = self.git("status", "--porcelain=v1").stdout
+        self.remote_begin("dirty-safe", branch="dirty-safe", worktree=self.root / "dirty safe", base=base, into="main")
+        self.assertEqual(self.git("write-tree").stdout.strip(), index_before)
+        self.assertEqual(self.git("status", "--porcelain=v1").stdout, status_before)
+        self.assertEqual((self.repo / "README").read_text(encoding="utf-8"), "staged change\nunstaged tail\n")
+        self.assertEqual((self.repo / "untracked").read_text(encoding="utf-8"), "untracked\n")
+        self.branch("begin", "--mode", "new", "--from-remote", "--task", "wrong-new",
+                    "--request", "fixture", "--branch", "wrong-new", "--worktree", str(self.root / "wrong new"), ok=False)
+        self.branch("begin", "--mode", "continue", "--from-remote", "--task", "dirty-safe", ok=False)
+
+    def test_remote_only_adopt_rejects_changed_registered_remote_without_mutation(self):
+        """R3: an origin whose registered endpoint changed cannot supply Q."""
+        self.begin("integration", "adopt", branch="main", into="main")
+        base = self.git("rev-parse", "HEAD").stdout.strip()
+        self.publish_remote_topic("wrong-remote", base=base)
+        self.git("fetch", "origin")
+        before_refs = self.git("show-ref").stdout
+        before_index = self.git("write-tree").stdout.strip()
+        before_state = (self.repo / ".git" / "agent-branches" / "state.json").read_bytes()
+        alternate = self.root / "alternate.git"
+        self.command("git", "init", "--bare", alternate)
+        self.git("remote", "set-url", "origin", str(alternate))
+        target = self.root / "wrong registered remote"
+        self.remote_begin("wrong-remote", branch="wrong-remote", worktree=target, base=base, ok=False)
+        self.assertFalse(target.exists())
+        self.assertEqual(self.git("show-ref").stdout, before_refs)
+        self.assertEqual(self.git("write-tree").stdout.strip(), before_index)
+        self.assertEqual((self.repo / ".git" / "agent-branches" / "state.json").read_bytes(), before_state)
+
+    def test_remote_only_adopt_rejects_another_tasks_registered_path_without_mutation(self):
+        """R4: a path owned by another task is not repurposed for remote work."""
+        self.begin("integration", "adopt", branch="main", into="main")
+        base = self.git("rev-parse", "HEAD").stdout.strip()
+        other = Path(self.begin("other", branch="other")["worktree"])
+        other_head = self.git_at(other, "rev-parse", "HEAD").stdout.strip()
+        (other / "keep").write_text("other task content\n", encoding="utf-8")
+        self.publish_remote_topic("remote-path-conflict", base=base)
+        self.git("fetch", "origin")
+        before_refs = self.git("show-ref").stdout
+        before_state = (self.repo / ".git" / "agent-branches" / "state.json").read_bytes()
+        self.remote_begin("path-conflict", branch="remote-path-conflict", worktree=other, base=base, ok=False)
+        self.assertEqual(self.git_at(other, "rev-parse", "HEAD").stdout.strip(), other_head)
+        self.assertEqual((other / "keep").read_text(encoding="utf-8"), "other task content\n")
+        self.assertEqual(self.git("show-ref").stdout, before_refs)
+        self.assertEqual((self.repo / ".git" / "agent-branches" / "state.json").read_bytes(), before_state)
+
+    def test_remote_only_adopt_preserves_a_dirty_existing_worktree(self):
+        """R5: creating Q leaves a different registered checkout entirely intact."""
+        self.begin("integration", "adopt", branch="main", into="main")
+        base = self.git("rev-parse", "HEAD").stdout.strip()
+        other = Path(self.begin("existing", branch="existing")["worktree"])
+        (other / "README").write_text("staged\n", encoding="utf-8")
+        self.git_at(other, "add", "README")
+        (other / "README").write_text("staged\nunstaged\n", encoding="utf-8")
+        (other / "untracked").write_text("retain\n", encoding="utf-8")
+        other_head = self.git_at(other, "rev-parse", "HEAD").stdout.strip()
+        other_index = self.git_at(other, "write-tree").stdout.strip()
+        other_status = self.git_at(other, "status", "--porcelain=v1").stdout
+        self.publish_remote_topic("separate-dirty", base=base)
+        self.git("fetch", "origin")
+        self.remote_begin("separate-dirty", branch="separate-dirty", worktree=self.root / "separate dirty", base=base)
+        self.assertEqual(self.git_at(other, "rev-parse", "HEAD").stdout.strip(), other_head)
+        self.assertEqual(self.git_at(other, "write-tree").stdout.strip(), other_index)
+        self.assertEqual(self.git_at(other, "status", "--porcelain=v1").stdout, other_status)
+        self.assertEqual((other / "README").read_text(encoding="utf-8"), "staged\nunstaged\n")
+        self.assertEqual((other / "untracked").read_text(encoding="utf-8"), "retain\n")
+
+    def test_remote_only_adopt_records_non_null_dependency_and_destination(self):
+        """The remote entry preserves normal task routing metadata."""
+        self.begin("integration", "adopt", branch="main", into="main")
+        parent = Path(self.begin("parent", branch="parent")["worktree"])
+        (parent / "parent").write_text("parent\n", encoding="utf-8")
+        self.git_at(parent, "add", "parent")
+        self.git_at(parent, "commit", "-m", "parent")
+        parent_tip = self.git_at(parent, "rev-parse", "HEAD").stdout.strip()
+        self.git_at(parent, "push", "origin", "parent")
+        self.publish_remote_topic("dependent-remote", base=parent_tip)
+        self.git("fetch", "origin")
+        result = self.remote_begin("dependent-remote", branch="dependent-remote",
+                                   worktree=self.root / "dependent remote", base=parent_tip,
+                                   request="request-dependent", depends_on="parent", into="parent")
+        self.assertEqual(result["request"], "request-dependent")
+        self.assertEqual(result["depends_on"], "parent")
+        self.assertEqual(result["into"], "parent")
+
     def test_install_preserves_an_existing_hook_and_detects_tampering(self):
         # Reinstall over a real hook: its args, stdin and exit status must survive.
         legacy = self.root / "legacy checkout"
