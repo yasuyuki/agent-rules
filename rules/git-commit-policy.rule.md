@@ -72,7 +72,15 @@ push候補remoteは `branch.<current>.pushRemote` → `remote.pushDefault` →
 `remote.<remote>.push` の独自refspecやmirror設定があれば `ask` とし、複数branchを送らない。
 自動pushの宛先branchがdefault branchなら、同じ個別・属性別許可と除外判定を行う。確定後は
 `git push <remote> HEAD:refs/heads/<destination>` と宛先を明示する。
-拒否・認証失敗は結果を報告して `hold` とし、別remoteやforce pushで再試行しない。
+拒否・認証失敗は当該 push を `hold` として止め、理由を確認する。別 remote や force push、
+原因未解消の同じ push の反復は行わない。この停止は既存権限内の読み取り調査まで禁止しない。
+許可済みの同じ repo・宛先・文書範囲で、現在の remote を起点とする登録済みの文書変更や
+通常 merge によって必要な参照を保存できる場合は、その正規経路で継続してよい。
+元 commit・dirty・remote 更新を保持し、改めて検証・共通 preflight を通す。任意の pull、
+未知の remote コードの自動統合、無関係な local 履歴の一括統合を許可するものではない。
+意味上の衝突、分離不能な変更、権限・認証不足、別宛先や保護変更が必要な場合は止め、
+保存できた範囲と具体的不足を返す。自動 reset / stash / clean、hook 解除、state 直編集や
+承認の流用で解消しない。
 
 force push、rebase、reset、tag、release、または履歴の書き換えは commit や通常の push と別の操作で
 あり、明示的なユーザー承認が必要である。`git add -A` と `git commit -a` で他者の変更を巻き込まない。
