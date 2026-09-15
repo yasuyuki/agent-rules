@@ -187,6 +187,10 @@ def resolve_executable(name, *, binding=None, path=None):
     ``binding`` is normally the caller's binding.  Without it, PATH is walked;
     an owned managed link switches the search to its saved vendor PATH.
     """
+    if os.name != 'posix' and binding is None:
+        # Standard links are POSIX-only. Keep the platform's existing PATHEXT
+        # and executable-selection rules for explicit Windows starts.
+        return shutil.which(name, path=path)
     if binding is not None:
         binding = _validate_document(binding)
         result = _find_vendor(name, binding["vendor_path"])
