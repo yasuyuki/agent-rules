@@ -52,6 +52,10 @@ classification_spec = importlib.util.spec_from_file_location("work_classificatio
 work_classification = importlib.util.module_from_spec(classification_spec)
 classification_spec.loader.exec_module(work_classification)
 
+handoff_spec = importlib.util.spec_from_file_location("handoff_receive", HERE / "handoff_receive.py")
+handoff_receive = importlib.util.module_from_spec(handoff_spec)
+handoff_spec.loader.exec_module(handoff_receive)
+
 
 class PlacementError(RuntimeError):
     pass
@@ -1324,10 +1328,28 @@ def _start(args, runner=subprocess.run, resolver=shutil.which, configured_host=N
     entrypoint = resolver(tool["entrypoint"])
     if entrypoint is None:
         raise PlacementError("tool does not resolve: %s" % tool["entrypoint"])
+    receive_handoff(workspace["path"], independent=getattr(args, "handoff_independent", False))
     kwargs = {"cwd": workspace["path"]}
     if configured_host:
         kwargs["env"] = os.environ.copy()
     return runner([entrypoint, *args.tool_args], **kwargs).returncode
+
+
+def receive_handoff(workspace, *, independent=False):
+    """Receive before a caller decides the shared work's current state."""
+    try:
+        result = handoff_receive.receive(workspace)
+        if result.get("status") not in {"not-configured", "updated", "unchanged"}:
+            raise ValueError(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    except (ValueError, OSError) as exc:
+        message = "HANDOFF not confirmed; shared work must not use stale state: %s" % exc
+        if not independent:
+            raise PlacementError(message) from None
+        print("WARNING: " + message, file=sys.stderr)
+        return {"status": "unconfirmed"}
+    if result.get("status") != "not-configured":
+        print("HANDOFF: " + json.dumps(result, ensure_ascii=False, sort_keys=True), file=sys.stderr)
+    return result
 
 
 def write_rule(directory, rule_id, title, tools=None):
@@ -1714,9 +1736,13 @@ def main(argv, *, runner=subprocess.run, resolver=shutil.which):
     start_p.add_argument("--declaration")
     start_p.add_argument("--rules", action="append")
     start_p.add_argument("--skills", action="append")
+    start_p.add_argument("--handoff-independent", action="store_true",
+                         help="allow unrelated work to start with a warning if shared HANDOFF receipt fails")
     start_p.add_argument("workspace_id")
     start_p.add_argument("tool")
     start_p.add_argument("tool_args", nargs=argparse.REMAINDER)
+    handoff_p = sub.add_parser("handoff-receive", help="receive the locally bound HANDOFF before an existing GUI entry opens it")
+    handoff_p.add_argument("--workspace", required=True)
     mirror_p = sub.add_parser("mirror")
     mirror_p.add_argument("--skills", action="append")
     mirror_p.add_argument("--dest", required=True)
@@ -1751,6 +1777,9 @@ def main(argv, *, runner=subprocess.run, resolver=shutil.which):
             if args.tool_args[:1] == ["--"]:
                 args.tool_args = args.tool_args[1:]
             return start(args, runner=runner, resolver=resolver)
+        if args.command == "handoff-receive":
+            receive_handoff(args.workspace)
+            return 0
         if args.command == "mirror":
             return mirror(args)
         return selfcheck(args)
