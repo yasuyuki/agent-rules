@@ -1092,6 +1092,7 @@ s1\tcatalog.json\tenv
         self.assertEqual((target / "clash").read_bytes(), b"legitimate resolution\n")
 
     def operation_directory_sync(self, from_directory, ignored=False):
+        self.git("config", "core.autocrlf", "false")
         topic = Path(self.begin("topic", branch="topic")["worktree"])
         node = topic / "node"
         if from_directory:
@@ -1103,7 +1104,7 @@ s1\tcatalog.json\tenv
         self.git_at(topic, "commit", "-m", "old shape")
         self.git_at(topic, "push", "origin", "topic")
         publisher = self.root / "shape publisher"
-        self.command("git", "clone", "--branch", "topic", self.remote, publisher)
+        self.command("git", "clone", "-c", "core.autocrlf=false", "--branch", "topic", self.remote, publisher)
         self.git_at(publisher, "config", "user.name", "Publisher")
         self.git_at(publisher, "config", "user.email", "publisher@example.invalid")
         destination = publisher / "node"

@@ -132,7 +132,8 @@ class OperationTests(BranchManagementTests):
     def test_merge_records_a_real_combined_tree(self):
         self.begin("integration", "adopt", branch="main", into="main")
         source = Path(self.begin("source", branch="source")["worktree"])
-        self.integrate("target", name="target-only", contents="target\x00\n")
+        target = self.integrate("target", name="target-only", contents="target\x00\n")
+        target_bytes = (target / "target-only").read_bytes()
         (source / "source-only").write_bytes(b"source\x00\n")
         self.git_at(source, "add", "source-only"); self.git_at(source, "commit", "-m", "source")
         self.branch("prepare-merge", "--task", "source")
@@ -140,7 +141,7 @@ class OperationTests(BranchManagementTests):
         self.git("merge", "--no-ff", "--no-commit", "source")
         self.git("commit", "-m", "merge source")
         self.assertEqual((self.repo / "source-only").read_bytes(), b"source\x00\n")
-        self.assertEqual((self.repo / "target-only").read_bytes(), b"target\x00\n")
+        self.assertEqual((self.repo / "target-only").read_bytes(), target_bytes)
         completed = self.checked_operation(self.repo)
         self.assertEqual((completed["id"], completed["before"], completed["outcome"]),
                          (receipt["id"], receipt["before"], "completed"))
@@ -232,6 +233,9 @@ class OperationTests(BranchManagementTests):
         self.git_at(topic, "config", "filter.count.clean", command)
         self.git_at(topic, "config", "filter.count.smudge", command)
         self.git_at(topic, "config", "filter.count.required", "true")
+        self.git_at(topic, "hash-object", "--path=README", "--stdin", input="filter probe\n")
+        self.assertEqual(counter.read_text(), "ran")  # Prove the fixture can actually run.
+        counter.unlink()
         index = Path(self.git_at(topic, "rev-parse", "--path-format=absolute", "--git-path", "index").stdout.strip())
         state = Path(self.git_at(topic, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()) / "agent-branches/state.json"
         before = (index.read_bytes(), state.read_bytes(), (topic / "README").read_bytes())
