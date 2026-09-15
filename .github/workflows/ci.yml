@@ -41,7 +41,7 @@ jobs:
         if: matrix.shard == 0
         run: python tests/ci_runner.py --output ci-results/source.json --timeout 300 test_grok_placement test_start_config test_inventory_adoption test_inventory_inspection test_push_preflight test_agent_report test_branch_validation test_ci_runner test_verification_skill
       - name: Complete real-Git checkout contract
-        run: python tests/ci_runner.py --output ci-results/checkout.json --timeout 900 --workers 3 --shard-count 2 --shard-index ${{ matrix.shard }} --timings tests/ci_checkout_weights.json test_branch_management test_branch_recovery test_branch_remote_adoption
+        run: python tests/ci_runner.py --output ci-results/checkout.json --timeout 900 --workers 3 --shard-count 2 --shard-index ${{ matrix.shard }} --timings tests/ci_checkout_weights.json test_branch_management test_branch_recovery test_branch_remote_adoption test_branch_operations
       - name: Record resolved dependencies
         if: always()
         shell: bash
@@ -95,7 +95,11 @@ jobs:
             test_branch_management.BranchManagementTests.test_install_preserves_an_existing_hook_and_detects_tampering \
             test_branch_management.BranchManagementTests.test_declare_agent_updates_only_a_registered_source_catalog \
             test_branch_management.BranchManagementTests.test_unregistered_refs_no_verify_and_alternate_index_are_rejected \
-            test_branch_remote_adoption
+            test_branch_remote_adoption \
+            test_branch_operations.OperationTests.test_merge_rejects_same_source_path_contamination_before_commit \
+            test_branch_operations.OperationTests.test_merge_records_a_real_combined_tree \
+            test_branch_operations.OperationTests.test_sync_combines_real_remote_result_and_diagnostic_is_nonwriting \
+            test_branch_operations.OperationTests.test_sync_partial_index_update_keeps_the_original_receipt_for_resume
           cd "$RUNNER_TEMP"
           "$runtime/agent-rules" --version
           "$runtime/agent-rules" --help
