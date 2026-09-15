@@ -4,7 +4,9 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
+from unittest import mock
 
 
 SOURCE = Path(__file__).resolve().parents[1] / 'bin' / 'inventory_inspection.py'
@@ -67,9 +69,21 @@ class InventoryInspectionTests(unittest.TestCase):
         })
         self.assertEqual(calls, [([
             self.executable, 'inspect', '--json'], {
-            'cwd': self.normalized_cwd, 'stdin': subprocess.DEVNULL, 'stdout': subprocess.PIPE,
+            'cwd': self.cwd, 'stdin': subprocess.DEVNULL, 'stdout': subprocess.PIPE,
             'stderr': subprocess.PIPE, 'text': True,
         })])
+
+    def test_path_case_follows_host_semantics_and_accepts_iterators(self):
+        payload = self.payload(projectInstructions=[{'path': self.instruction.lower()}])
+        runner, _ = self.runner(payload)
+        arguments = dict(executable=self.executable, cwd=self.cwd,
+                         instruction_paths=iter([self.instruction]), skill_paths=[], runner=runner)
+        if os.path.normcase(self.instruction) == os.path.normcase(self.instruction.lower()):
+            result = inspection.inspect_grok(**arguments)
+            self.assertEqual(result['instructionPaths'], [self.normalized_instruction])
+        else:
+            with self.assertRaisesRegex(ValueError, 'required instructions'):
+                inspection.inspect_grok(**arguments)
 
     def test_rejects_foreign_cwd(self):
         foreign = os.path.abspath('inventory-inspection-foreign')
@@ -104,6 +118,79 @@ class InventoryInspectionTests(unittest.TestCase):
             self.inspect(self.payload(projectInstructions=[]))
         with self.assertRaisesRegex(ValueError, 'required skills for cwd '):
             self.inspect(self.payload(skills=[]))
+
+    def test_missing_ignored_instruction_reports_git_fact_without_policy_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(['git', 'init', '-q', directory], check=True)
+            instruction = root / 'AGENTS.md'
+            instruction.write_text('private instruction', encoding='utf-8')
+            policy = root / '.gitignore'
+            policy.write_text('# private policy comment\nAGENTS.md\n', encoding='utf-8')
+            payload = self.payload(cwd=directory, projectRoot=directory,
+                                   projectInstructions=[], skills=[])
+            calls = []
+
+            def run(argv, **kwargs):
+                calls.append(argv)
+                if argv[0] == self.executable:
+                    return subprocess.CompletedProcess(argv, 0, json.dumps(payload), '')
+                return subprocess.run(argv, **kwargs)
+
+            with self.assertRaisesRegex(ValueError, 'Git ignores existing project paths') as error:
+                inspection.inspect_grok(executable=self.executable, cwd=directory,
+                                        instruction_paths=[instruction], skill_paths=[], runner=run)
+            self.assertIn('AGENTS.md', str(error.exception))
+            self.assertNotIn('private', str(error.exception))
+            self.assertEqual(calls[-1], ['git', 'check-ignore', '--quiet', '--', 'AGENTS.md'])
+            self.assertEqual(instruction.read_text(encoding='utf-8'), 'private instruction')
+            self.assertEqual(policy.read_text(encoding='utf-8'), '# private policy comment\nAGENTS.md\n')
+
+            policy.write_text('', encoding='utf-8')
+            with self.assertRaises(ValueError) as error:
+                inspection.inspect_grok(executable=self.executable, cwd=directory,
+                                        instruction_paths=[instruction], skill_paths=[], runner=run)
+            self.assertNotIn('Git ignores', str(error.exception))
+
+            def no_git(argv, **kwargs):
+                if argv[0] == 'git':
+                    raise FileNotFoundError('private executable diagnostic')
+                return run(argv, **kwargs)
+
+            with self.assertRaisesRegex(ValueError, 'did not discover required instructions') as error:
+                inspection.inspect_grok(executable=self.executable, cwd=directory,
+                                        instruction_paths=[instruction], skill_paths=[], runner=no_git)
+            self.assertNotIn('private', str(error.exception))
+
+    def test_windows_normalization_keeps_requested_case_and_spaces_for_git(self):
+        """Comparison is case-insensitive, but Git receives the requested path."""
+        with tempfile.TemporaryDirectory(prefix='Inventory Space ') as directory:
+            root = Path(directory)
+            instruction = root / 'AGENTS.md'
+            instruction.write_text('private instruction', encoding='utf-8')
+            lower_instruction = str(instruction).lower()
+            payload = self.payload(cwd=str(root).lower(), projectRoot=str(root).lower(),
+                                   projectInstructions=[], skills=[])
+            calls = []
+
+            def run(argv, **kwargs):
+                calls.append(argv)
+                if argv[0] == self.executable:
+                    return subprocess.CompletedProcess(argv, 0, json.dumps(payload), '')
+                self.assertEqual(argv, ['git', 'check-ignore', '--quiet', '--', 'AGENTS.md'])
+                return subprocess.CompletedProcess(argv, 0, '', '')
+
+            # Linux normally preserves case, so emulate Windows normcase.  With the
+            # old implementation this used a lower-cased filesystem/Git path.
+            with mock.patch.object(inspection.os.path, 'normcase', side_effect=str.lower):
+                with self.assertRaisesRegex(ValueError, 'Git ignores existing project paths') as error:
+                    inspection.inspect_grok(
+                        executable=self.executable, cwd=str(root),
+                        instruction_paths=[instruction], skill_paths=[], runner=run)
+
+            self.assertIn('AGENTS.md', str(error.exception))
+            self.assertNotIn(lower_instruction, str(error.exception))
+            self.assertEqual(calls[-1], ['git', 'check-ignore', '--quiet', '--', 'AGENTS.md'])
 
     def test_rejects_failed_or_invalid_output_without_echoing_stderr(self):
         for payload, returncode, reason in [

@@ -7,9 +7,61 @@ on:
 permissions:
   contents: read
 
+# Replace only older evidence for the same workflow/event/ref (or PR).
+# Push head, PR merge and integrated main remain distinct evidence.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+
 jobs:
-  test:
+  checkout:
+    timeout-minutes: 35
     strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.12"]
+        shard: [0, 1]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Handoff contract
+        if: matrix.shard == 0
+        run: python tests/ci_runner.py --output ci-results/handoff.json --timeout 300 --command python tests/test_handoff.py
+      - name: Placement and rules contract
+        if: matrix.shard == 0
+        run: python tests/ci_runner.py --output ci-results/rules.json --timeout 300 --command python tests/test_rules.py
+      - name: Source regression contracts
+        if: matrix.shard == 0
+        run: python tests/ci_runner.py --output ci-results/source.json --timeout 300 test_grok_placement test_start_config test_inventory_adoption test_inventory_inspection test_push_preflight test_agent_report test_branch_validation test_ci_runner test_verification_skill
+      - name: Complete real-Git checkout contract
+        run: python tests/ci_runner.py --output ci-results/checkout.json --timeout 900 --workers 3 --shard-count 2 --shard-index ${{ matrix.shard }} --timings tests/ci_checkout_weights.json test_branch_management test_branch_recovery test_branch_remote_adoption test_branch_operations
+      - name: Record resolved dependencies
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p ci-results
+          python -m pip freeze > ci-results/build-dependencies.txt
+          python -VV > ci-results/python.txt
+          git --version > ci-results/git.txt
+      - name: Retain timings and outcomes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-results-checkout-${{ matrix.os }}-${{ matrix.python }}-${{ matrix.shard }}-${{ github.run_attempt }}
+          path: ci-results/
+          if-no-files-found: error
+
+  package:
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         python: ["3.10", "3.12"]
@@ -19,17 +71,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: python tests/test_handoff.py
-      - run: python tests/test_rules.py
-      - run: python tests/test_grok_placement.py
-      - run: python tests/test_start_config.py
-      - run: python tests/test_inventory_adoption.py
-      - run: python tests/test_inventory_inspection.py
-      - run: python tests/test_push_preflight.py
-      - run: python tests/test_agent_report.py
-      - run: python tests/test_branch_management.py
-      - run: python tests/test_branch_recovery.py
-      - run: python tests/test_verification_skill.py
       - run: python -m pip install build twine
       - run: python -m build
       - name: Validate distribution metadata
@@ -45,9 +86,56 @@ jobs:
             runtime="$RUNNER_TEMP/agent-rules-runtime/bin"
           fi
           "$runtime/python" -m pip install --no-index dist/*.whl
-          "$runtime/python" tests/test_project.py
+          "$runtime/python" tests/ci_runner.py --output ci-results/project.json --timeout 300 test_project
           installed_place=$("$runtime/python" -c 'import agent_rules_manager.bin.place as p; print(p.__file__)')
-          AGENT_RULES_PLACE="$installed_place" "$runtime/python" tests/test_branch_management.py
+          "$runtime/python" -c 'import pathlib, agent_rules_manager.bin.place as p, agent_rules_manager.bin.branch_management as b; root=pathlib.Path.cwd().resolve(); paths=[pathlib.Path(m.__file__).resolve() for m in (p,b)]; assert all(root not in path.parents for path in paths); print(*paths, sep="\n")' > ci-results/installed-paths.txt
+          # Checkout jobs cover full behavior. Retain the distinct installed boundary:
+          # packaged hook/data, legacy hook, source-only catalog, and real ref guards.
+          AGENT_RULES_PLACE="$installed_place" "$runtime/python" tests/ci_runner.py --output ci-results/wheel.json --timeout 600 --workers 3 \
+            test_branch_management.BranchManagementTests.test_install_preserves_an_existing_hook_and_detects_tampering \
+            test_branch_management.BranchManagementTests.test_declare_agent_updates_only_a_registered_source_catalog \
+            test_branch_management.BranchManagementTests.test_unregistered_refs_no_verify_and_alternate_index_are_rejected \
+            test_branch_remote_adoption \
+            test_branch_operations.OperationTests.test_merge_rejects_same_source_path_contamination_before_commit \
+            test_branch_operations.OperationTests.test_merge_records_a_real_combined_tree \
+            test_branch_operations.OperationTests.test_sync_combines_real_remote_result_and_diagnostic_is_nonwriting \
+            test_branch_operations.OperationTests.test_sync_partial_index_update_keeps_the_original_receipt_for_resume
           cd "$RUNNER_TEMP"
           "$runtime/agent-rules" --version
           "$runtime/agent-rules" --help
+      - name: Record resolved dependencies
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p ci-results
+          python -m pip freeze > ci-results/build-dependencies.txt
+          python -VV > ci-results/python.txt
+          git --version > ci-results/git.txt
+      - name: Retain timings and outcomes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-results-package-${{ matrix.os }}-${{ matrix.python }}-${{ github.run_attempt }}
+          path: ci-results/
+          if-no-files-found: error
+
+  # Preserve the existing check names and require every configuration/partition.
+  # always() makes failure, cancellation and unexpected skips explicit failures.
+  test:
+    needs: [checkout, package]
+    if: always()
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.12"]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all verification results
+        env:
+          CHECKOUT_RESULT: ${{ needs.checkout.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+        shell: bash
+        run: |
+          test "$CHECKOUT_RESULT" = success
+          test "$PACKAGE_RESULT" = success
