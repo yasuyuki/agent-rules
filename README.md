@@ -979,6 +979,59 @@ REMOTE/BRANCH` in its registered worktree. The one-use import is pinned to the
 old and fetched new commits; unrelated fast-forwards are rejected. This does not
 identify which Git command produced the same reference transition.
 
+`branch check --json` diagnoses the latest recorded sync, merge, or pick in
+its registered checkout. It returns `id`, `kind`, `task`, `source`, `before`,
+`current`, `expected` blob/mode entries, `conflicts`, `authorization`, and
+`next_action`. `before`/`current` retain HEAD, semantic index entries, raw index
+SHA-256, physical byte hashes/modes, dirty categories, and sequencer markers.
+`outcome` distinguishes `no-update`, `completed`, `partial-update`, `conflict`,
+and `unknown`; the last three fail the check. An active Git operation without
+preparation also fails, with its pre-operation state unknown.
+
+`reference_completion` is a historical receipt, separately associated with the
+operation ID and permission. It cannot certify a later pending operation or
+unrecognized HEAD. Later ordinary registered commits remain supported.
+`git_exit` is null: these separate entry points do not observe the enclosing Git
+command's exit or signal. An `attempt` can report the observed legacy hook exit,
+a prepared ref, or recorded ref completion without inventing command success.
+Check never refreshes the index, consumes permissions, writes state, generates
+merge objects, or runs clean/smudge filters or textconv.
+
+Fresh operations conservatively require clean staged/unstaged/untracked state
+and reject incoming collisions with ignored files or directories. They preserve
+existing work rather than stash, reset, clean, or back it up. Exact pending
+retries retain their original ID and `before`, including a refused fast-forward
+resumed through `begin --mode continue --sync`. Changed sources cannot replace a
+pending baseline. After an explicitly reviewed Git abort restores the original
+HEAD/index/worktree, a fresh preparation may select the new source.
+
+Preparation calculates the expected Git result outside the registration lock.
+Sync uses the fetched tree; merge/pick use `merge-tree --write-tree` (pick also
+requires `--merge-base`, and a single-parent commit). Unsupported Git versions
+fail before issuing permission. Custom merge drivers/renormalization and
+unverified worktree conversions are outside this preparation contract. Plain
+text/binary and built-in CRLF handling are supported; `-text` and binary content
+are not blindly normalized. `unverified_worktree_paths` is not evidence of a
+successful content match. Submodules and custom filters require separate work.
+
+Before commit/ref acceptance, the actual index content and modes must match the
+expected result. Only Git's computed conflicting paths permit resolution edits;
+the resolved whole tree is then pinned at the commit boundary and rechecked
+after legacy hooks. Editing another portion of an incoming file in a clean
+merge does not reuse its authorization. Late authorization of an active
+merge/pick still checks the computable result and labels its snapshot
+`active-operation-authorization`; it does not reconstruct a missing before.
+
+Evidence is bounded to the latest operation per branch and is not a backup,
+proof of authorship, or protection against arbitrary simultaneous writers.
+Snapshots are read twice to reject observable races. POSIX saves flush the file,
+replace, then flush the parent directory; flush failures propagate without
+rolling back written evidence. Windows has no portable Python directory-fsync
+claim. Failed Git operations can leave index/worktree changes before a ref is
+rejected; diagnosis preserves and exposes these changes without automatic repair.
+Installed dispatch uses the same packaged engine. Each worktree lead owns Git
+updates; implementation workers do not perform them.
+
 Prepare integration in the registered destination with `branch prepare-merge
 --repo DESTINATION_PATH --task SOURCE_ID`. Merge with `git merge --no-ff
 --no-commit SOURCE_BRANCH`, run the project's required verification, then commit.
@@ -1091,8 +1144,9 @@ The lead still judges functional relationships and the validity of verification.
 See the [Git hook contract](https://git-scm.com/docs/githooks) and
 [cherry-pick contract](https://git-scm.com/docs/git-cherry-pick).
 
-Run `python3 tests/test_branch_management.py` and
-`python3 tests/test_branch_recovery.py` for isolated real-Git tests, in
+Run `python3 tests/ci_runner.py --output ci-results/checkout.json --timeout 900
+--workers 3 test_branch_management test_branch_recovery test_branch_operations
+test_branch_remote_adoption` for isolated real-Git tests, in
 addition to the existing rules, push preflight and installed-package checks.
 The Linux/Windows CI matrix runs the same test. CI results do not establish
 installation or behavioral acceptance on an operator's actual host.

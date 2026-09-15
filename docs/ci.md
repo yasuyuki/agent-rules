@@ -13,6 +13,7 @@ Concurrency replaces only the same workflow/event/repository/PR-or-ref.
 | --- | --- | --- |
 | Ref/commit/push rejection, remote identities, one-use merge/pick/tag approval, worktree protection and non-destructive retirement | Entire `test_branch_management` | Real unregistered-ref/no-verify/alternate-index rejection scenario |
 | Crash recovery, locks, concurrent operations, legacy-hook mutation revalidation | Entire `test_branch_recovery`, collected through its existing `load_tests` | Same shipped branch engine, exercised through installed hooks |
+| Operation receipts: refusal preservation, merge/pick/sync correspondence, conflicts, ignored collisions, binary and CRLF inputs | `test_branch_operations`, collected without inherited fixture cases | Representative completed merge and sync cases, plus contamination refusal, through the installed command |
 | Existing hook arguments/status and modified-hook detection | Entire branch suite | `test_install_preserves_an_existing_hook_and_detects_tampering` |
 | Source-only inventory catalog versus installed branch engine (previous wheel regression) | Entire branch suite | `test_declare_agent_updates_only_a_registered_source_catalog` |
 | Imports, package data, project CLI apply/check/update and non-destructive failures | Existing source tests | Entire `test_project`, installed in a clean venv; subprocess cwd is outside checkout |
@@ -25,7 +26,10 @@ repeating inherited branch tests. Package artifacts include `installed-paths.txt
 the check rejects CLI/module paths inside the source checkout. The owned
 `config.lock` failure leaves a real checkout at Q before continuation, without
 fabricating registry fields. POSIX mode cases have explicit Windows skips;
-ordinary adoption and recovery run on every OS/Python configuration.
+ordinary adoption, recovery, and operation correspondence run on every OS/Python
+configuration. `test_branch_operations` has its own `load_tests`, so adding it
+does not repeat `BranchManagementTests`; its installed-wheel case uses
+`AGENT_RULES_PLACE` and therefore exercises the packaged `branch_management.py`.
 
 | Invariant | Normal control | Counterexample / test suffix in `RemoteAdoptionAcceptanceTests` |
 | --- | --- | --- |
