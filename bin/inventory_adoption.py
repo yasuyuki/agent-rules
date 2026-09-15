@@ -116,6 +116,9 @@ def effective_active(place, args, context, site):
         return False
     try:
         expected = identity(place, args, context, site, adoption['sourceRevision'])
+        # HEAD records where adoption ran; unrelated commits do not change the
+        # adopted inputs. Keep checking their bytes and the fixed source revision.
+        expected['runtimeHead'] = adoption['runtimeHead']
     except (KeyError, OSError, ValueError, place.environment_inventory.CatalogError):
         return False
     return adoption == dict(expected, state='active')

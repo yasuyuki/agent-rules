@@ -171,9 +171,21 @@ class InventoryAdoptionTests(unittest.TestCase):
         self.assertEqual(self.adopt(), 1)
         self.assertEqual(self.config.read_bytes(), active)
         self.catalog.write_bytes(self.catalog_bytes)
+        self.assertEqual(self.start()[0], 0)
+
+    def test_unrelated_commit_preserves_adoption_but_changed_inputs_still_refuse(self):
+        self.assertEqual(self.adopt(), 0)
+        active = self.config.read_bytes()
         (self.root / "unrelated").write_text("next\n", encoding="utf-8")
         self.git("add", "unrelated"); self.git("commit", "-qm", "head moves")
+        result, calls = self.start()
+        self.assertEqual(result, 0)
+        self.assertEqual(calls[-1][0], ["/bin/codex"])
+        self.assertEqual(self.config.read_bytes(), active)
+        rule = self.root / "private-rules" / "environment-inventory-required.rule.md"
+        rule.write_bytes(rule.read_bytes() + b"\nchanged\n")
         self.assertEqual(self.start()[0], 1)
+        self.assertEqual(self.config.read_bytes(), active)
         self.assertEqual(self.catalog.read_bytes(), self.catalog_bytes)
 
     def test_pending_readiness_failure_and_config_cas_preserve_state(self):
