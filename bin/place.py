@@ -38,6 +38,9 @@ sys.dont_write_bytecode = True
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
+entry_spec = importlib.util.spec_from_file_location("managed_entry", HERE / "managed_entry.py")
+managed_entry = importlib.util.module_from_spec(entry_spec)
+entry_spec.loader.exec_module(managed_entry)
 PLACEMENT = ROOT / "placement.json"
 FIXTURE_DECL = ROOT / "tests" / "fixtures" / "place" / "declaration.md"
 
@@ -905,7 +908,7 @@ def current_runtime(context):
 
 
 def inventory_preflight(args, context, site_id, *, resolver=shutil.which,
-                        mode="normal", constructing_agent=None, target_tool=None):
+                        mode="normal", constructing_agent=None, target_tool=None, selected_locations=None):
     """Check one target before start, or every registered CLI for readiness."""
     binding = inventory_binding(args, context, site_id)
     if binding is None:
@@ -925,9 +928,11 @@ def inventory_preflight(args, context, site_id, *, resolver=shutil.which,
         mode=mode, constructing_agent=constructing_agent, target_agent=target_tool,
         required_site=site_id,
         runtime_state=None if active is None else ('active' if active else 'pending'),
+        selected_locations=selected_locations,
     )
     if errors:
         raise PlacementError("inventory lifecycle check failed: " + "; ".join(errors))
+    return True
 
 
 def _inventory_site_runtime(context, site_id):
@@ -1551,6 +1556,98 @@ def start_config(args):
     return host
 
 
+def standard_workspace(context, cwd, tool):
+    """Select the deepest declared root, including roots where a tool is held."""
+    workspaces, locations = context[3], context[4]
+    candidates = []
+    for key, workspace in workspaces.items():
+        if workspace.get("kind") != "direct":
+            continue
+        root = Path(workspace["path"]).resolve()
+        if cwd == root or root in cwd.parents:
+            candidates.append((len(root.parts), key))
+    if not candidates:
+        raise PlacementError("working directory is not declared: %s" % cwd)
+    depth = max(item[0] for item in candidates)
+    matches = [key for size, key in candidates if size == depth]
+    if len(matches) != 1:
+        raise PlacementError("ambiguous workspace for %s: %s" % (cwd, ", ".join(matches)))
+    key = matches[0]
+    if not any(loc["scope"] == "workspace" and loc["anchor"] == key and
+               loc["tool"] == tool and loc["requirement"] == "required"
+               for loc in locations.values()):
+        raise PlacementError("tool %s is not enabled in workspace %s; check its placement/hold before adoption" % (tool, key))
+    return key
+
+
+def native_cwd(tool, argv, cwd):
+    """Recognize only documented native directory options; keep argv intact."""
+    options = {"grok": ("--cwd",), "codex": ("--cd", "-C")}.get(tool, ())
+    result = cwd
+    seen = False
+    values = {
+        "grok": {"--agent", "--agents", "--allow", "--allowedTools", "--debug-file", "--deny", "--disallowedTools",
+                 "--disallowed-tools", "--json-schema", "--leader-socket", "-m", "--model", "--max-turns",
+                 "--output-format", "-p", "--single", "--permission-mode", "--prompt-file", "--prompt-json",
+                 "--reasoning-effort", "--effort", "--rules", "-s", "--session-id", "--sandbox",
+                 "--system-prompt-override", "--system-prompt", "--tools", "--worktree-ref", "--ref"},
+        "codex": {"-c", "--config", "-m", "--model", "--profile", "--sandbox", "--ask-for-approval",
+                  "-a", "-s", "-p", "--image", "-i", "--output-schema", "--output-last-message", "-o",
+                  "--enable", "--disable", "--add-dir"},
+    }.get(tool, set())
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--":
+            break
+        if arg in values:
+            index += 2
+            continue
+        value = None
+        if arg in options:
+            index += 1
+            if index == len(argv) or not argv[index]:
+                raise PlacementError("%s requires a directory" % arg)
+            value = argv[index]
+        else:
+            for option in options:
+                if arg.startswith(option + "="):
+                    value = arg[len(option) + 1:]
+                elif option == "-C" and arg.startswith("-C") and len(arg) > 2:
+                    value = arg[2:]
+        if value is not None:
+            if not value:
+                raise PlacementError("native working directory is empty")
+            if seen:
+                raise PlacementError("duplicate native working-directory options; select one directory")
+            result = (cwd / value).resolve()
+            seen = True
+        index += 1
+    if not result.is_dir():
+        raise PlacementError("working directory does not exist: %s" % result)
+    return result, seen
+
+
+def anchored_native_args(tool, argv, cwd, has_override):
+    options = {"grok": ("--cwd",), "codex": ("--cd", "-C")}.get(tool, ())
+    if has_override:
+        return argv
+    # Codex otherwise offers to switch to a resumed thread's historical cwd.
+    # The explicit native override keeps resume in the workspace just checked.
+    return [options[0], str(cwd), *argv] if options else argv
+
+
+def maintenance_command(tool, argv):
+    # These native operations cannot start an agent. Do not bypass on the mere
+    # presence of --help in an arbitrary prompt or on a generic override flag.
+    if argv in (["--help"], ["-h"], ["--version"], ["-V"], ["-v"]):
+        return True
+    commands = {"grok": {"help", "login", "logout", "update", "inspect", "doctor", "version", "v"},
+                "codex": {"help", "login", "logout", "update", "doctor"},
+                "claude": {"auth", "update", "upgrade", "doctor"}}
+    return bool(argv and argv[0] in commands.get(tool, set()))
+
+
 def start(args, runner=subprocess.run, resolver=shutil.which):
     """Run one declared CLI in one local direct workspace.
 
@@ -1558,6 +1655,16 @@ def start(args, runner=subprocess.run, resolver=shutil.which):
     command. Invoke this same entry point on the target host instead of depending
     on an environment-private launcher.
     """
+    if getattr(args, "standard", False) and runner is subprocess.run and os.name == "posix":
+        runner = exec_native
+    if getattr(args, "standard", False) and maintenance_command(args.tool, args.tool_args):
+        placement = json.loads(PLACEMENT.read_text(encoding="utf-8"))
+        if args.tool not in placement["tools"]:
+            raise PlacementError("unknown tool: " + args.tool)
+        executable = resolver(placement["tools"][args.tool]["entrypoint"])
+        if not executable:
+            raise PlacementError("tool does not resolve: " + args.tool)
+        return runner([executable, *args.tool_args]).returncode
     configured_host = start_config(args)
     old_host = os.environ.get("ENVIRONMENT_INVENTORY_HOST")
     if configured_host and old_host and old_host != configured_host:
@@ -1574,9 +1681,24 @@ def start(args, runner=subprocess.run, resolver=shutil.which):
                 os.environ["ENVIRONMENT_INVENTORY_HOST"] = old_host
 
 
+def exec_native(argv, *, cwd=None, env=None):
+    """Replace the thin POSIX entry after checks: preserve TTY and signals."""
+    try:
+        if cwd is not None:
+            os.chdir(cwd)
+        os.execvpe(argv[0], argv, os.environ if env is None else env)
+    except OSError as exc:
+        raise PlacementError("could not execute vendor: %s" % exc) from None
+
+
 def _start(args, runner=subprocess.run, resolver=shutil.which, configured_host=None):
     context = load_context(args)
     placement, rules, sites, workspaces, locations, exceptions, _selected, skills = context
+    actual_cwd = None
+    has_override = False
+    if getattr(args, "standard", False):
+        actual_cwd, has_override = native_cwd(args.tool, args.tool_args, Path.cwd().resolve())
+        args.workspace_id = standard_workspace(context, actual_cwd, args.tool)
     workspace = workspaces.get(args.workspace_id)
     if workspace is None:
         raise PlacementError("unknown workspace: %s" % args.workspace_id)
@@ -1598,25 +1720,36 @@ def _start(args, runner=subprocess.run, resolver=shutil.which, configured_host=N
     if tool is None:
         raise PlacementError("unknown tool: %s" % args.tool)
 
-    inventory_preflight(args, context, site_id, resolver=resolver, target_tool=args.tool)
-
     selected = [location for location in locations.values()
                 if location["tool"] == args.tool and site_of(location, workspaces) == site_id]
-    errors, _printed = check_state(
-        rules, placement, selected, exceptions, sites, workspaces, locations, skills,
-        check_installed=False,
-    )
-    if errors:
-        raise PlacementError("placement check failed: " + "; ".join(errors))
+    if actual_cwd is not None:
+        selected = [loc for loc in selected if loc["scope"] == "home" or
+                    (loc["scope"] == "workspace" and
+                     (Path(workspaces[loc["anchor"]]["path"]).resolve() == actual_cwd or
+                      Path(workspaces[loc["anchor"]]["path"]).resolve() in actual_cwd.parents))]
+    checked = inventory_preflight(args, context, site_id, resolver=resolver, target_tool=args.tool,
+                                  selected_locations=selected if actual_cwd is not None else None)
+    if not checked:
+        errors, _printed = check_state(
+            rules, placement, selected, exceptions, sites, workspaces, locations, skills,
+            check_installed=False,
+        )
+        if errors:
+            raise PlacementError("placement check failed: " + "; ".join(errors))
 
     entrypoint = resolver(tool["entrypoint"])
     if entrypoint is None:
         raise PlacementError("tool does not resolve: %s" % tool["entrypoint"])
-    receive_handoff(workspace["path"], independent=getattr(args, "handoff_independent", False))
-    kwargs = {"cwd": workspace["path"]}
+    receive_handoff(str(actual_cwd) if actual_cwd is not None else workspace["path"],
+                    independent=getattr(args, "handoff_independent", False))
+    # Native relative --cwd/--cd options are resolved by the vendor from the
+    # invocation directory, not from their already-resolved destination.
+    kwargs = {"cwd": str(Path.cwd()) if actual_cwd is not None else workspace["path"]}
     if configured_host:
         kwargs["env"] = os.environ.copy()
-    return runner([entrypoint, *args.tool_args], **kwargs).returncode
+    tool_args = (anchored_native_args(args.tool, args.tool_args, actual_cwd, has_override)
+                 if actual_cwd is not None else args.tool_args)
+    return runner([entrypoint, *tool_args], **kwargs).returncode
 
 
 def receive_handoff(workspace, *, independent=False):
@@ -1631,7 +1764,7 @@ def receive_handoff(workspace, *, independent=False):
             raise PlacementError(message) from None
         print("WARNING: " + message, file=sys.stderr)
         return {"status": "unconfirmed"}
-    if result.get("status") != "not-configured":
+    if result.get("status") == "updated":
         print("HANDOFF: " + json.dumps(result, ensure_ascii=False, sort_keys=True), file=sys.stderr)
     return result
 
@@ -1958,7 +2091,9 @@ def selfcheck(_args):
     return 0
 
 
-def main(argv, *, runner=subprocess.run, resolver=shutil.which):
+def main(argv, *, runner=subprocess.run, resolver=None):
+    if resolver is None:
+        resolver = managed_entry.resolve_executable
     if argv[:1] == ["branch"]:
         import branch_management
         return branch_management.main(argv[1:])
@@ -2032,6 +2167,19 @@ def main(argv, *, runner=subprocess.run, resolver=shutil.which):
     start_p.add_argument("workspace_id")
     start_p.add_argument("tool")
     start_p.add_argument("tool_args", nargs=argparse.REMAINDER)
+    standard_p = sub.add_parser("standard-start", help="start from the current directory with explicitly saved inputs")
+    standard_p.add_argument("--config", required=True)
+    standard_p.add_argument("tool")
+    standard_p.add_argument("tool_args", nargs=argparse.REMAINDER)
+    standard_p.set_defaults(standard=True, declaration=None, rules=None, skills=None)
+    entry_p = sub.add_parser("entry", help="install or remove standard names connected to public start")
+    entry_sub = entry_p.add_subparsers(dest="entry_command", required=True)
+    entry_install = entry_sub.add_parser("install")
+    entry_install.add_argument("--config", required=True)
+    entry_install.add_argument("--directory", required=True)
+    entry_install.add_argument("--tool", action="append", required=True)
+    entry_remove = entry_sub.add_parser("remove")
+    entry_remove.add_argument("--directory", required=True)
     handoff_p = sub.add_parser("handoff-receive", help="receive the locally bound HANDOFF before an existing GUI entry opens it")
     handoff_p.add_argument("--workspace", required=True)
     mirror_p = sub.add_parser("mirror")
@@ -2068,7 +2216,25 @@ def main(argv, *, runner=subprocess.run, resolver=shutil.which):
             return inventory_activate(args, resolver=resolver)
         if args.command == "save-start-config":
             return save_start_config(args)
-        if args.command == "start":
+        if args.command == "entry":
+            if args.entry_command == "install":
+                from types import SimpleNamespace
+                selected = SimpleNamespace(config=args.config, declaration=None, rules=None, skills=None)
+                start_config(selected)
+                context = load_context(selected)
+                for tool in args.tool:
+                    if tool not in context[0]["tools"]:
+                        raise PlacementError("unknown tool: " + tool)
+                    if context[0]["tools"][tool]["entrypoint"] != tool:
+                        raise PlacementError("standard entry requires the descriptor's native name: " + tool)
+                    if not any(loc["tool"] == tool and loc["requirement"] == "required"
+                               for loc in context[4].values()):
+                        raise PlacementError("tool is not declared: " + tool)
+                managed_entry.install(args.config, args.directory, args.tool)
+            else:
+                managed_entry.remove(args.directory)
+            return 0
+        if args.command in {"start", "standard-start"}:
             if args.tool_args[:1] == ["--"]:
                 args.tool_args = args.tool_args[1:]
             return start(args, runner=runner, resolver=resolver)
@@ -2078,7 +2244,7 @@ def main(argv, *, runner=subprocess.run, resolver=shutil.which):
         if args.command == "mirror":
             return mirror(args)
         return selfcheck(args)
-    except PlacementError as exc:
+    except (PlacementError, managed_entry.EntryError) as exc:
         print("FAIL: %s" % exc, file=sys.stderr)
         return 1
 

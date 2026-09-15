@@ -114,7 +114,7 @@ def validate_lifecycle(catalog_path, placement_context, environment_id, mode="re
                        place_module, resolver=shutil.which, current_principal=None,
                        required_skill_id=DEFAULT_SKILL, required_binding_id=DEFAULT_BINDING,
                        declaration_path=None, constructing_agent=None, target_agent=None,
-                       required_site=None, runtime_state=None):
+                       required_site=None, runtime_state=None, selected_locations=None):
     """Validate one environment's placement readiness or one normal CLI start.
 
     Resolver is called only for a local runtime agent and receives its placement
@@ -244,6 +244,8 @@ def validate_lifecycle(catalog_path, placement_context, environment_id, mode="re
         selected = [location for location in all_locations
                     if location.get("tool") == descriptor and
                     place_module.site_of(location, context["workspaces"]) in agent_sites]
+        if selected_locations is not None and mode == "normal":
+            selected = [location for location in selected if location in selected_locations]
         if not selected:
             errors.append("%s: %s has no declared managed placement location" % (environment_id, descriptor))
             continue

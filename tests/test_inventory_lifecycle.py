@@ -279,6 +279,12 @@ with tempfile.TemporaryDirectory() as directory:
     managed_root = ctx[0]["tools"]["opencode"]["configHome"]["default"].replace("$HOME", str(home))
     runtime = {"user": __import__("getpass").getuser(), "home": str(home), "host": platform.system(), "platform": platform.system(), "configRoots": {"opencode": managed_root}}
     resolve = lambda name: "/bin/opencode" if name == "opencode" else None
+    scoped = [loc for loc in ctx[4].values() if loc['tool'] == 'opencode']
+    errors, _ = lifecycle.validate_lifecycle(
+        data, ctx, "env", mode="normal", target_agent="opencode", runtime_state="active",
+        selected_locations=scoped, place_module=place, declaration_path=decl,
+        current_principal=runtime, resolver=resolve)
+    assert not errors, errors
     errors, _ = lifecycle.validate_lifecycle(data, ctx, "env", mode="construction", constructing_agent="opencode", place_module=place, declaration_path=decl, current_principal=runtime, resolver=resolve)
     assert not errors, errors
     (home / "work" / ".codex" / "skills" / "maintain-environment-inventory" / place.agent_rules.SKILL_MARKER).unlink()
@@ -286,6 +292,11 @@ with tempfile.TemporaryDirectory() as directory:
     assert not errors, errors
     agents = home / "work" / "AGENTS.md"
     agents.write_text(place.agent_rules.splice(agents.read_text(encoding="utf-8"), "codex-subagent-routing", "drift\n"), encoding="utf-8")
+    errors, _ = lifecycle.validate_lifecycle(
+        data, ctx, "env", mode="normal", target_agent="opencode", runtime_state="active",
+        selected_locations=scoped, place_module=place, declaration_path=decl,
+        current_principal=runtime, resolver=resolve)
+    assert any("codex-subagent-routing' differs" in error for error in errors), errors
     errors, _ = lifecycle.validate_lifecycle(data, ctx, "env", mode="construction", constructing_agent="opencode", place_module=place, declaration_path=decl, current_principal=runtime, resolver=resolve)
     assert any("codex-subagent-routing' differs" in error for error in errors), errors
     place.apply_projection(ctx[1], ctx[0], list(ctx[4].values()), ctx[5], ctx[2], ctx[3], ctx[7])
