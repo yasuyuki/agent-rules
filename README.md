@@ -887,6 +887,58 @@ and update the publication-status paragraph above. Do not add tokens to this
 repository or automatically publish on pushes. This change does not create
 tags, GitHub Releases or PyPI releases.
 
+## Receiving shared HANDOFF state
+
+An optional, locally reviewed `rules/handoff-receive.json` at a Git workspace
+root binds that receiver to one HTTPS repository, branch, Markdown fragment and
+historical commit. Unconfigured workspaces do not fetch or write anything.
+The binding contains `version: 1`, `pair`, `repository`, `branch`, `document`
+and `initial_revision`. The target is always that workspace's `HANDOFF.md`;
+the remote document cannot select paths, commands, configuration or privileges.
+Keep private bindings and private current-state fragments outside this public repo.
+
+The existing `start` command receives after placement checks and before launching
+the CLI, including when forwarding the CLI's resume arguments. Existing GUI
+owners can call `handoff-receive --workspace PATH` at the same point in their
+normal opening path. A standalone manual call is not a GUI integration.
+Receipt occurs before the next start/resume, not immediately after sharing;
+running sessions are not restarted or forced to reread.
+
+Senders update the bound fragment through their existing registered Git work,
+normal integration and push. Put detailed results in the existing shared issue.
+Receivers never publish their receipt block back to the fragment. Both senders
+use the same linear shared history, so a correction uses the latest shared tip.
+An ancestor or divergent incoming revision is rejected. Identical payloads do
+not produce receipt-only updates. Local changes inside the explicit receipt
+block conflict with a different remote correction; local bytes outside it stay
+unchanged. The live Git HEAD, branch, index and unrelated files are untouched.
+
+Failed fetches and conflicts are unconfirmed, not success. Target starts stop
+before launching the CLI; retry the same entry after resolving the cause.
+For work independent of the shared state, `start --handoff-independent` allows
+the CLI to launch with an explicit unconfirmed warning. Unbound workspaces and
+ordinary Git operations remain available.
+
+Linux uses atomic file exchange and Windows uses ReplaceFile with a backup.
+Original bytes and displaced files remain as private recovery data in Git
+metadata, including on a detected concurrent edit or partial failure. No live
+reset or automatic cleanup discards them. Unsupported publication semantics
+are refused. Verification describes the files observed at receipt completion;
+it cannot prevent subsequent independent edits or force an already-open editor
+to reload. A writer holding the displaced inode can still modify its retained
+recovery file; the separate original snapshot preserves the pre-receive input.
+A pending replacement journal prevents a failed exchange from becoming a
+successful "unchanged" receipt on retry. It contains local recovery filenames
+and digests, not another shared-state authority. The same entry automatically
+recognizes an intact pre-exchange state, a verified completed exchange, or the
+displaced local file restored at the target. Other unresolved states keep
+failing with their recovery paths; a successful receipt marker alone is not
+enough to discard competing edits.
+
+Validate with `python3 tests/test_handoff_receive.py` and
+`python3 tests/test_handoff_start.py`. These use non-model fixtures; receiving
+text is not evidence that a subsequent model understood it.
+
 ## Registered work and branch enforcement
 
 `python3 bin/place.py branch --help` exposes the local Git integration. It uses
