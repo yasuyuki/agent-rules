@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""Fixed dispatcher reached through an installed managed standard-name link."""
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+import sys
+
+
+HERE = Path(__file__).resolve().parent
+spec = importlib.util.spec_from_file_location("managed_entry", HERE / "managed_entry.py")
+managed_entry = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(managed_entry)
+
+
+def main(argv=None, invoked=None):
+    invoked = Path(invoked if invoked is not None else sys.argv[0]).absolute()
+    try:
+        binding = managed_entry.load_binding(invoked.parent)
+        tool = invoked.name
+        if tool not in binding["tools"] or not invoked.is_symlink() or not managed_entry._same_file(invoked, binding["dispatcher"]):
+            raise managed_entry.EntryError("managed entry link is stale or changed: %s" % invoked)
+        place_spec = importlib.util.spec_from_file_location("managed_place", binding["place"])
+        place = importlib.util.module_from_spec(place_spec)
+        place_spec.loader.exec_module(place)
+        return place.main(
+            ["standard-start", "--config", binding["config"], tool, "--", *(sys.argv[1:] if argv is None else argv)],
+            resolver=lambda name: managed_entry.resolve_executable(name, binding=binding),
+        )
+    except managed_entry.EntryError as exc:
+        print("FAIL: %s" % exc, file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

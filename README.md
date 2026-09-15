@@ -804,6 +804,60 @@ be read would otherwise pass for one that reports no vendored work.
 
 ## Inventory readiness and normal start
 
+### Standard CLI names in a normal POSIX environment
+
+An environment owner can install thin standard names once into a dedicated PATH
+directory. The public dispatcher calls the same `start` checks, using explicitly
+saved inputs rather than searching parent repositories for configuration:
+
+```console
+mkdir -p /path/to/managed-bin
+python3 bin/place.py entry install --config /path/to/placement-start.json --directory /path/to/managed-bin --tool grok --tool codex --tool claude
+```
+
+Put that directory before vendor directories in the normal environment's PATH,
+including its existing noninteractive shell setup. Do not overwrite vendor
+binaries, aliases, or another CLI's name. Then run `grok`, `codex`, or `claude`
+from the intended repository or subdirectory. Native continuation remains
+`grok --continue`, `codex resume --last`, or `claude --continue`.
+
+The deepest declared workspace must explicitly enable the selected tool; an
+absent/held child does not inherit permission from its parent. Equal-depth
+matches and undeclared directories fail. Grok `--cwd` and Codex `-C`/`--cd` are
+checked without rewriting their values. With no override, an explicit native
+cwd is supplied so resuming a session does not select its historical cwd.
+Normal operations retain the native HOME, authentication scope, arguments,
+streams, terminal, signals, and exit status. This validates the launch directory;
+it does not confine subsequent tools or attest provider-created worktrees or
+remote sessions. Explicit `place.py start WORKSPACE TOOL` and fixed experiment
+executables retain their existing behavior.
+
+Placement and active adoption are checked once for the affected locations.
+Normal start does not adopt, register trust, query releases, or probe models.
+HANDOFF receipt uses the effective directory; unchanged receipt is quiet,
+updates and failures remain visible on stderr.
+
+Exact native help/version commands and the documented local login/logout,
+update, doctor, and Grok inspect commands remain usable when saved placement is
+broken. They still resolve the installed vendor and cannot fall back through a
+damaged managed binding. Other maintenance remains available through its existing
+public entry. There is no general skip-check flag.
+
+The installation records vendor search directories separately from managed
+names. Checks, inspection and execution resolve the same vendor and follow its
+updated symlink. Repeat `entry install` to rebind a relocated vendor/source or
+add a tool; unowned collisions and removal of existing names are refused.
+To remove the owned names while retaining vendors and user settings:
+
+```console
+python3 bin/place.py entry remove --directory /path/to/managed-bin
+```
+
+Remove the corresponding PATH entry using the environment's normal setup.
+The dispatcher source must remain installed while its names are in use.
+Installation is POSIX-only; Windows transport belongs to the environment's
+existing SSH lifecycle, not this local command.
+
 An environment owner can bind a declaration's sites to inventory validation.
 Add an `INVENTORY` TSV section with exactly `site`, `catalog`, and `environment`
 columns. Paths are relative to the declaration, unless absolute. For example,
