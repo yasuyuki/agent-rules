@@ -243,7 +243,8 @@ readiness, and inspects Grok discovery in the declared direct workspaces without
 running a model or changing trust. Only success records active. Failure retains
 pending and the catalog is never rewritten. An exact active repeat verifies
 readiness/discovery without repeating projection or writing the config. Stale
-inputs, a failed check, or changed Git HEAD prevent normal config-based startup.
+inputs or a failed check prevent normal config-based startup. Unrelated commits
+do not invalidate adoption when its checked inputs remain unchanged.
 The config becomes version 2 with one adoption member; no catalog copy or receipt
 registry is created. Tracked start configs cannot store runtime adoption.
 Like the existing user-owned catalog and public startup code, this detects stale
@@ -262,7 +263,8 @@ required to migrate any remaining unrelated legacy state.
 
 The existing `start --config` (or implicit `placement-start.json`) checks the
 adoption's exact environment, site, catalog, policy, source inputs, runtime identity
-and HEAD. A pending catalog requires this saved adoption; explicit declaration-only
+while retaining the adoption-time HEAD as provenance. A pending catalog requires
+this saved adoption; explicit declaration-only
 startup cannot infer it. Catalog listing remains declaration-only and does not
 claim another runtime's active state. A host bootstrap that previously used only
 an explicit declaration must be updated to consume the same saved inputs before
