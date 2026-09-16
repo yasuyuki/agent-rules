@@ -117,6 +117,12 @@ An in-flight identical candidate is not charged again; interruption leaves it
 unassessed, never approved. Expired state is purged opportunistically on subsequent
 events, not by a background retention service. A dormant installation can retain
 state until the next event. Keep the directory private and outside Git.
+Resume/compact without returned pending records explicitly leaves expired or
+missing history unassessed; it is not proof that earlier candidates were handled.
+Consult the existing task result for evidence outside the configured retention.
+An exact static Python `--version` or `-V` query without extra arguments or
+redirection is a normal selector negative, not a permission grant. Code, module
+execution and unsupported interpreter syntax retain their existing assessment.
 
 PostToolUse status is recorded only from structured exit status; prose is not
 interpreted as a successful/failed exit. `write_stdin` cannot be certified before

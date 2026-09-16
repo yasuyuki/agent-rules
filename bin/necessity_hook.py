@@ -263,6 +263,10 @@ def handle(payload, cfg, reviewer=necessity_review.review):
             store.db.commit()
             if pending:
                 return context_output(event, "Unresolved necessity reviews: " + bounded_summary(pending, cfg["max_output_bytes"]))
+            if payload.get("source") in {"resume", "compact"}:
+                return context_output(event, "No unresolved reviews are being returned from retained state. "
+                                      "This does not establish that expired or missing history was handled. "
+                                      "Check the existing task result and necessity status; report missing history as unassessed.")
             return {}
         if event in {"Stop", "SubagentStop"}:
             rows = store.db.execute("SELECT id,status,result FROM candidates WHERE session=? AND resolution IS NULL AND notified=0", (sid,)).fetchall()

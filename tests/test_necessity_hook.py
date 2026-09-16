@@ -7,6 +7,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -71,6 +72,30 @@ class HookTests(unittest.TestCase):
         self.prompt("Only read repository status. Do not construct any fixture.")
         self.command()
         self.assertEqual(len(self.calls), 2)
+
+    def test_missing_or_expired_continuation_does_not_certify_history(self):
+        self.assertEqual(self.event("SessionStart", source="startup"), {})
+        empty = self.event("SessionStart", source="resume")
+        self.assertIn("missing history", empty["hookSpecificOutput"]["additionalContext"])
+        self.assertEqual(self.calls, [])
+        self.prompt()
+        self.command()
+        with patch.object(hook.time, "time", return_value=time.time() + self.cfg["retention_seconds"] + 1):
+            expired = self.event("SessionStart", source="compact")
+        self.assertIn("unassessed", expired["hookSpecificOutput"]["additionalContext"])
+        self.assertEqual(len(self.calls), 1)
+
+    def test_capacity_refuses_new_lane_without_evicting_pending(self):
+        self.cfg["max_sessions"] = 1
+        self.prompt()
+        self.action, self.disposition = "unassessed", "unassessed"
+        self.command()
+        with self.assertRaisesRegex(ValueError, "capacity"):
+            hook.handle(dict(hook_event_name="SessionStart", cwd=str(self.root), session_id="other",
+                             source="resume"), self.cfg, self.reviewer)
+        restored = self.event("SessionStart", source="resume")
+        self.assertIn(self.calls[0]["candidate_id"], restored["hookSpecificOutput"]["additionalContext"])
+        self.assertEqual(len(self.calls), 1)
 
     def test_denial_stop_once_resume_pending(self):
         self.prompt()
