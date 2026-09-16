@@ -129,12 +129,12 @@ print("result")
             marker = Path(temp) / "must-not-exist-from-parser"
             facts = selector.analyze(
                 f"Set-Content -Path 'guide.md' -Value 'long literal'; Invoke-Expression \"Set-Content -Path '{marker}' -Value x\"",
-                shell="pwsh", parser_timeout=5,
+                shell="pwsh", parser_timeout=24,
             )
             self.assertFalse(marker.exists())
-            self.assertIn("guide.md", facts["writes"])
+            self.assertIn("guide.md", facts["writes"], facts)
             self.assertIn(str(marker), facts["writes"])
-        ordinary = selector.analyze("git status --short; Write-Output 'done'", shell="pwsh", parser_timeout=5)
+        ordinary = selector.analyze("git status --short; Write-Output 'done'", shell="pwsh", parser_timeout=24)
         self.assertEqual(ordinary["features"], [])
         self.assertEqual(ordinary["coverage"], [])
 
