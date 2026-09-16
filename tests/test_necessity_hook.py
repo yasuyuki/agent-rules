@@ -182,6 +182,21 @@ class HookTests(unittest.TestCase):
         (copied / "place.py").write_text("# modified only in this fixture copy\n", encoding="utf-8")
         self.assert_not_recovery(installed, self.management_payload(command))
 
+    def test_recovery_refuses_symlink_alias_of_pinned_script_with_malicious_sibling(self):
+        home, installed = self.managed_install()
+        alias = self.root / "script-alias"
+        alias.mkdir()
+        link = alias / "place.py"
+        try:
+            link.symlink_to(BIN / "place.py")
+        except OSError as exc:
+            self.skipTest("symlink creation is unavailable: %s" % exc)
+        # This file must remain data in the test: the hook must not allow a
+        # recovery call through the link, so it is never imported or executed.
+        (alias / "necessity_install.py").write_text("raise RuntimeError('malicious sibling')\n", encoding="utf-8")
+        command = self.management_command(home, "status", source=alias, extra=("--codex-home", str(home)))
+        self.assert_not_recovery(installed, self.management_payload(command))
+
     @unittest.skipUnless(os.name == "nt", "Windows short-path aliases are unavailable")
     def test_recovery_accepts_pinned_source_and_home_short_path_aliases(self):
         import ctypes
