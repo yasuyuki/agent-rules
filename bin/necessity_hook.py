@@ -205,7 +205,7 @@ def management_call(payload, cfg):
         # the same interpreter entry, not an apparently equivalent alias.
         def same_path(left, right):
             return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
-        if not same_path(owner["python"], sys.executable) or not same_path(owner["home"], HERE.parent):
+        if not same_path(owner["python"], sys.executable) or Path(owner["home"]).resolve() != HERE.parent.resolve():
             return False
         source = Path(owner["source"])
         if not source.is_absolute() or source.is_symlink():
@@ -220,7 +220,14 @@ def management_call(payload, cfg):
         if not words or len(words) < 4 or not Path(words[0]).is_absolute():
             return False
         cwd = Path(tool.get("workdir", payload.get("cwd", "")))
-        if not same_path(words[0], owner["python"]) or not same_path(cwd / words[1], source / "place.py") or words[2] != "necessity":
+        script = cwd / words[1]
+        # Windows short names identify the same regular files; symlink/junction
+        # entry paths can change Python's sibling-import location and are not
+        # the pinned public entry.
+        if any(path.is_symlink() or getattr(path.lstat(), "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+               for path in (script, *script.parents)):
+            return False
+        if not same_path(words[0], owner["python"]) or script.resolve() != (source / "place.py").resolve() or words[2] != "necessity":
             return False
         if words[3:] in (["--help"], ["-h"]):
             return True
@@ -250,7 +257,7 @@ def management_call(payload, cfg):
                     return False
                 value = words[index]
             if flag == "--codex-home":
-                if home is not None or not Path(value).is_absolute() or not same_path(value, owner["home"]):
+                if home is not None or not Path(value).is_absolute() or Path(value).resolve() != Path(owner["home"]).resolve():
                     return False
                 home = value
             index += 1

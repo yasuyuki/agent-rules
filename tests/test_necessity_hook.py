@@ -112,6 +112,10 @@ class HookTests(unittest.TestCase):
 
     @unittest.skipUnless(PWSH, "pwsh is unavailable")
     def test_owned_management_recovery_is_literal_in_powershell(self):
+        # A cold native PowerShell parser can exceed this fixture's ordinary
+        # two-second review deadline in CI; this test-only allowance matches
+        # the selector's native-parser test basis.
+        self.cfg["deadline_seconds"] = 10
         home, installed = self.managed_install(shell="pwsh")
         evidence = '日本語の証跡: "引用" と `Get-Date` は単なる記録です。'
         for operation, extra in (
@@ -178,6 +182,46 @@ class HookTests(unittest.TestCase):
         (copied / "place.py").write_text("# modified only in this fixture copy\n", encoding="utf-8")
         self.assert_not_recovery(installed, self.management_payload(command))
 
+    def test_recovery_refuses_symlink_alias_of_pinned_script_with_malicious_sibling(self):
+        home, installed = self.managed_install()
+        alias = self.root / "script-alias"
+        alias.mkdir()
+        link = alias / "place.py"
+        try:
+            link.symlink_to(BIN / "place.py")
+        except OSError as exc:
+            self.skipTest("symlink creation is unavailable: %s" % exc)
+        # This file must remain data in the test: the hook must not allow a
+        # recovery call through the link, so it is never imported or executed.
+        (alias / "necessity_install.py").write_text("raise RuntimeError('malicious sibling')\n", encoding="utf-8")
+        command = self.management_command(home, "status", source=alias, extra=("--codex-home", str(home)))
+        self.assert_not_recovery(installed, self.management_payload(command))
+
+    @unittest.skipUnless(os.name == "nt", "Windows short-path aliases are unavailable")
+    def test_recovery_accepts_pinned_source_and_home_short_path_aliases(self):
+        import ctypes
+        source = self.root / "public source with spaces"
+        home = self.root / "codex home with spaces"
+        shutil.copytree(BIN, source)
+        settings = self.root / "necessity-settings.json"
+        settings.write_text(json.dumps(self.cfg), encoding="utf-8")
+        self.assertEqual(installer.install(home, settings, source=source), 0)
+
+        def short_path(path):
+            buffer = ctypes.create_unicode_buffer(32768)
+            length = ctypes.windll.kernel32.GetShortPathNameW(str(path), buffer, len(buffer))
+            if not length or length >= len(buffer):
+                self.skipTest("Windows short-path aliases are disabled")
+            return Path(buffer.value)
+
+        short_source, short_home = short_path(source), short_path(home)
+        if (os.path.normcase(str(short_source)) == os.path.normcase(str(source)) or
+                os.path.normcase(str(short_home)) == os.path.normcase(str(home))):
+            self.skipTest("fixture directories have no distinct Windows short-path aliases")
+        command = self.management_command(short_home, "status", source=short_source,
+                                          extra=("--codex-home", str(short_home)))
+        self.assert_recovery_without_state(home / "necessity-review", self.management_payload(command))
+
     def test_reviewer_child_tool_prohibition_precedes_management_recovery(self):
         home, installed = self.managed_install()
         payload = self.management_payload(self.management_command(home, "status", extra=("--codex-home", str(home))))
@@ -187,6 +231,8 @@ class HookTests(unittest.TestCase):
 
     @unittest.skipUnless(PWSH, "pwsh is unavailable")
     def test_generated_python_still_reviews_after_powershell_patch_observation(self):
+        # Match the existing parser-test allowance for cold PowerShell CI startup.
+        self.cfg["deadline_seconds"] = 10
         self.cfg["shell"] = "pwsh"
         self.prompt()
         script = self.root / "generated.py"
