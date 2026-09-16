@@ -1,0 +1,209 @@
+"""The opt-in installer preserves native hook configuration it does not own."""
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import sqlite3
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+
+
+ROOT = Path(__file__).resolve().parents[1]
+spec = importlib.util.spec_from_file_location("necessity_install_test", ROOT / "bin" / "necessity_install.py")
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+
+
+class NecessityInstallTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        root = Path(self.temporary.name)
+        self.home = root / "codex"
+        self.source = root / "public-bin"
+        self.source.mkdir()
+        for name in installer.FILES:
+            (self.source / name).write_text("# %s\n" % name, encoding="utf-8")
+        self.settings = root / "settings.json"
+        self.settings.write_text(json.dumps({
+            "version": 1, "scopes": [str(root / "work")], "excludes": [],
+            "state_dir": str(root / "state"), "model": "gpt-test", "effort": "low",
+            "deadline_seconds": 5, "max_input_bytes": 20, "max_output_bytes": 20,
+            "reviews_per_session": 1, "retention_seconds": 20, "max_sessions": 1,
+        }), encoding="utf-8")
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def test_install_check_is_idempotent_and_remove_preserves_other_hook(self):
+        self.home.mkdir()
+        foreign = {"type": "command", "command": "/usr/bin/foreign"}
+        original = {"hooks": {"Stop": [{"matcher": "x", "hooks": [foreign]}]}}
+        (self.home / "hooks.json").write_text(json.dumps(original), encoding="utf-8")
+        self.assertEqual(installer.install(self.home, self.settings, source=self.source), 0)
+        installed = json.loads((self.home / "hooks.json").read_text(encoding="utf-8"))
+        self.assertEqual(installed["hooks"]["Stop"][0], original["hooks"]["Stop"][0])
+        self.assertEqual(sum(len(g["hooks"]) for g in installed["hooks"]["Stop"]), 2)
+        self.assertEqual(installer.install(self.home, self.settings, source=self.source), 0)
+        self.assertEqual(installer.check(self.home), 0)
+        self.assertEqual(installer.remove(self.home), 0)
+        remaining = json.loads((self.home / "hooks.json").read_text(encoding="utf-8"))
+        self.assertEqual(remaining, original)
+        self.assertFalse((self.home / "necessity-review" / "necessity_hook.py").exists())
+
+    def test_tampered_owned_file_and_conflicting_config_refuse_overwrite(self):
+        self.assertEqual(installer.install(self.home, self.settings, source=self.source), 0)
+        owned = self.home / "necessity-review" / "necessity_hook.py"
+        owned.write_text("changed", encoding="utf-8")
+        with self.assertRaisesRegex(installer.InstallError, "differs"):
+            installer.install(self.home, self.settings, source=self.source)
+        self.assertEqual(owned.read_text(encoding="utf-8"), "changed")
+        self.assertEqual(installer.check(self.home), 1)
+
+    def test_rejects_malformed_hooks_and_missing_required_setting(self):
+        self.home.mkdir()
+        (self.home / "hooks.json").write_text('{"hooks": {"Stop": 5}}', encoding="utf-8")
+        with self.assertRaisesRegex(installer.InstallError, "malformed"):
+            installer.install(self.home, self.settings, source=self.source)
+        data = json.loads(self.settings.read_text(encoding="utf-8"))
+        del data["max_sessions"]
+        self.settings.write_text(json.dumps(data), encoding="utf-8")
+        with self.assertRaisesRegex(installer.InstallError, "exactly"):
+            installer.install(self.home, self.settings, source=self.source)
+
+    def test_rejects_empty_scope_and_malformed_toml_before_writing(self):
+        data = json.loads(self.settings.read_text(encoding="utf-8"))
+        data["scopes"] = []
+        self.settings.write_text(json.dumps(data), encoding="utf-8")
+        with self.assertRaisesRegex(installer.InstallError, "at least"):
+            installer.install(self.home, self.settings, source=self.source)
+        data["scopes"] = [str(self.temporary.name + "/work")]
+        self.settings.write_text(json.dumps(data), encoding="utf-8")
+        self.home.mkdir()
+        (self.home / "config.toml").write_text("[broken", encoding="utf-8")
+        with self.assertRaisesRegex(installer.InstallError, "malformed config.toml"):
+            installer.install(self.home, self.settings, source=self.source)
+        self.assertFalse((self.home / "necessity-review").exists())
+
+    def test_spaces_quote_safely_and_windows_meta_is_rejected(self):
+        spaced = Path(self.temporary.name) / "codex home"
+        self.assertEqual(installer.install(spaced, self.settings, source=self.source), 0)
+        command = json.loads((spaced / "necessity-review" / installer.MANIFEST).read_text())["command"]
+        self.assertIn('"' if os.name == "nt" else "'", command)
+        with self.assertRaisesRegex(installer.InstallError, "cmd metacharacters"):
+            installer._command(Path("C:/bad%name/config.json"), windows=True)
+
+    def test_modified_hook_refuses_remove_and_preserves_scripts_and_state(self):
+        self.assertEqual(installer.install(self.home, self.settings, source=self.source), 0)
+        hooks_path = self.home / "hooks.json"
+        hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
+        stop = hooks["hooks"]["Stop"][-1]
+        stop["hooks"].append({"type": "command", "command": "/usr/bin/other"})
+        hooks_path.write_text(json.dumps(hooks), encoding="utf-8")
+        self.assertEqual(installer.check(self.home), 1)
+        state = Path(json.loads(self.settings.read_text())["state_dir"])
+        state.mkdir()
+        marker = state / "keep"
+        marker.write_text("state", encoding="utf-8")
+        with self.assertRaisesRegex(installer.InstallError, "incomplete removal"):
+            installer.remove(self.home)
+        remaining = json.loads(hooks_path.read_text(encoding="utf-8"))
+        self.assertIn(stop, remaining["hooks"]["Stop"])
+        self.assertTrue(marker.exists())
+        self.assertTrue((self.home / "necessity-review" / "necessity_hook.py").exists())
+        self.assertTrue((self.home / "necessity-review" / installer.MANIFEST).exists())
+
+    def test_manifest_cannot_name_files_outside_owned_whitelist(self):
+        self.assertEqual(installer.install(self.home, self.settings, source=self.source), 0)
+        manifest = self.home / "necessity-review" / installer.MANIFEST
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        data["files"]["../outside"] = "0" * 64
+        manifest.write_text(json.dumps(data), encoding="utf-8")
+        with self.assertRaisesRegex(installer.InstallError, "unsafe file"):
+            installer.remove(self.home)
+
+    def test_duplicate_owned_group_refuses_remove_without_mutation(self):
+        installer.install(self.home, self.settings, source=self.source)
+        path = self.home / "hooks.json"
+        hooks = json.loads(path.read_text(encoding="utf-8"))
+        hooks["hooks"]["Stop"].append(hooks["hooks"]["Stop"][-1])
+        path.write_text(json.dumps(hooks), encoding="utf-8")
+        before = path.read_bytes()
+        with self.assertRaises(installer.InstallError):
+            installer.remove(self.home)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertTrue((self.home / "necessity-review" / "necessity_hook.py").is_file())
+
+    def test_status_reads_candidate_state_without_prompts_and_reports_missing_db(self):
+        settings = json.loads(self.settings.read_text(encoding="utf-8"))
+        settings["max_output_bytes"] = 4096
+        self.settings.write_text(json.dumps(settings), encoding="utf-8")
+        self.assertEqual(installer.install(self.home, self.settings, source=self.source), 0)
+        capture = io.StringIO()
+        with redirect_stdout(capture):
+            self.assertEqual(installer.status(self.home), 0)
+        self.assertEqual(json.loads(capture.getvalue())["state"], "no persisted candidate events")
+        state = Path(json.loads(self.settings.read_text())["state_dir"])
+        state.mkdir()
+        database = state / "necessity.sqlite3"
+        db = sqlite3.connect(database)
+        try:
+            db.execute("CREATE TABLE candidates (session TEXT, id TEXT, status TEXT, result TEXT, notified INTEGER, resolution TEXT)")
+            db.execute("INSERT INTO candidates VALUES(?,?,?,?,?,?)", ("session with private prompt", "candidate-1", "reviewed", json.dumps({"reason": "bounded", "elapsed_seconds": .2, "usage": {"input": 1}}), 1, None))
+            db.commit()
+        finally:
+            db.close()
+        capture = io.StringIO()
+        with redirect_stdout(capture):
+            self.assertEqual(installer.main(["status", "--codex-home", str(self.home)]), 0)
+        report = json.loads(capture.getvalue())
+        self.assertEqual(report["candidates"][0]["candidate_id"], "candidate-1")
+        self.assertEqual(report["candidates"][0]["elapsed_seconds"], .2)
+        self.assertNotIn("private prompt", capture.getvalue())
+
+    def test_record_updates_only_exact_candidate_resolution(self):
+        settings = json.loads(self.settings.read_text(encoding="utf-8"))
+        settings["max_output_bytes"] = 4096
+        self.settings.write_text(json.dumps(settings), encoding="utf-8")
+        self.assertEqual(installer.install(self.home, self.settings, source=self.source), 0)
+        state = Path(settings["state_dir"])
+        state.mkdir()
+        database = state / "necessity.sqlite3"
+        verdict = json.dumps({"action": "unassessed", "reason": "original verdict"})
+        db = sqlite3.connect(database)
+        try:
+            db.execute("CREATE TABLE candidates (session TEXT, id TEXT, status TEXT, result TEXT, notified INTEGER, resolution TEXT, PRIMARY KEY(session,id))")
+            db.execute("INSERT INTO candidates VALUES(?,?,?,?,?,?)", ("one", "candidate-1", "reviewed", verdict, 1, None))
+            db.execute("INSERT INTO candidates VALUES(?,?,?,?,?,?)", ("two", "candidate-2", "reviewed", verdict, 1, None))
+            db.commit()
+        finally:
+            db.close()
+        self.assertEqual(installer.main(["record", "--codex-home", str(self.home), "--candidate", "candidate-1",
+                                        "--outcome", "deferred", "--evidence", "awaiting maintainer decision"]), 0)
+        db = sqlite3.connect(database)
+        try:
+            rows = db.execute("SELECT id,result,resolution FROM candidates ORDER BY id").fetchall()
+        finally:
+            db.close()
+        self.assertEqual(rows[0][1], verdict)
+        self.assertEqual(json.loads(rows[0][2]), {"outcome": "deferred", "evidence": "awaiting maintainer decision"})
+        self.assertIsNone(rows[1][2])
+        with self.assertRaisesRegex(installer.InstallError, "not found"):
+            installer.record(self.home, "missing", "handled", "verified")
+        with self.assertRaisesRegex(installer.InstallError, "credential"):
+            installer.record(self.home, "candidate-2", "handled", "token=secret")
+
+    def test_main_exercises_cli(self):
+        old_here = installer.HERE
+        installer.HERE = self.source
+        try:
+            self.assertEqual(installer.main(["install", "--codex-home", str(self.home), "--settings", str(self.settings)]), 0)
+            self.assertEqual(installer.main(["check", "--codex-home", str(self.home)]), 0)
+            self.assertEqual(installer.main(["remove", "--codex-home", str(self.home)]), 0)
+        finally:
+            installer.HERE = old_here
+
+
+if __name__ == "__main__":
+    unittest.main()

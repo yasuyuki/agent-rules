@@ -48,6 +48,28 @@ class ProjectCliTests(unittest.TestCase):
     def assert_ok(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_opt_in_necessity_installed_files_and_negative_event(self):
+        home = self.root / "codex-home"
+        settings = self.root / "necessity-settings.json"
+        settings.write_text(json.dumps(dict(version=1, scopes=[str(self.root)], excludes=[],
+            state_dir=str(self.root / "state"), model="fixture", effort="low", deadline_seconds=2,
+            max_input_bytes=65536, max_output_bytes=65536, reviews_per_session=1,
+            retention_seconds=3600, max_sessions=2)), encoding="utf-8")
+        self.assert_ok(self.run_cli("necessity", "install", "--codex-home", str(home), "--settings", str(settings)))
+        self.assert_ok(self.run_cli("necessity", "check", "--codex-home", str(home)))
+        hooks = json.loads((home / "hooks.json").read_text(encoding="utf-8"))
+        self.assertIn("PreToolUse", hooks["hooks"])
+        script = home / "necessity-review" / "necessity_hook.py"
+        self.assertTrue(script.with_name("necessity_parse.ps1").is_file())
+        event = dict(hook_event_name="PreToolUse", session_id="wheel", turn_id="one", tool_use_id="one",
+                     cwd=str(self.root), tool_name="Bash", tool_input={"command": "git status --short"})
+        result = subprocess.run([sys.executable, str(script), "--config", str(script.with_name("config.json"))],
+                                input=json.dumps(event), text=True, capture_output=True, cwd=self.root)
+        self.assert_ok(result)
+        self.assertEqual(json.loads(result.stdout), {})
+        self.assert_ok(self.run_cli("necessity", "remove", "--codex-home", str(home)))
+        self.assertFalse(script.exists())
+
     def write_config(self, *, tools=("codex",), rules=(".agent-rules/rules",), skills=(".agent-rules/skills",), root=None):
         root = root or self.root
         config = root / ".agent-rules" / "config.json"

@@ -81,8 +81,10 @@
         "skills": ["codex-skills-dir"]
       },
       "hooks": {
-        "kind": "none",
-        "reason": "CLI admits hooks (--dangerously-bypass-hook-trust) but no hooks file or documented path was found"
+      "kind": "settings",
+      "path": "hooks.json",
+      "events": ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SubagentStop"],
+      "reason": "Native synchronous command hooks require explicit installation and native trust; ordinary apply does not enable necessity review"
       }
     },
     "cursor-agent": {

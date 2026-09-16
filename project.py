@@ -157,6 +157,10 @@ def initialize(args):
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["necessity"]:
+        from .bin import necessity_install
+        return necessity_install.main(argv[1:])
     # Piped prompts and paths have the same encoding on Windows and Linux.
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
@@ -164,6 +168,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", action="version", version=version("agent-rules"))
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("necessity", help="opt-in Codex necessity hook install/check/remove")
     init = sub.add_parser("init", help="create project configuration interactively")
     init.add_argument("--config", help="configuration inside the target project's .agent-rules directory")
     init.add_argument("--tools", nargs="+", help="explicit tool ids")

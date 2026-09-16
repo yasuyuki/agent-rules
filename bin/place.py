@@ -2092,6 +2092,9 @@ def selfcheck(_args):
 
 
 def main(argv, *, runner=subprocess.run, resolver=None):
+    if argv[:1] == ["necessity"]:
+        import necessity_install
+        return necessity_install.main(argv[1:])
     if resolver is None:
         resolver = managed_entry.resolve_executable
     if argv[:1] == ["branch"]:
@@ -2187,6 +2190,7 @@ def main(argv, *, runner=subprocess.run, resolver=None):
     mirror_p.add_argument("--dest", required=True)
     mirror_p.add_argument("--check", action="store_true")
     sub.add_parser("branch", help="register work and enforce Git branch operations")
+    sub.add_parser("necessity", help="opt-in Codex necessity hook install/check/remove")
     sub.add_parser("selfcheck")
     args = parser.parse_args(argv)
     try:

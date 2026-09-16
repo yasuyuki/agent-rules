@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+"""Opt-in native Codex adapter; bounded local state, never a permission grant."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import sqlite3
+import stat
+import sys
+import time
+
+sys.dont_write_bytecode = True
+HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+import necessity_select
+import necessity_review
+
+EVENTS = {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SubagentStop"}
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def beneath(path, root):
+    return path == root or root in path.parents
+
+
+def load_config(path):
+    value = json.loads(Path(path).read_text(encoding="utf-8"))
+    if value.get("version") != 1:
+        raise ValueError("unsupported configuration")
+    for name in ("deadline_seconds", "max_input_bytes", "max_output_bytes", "reviews_per_session", "retention_seconds", "max_sessions"):
+        if type(value.get(name)) is not int or value[name] <= 0:
+            raise ValueError("positive explicit limit required: " + name)
+    for name in ("scopes", "excludes"):
+        if not isinstance(value.get(name), list) or any(not isinstance(p, str) or not Path(p).is_absolute() for p in value[name]):
+            raise ValueError("absolute scope paths required")
+    if not value["scopes"] or not Path(value["state_dir"]).is_absolute():
+        raise ValueError("scope and absolute state directory required")
+    if not value.get("model") or not value.get("effort"):
+        raise ValueError("explicit reviewer model and effort required")
+    if value["retention_seconds"] < value["deadline_seconds"] * 2:
+        raise ValueError("state retention must cover the native hook timeout")
+    return value
+
+
+def safe_text(text, cwd):
+    # Refuse sensitive material instead of claiming that a lossy redaction was reviewed.
+    if re.search(r"(?i)(?:bearer\s+\S+|(?:api[_-]?key|password|secret|token)\s*[=:]\s*[^\s,}]+|-----BEGIN .*PRIVATE KEY|\b(?:gh[pousr]_|sk-)[A-Za-z0-9_-]+)", text):
+        raise ValueError("potential credential in input; review withheld")
+    return text.replace(str(Path(cwd).resolve()), "<workspace>").replace(str(Path.home()), "<home>")
+
+
+def context_output(event, message):
+    return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": message}}
+
+
+def decision_output(event, candidate, result):
+    message = "Necessity review " + candidate + ": " + json.dumps(result, ensure_ascii=False)
+    if event == "PreToolUse" and result["action"] in {"revise", "unassessed"}:
+        return {"hookSpecificOutput": {"hookEventName": event, "permissionDecision": "deny", "permissionDecisionReason": message}}
+    return context_output(event, message)
+
+
+def unassessed(reason):
+    return {"action": "unassessed", "disposition": "unassessed", "reason": reason,
+            "protections": "Keep existing permission checks and evidence.", "owner_or_entry": "",
+            "next_step": "Use a verified existing entry, or report this exact operation as unassessed. No blanket exception."}
+
+
+def bounded_summary(messages, limit):
+    selected = []
+    for message in messages:
+        if len(json.dumps(selected + [message], ensure_ascii=False).encode()) > limit // 2:
+            return json.dumps(selected, ensure_ascii=False) + " Additional pending records omitted by output budget: %d; unassessed, inspect the local necessity state via the management entry." % (len(messages) - len(selected))
+        selected.append(message)
+    return json.dumps(selected, ensure_ascii=False)
+
+
+class Store:
+    def __init__(self, cfg):
+        directory = Path(cfg["state_dir"])
+        if directory.is_symlink():
+            raise ValueError("state directory is a symlink")
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = directory / "necessity.sqlite3"
+        if path.is_symlink():
+            raise ValueError("state file is a symlink")
+        self.db = sqlite3.connect(path, timeout=cfg["deadline_seconds"], isolation_level=None)
+        if os.name == "posix":
+            path.chmod(0o600)
+        self.db.execute("PRAGMA foreign_keys=ON")
+        self.db.execute("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, family TEXT NOT NULL, touched REAL NOT NULL, data TEXT NOT NULL)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS candidates (session TEXT REFERENCES sessions(id) ON DELETE CASCADE, id TEXT, status TEXT, result TEXT, notified INTEGER DEFAULT 0, started REAL NOT NULL, resolution TEXT, PRIMARY KEY(session,id))")
+        self.cfg = cfg
+        self.family = ""
+
+    def transaction(self):
+        self.db.execute("BEGIN IMMEDIATE")
+
+    def session(self, sid):
+        now = time.time()
+        self.db.execute("DELETE FROM sessions WHERE touched < ?", (now - self.cfg["retention_seconds"],))
+        row = self.db.execute("SELECT data FROM sessions WHERE id=?", (sid,)).fetchone()
+        if row:
+            return json.loads(row[0])
+        if self.db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] >= self.cfg["max_sessions"]:
+            raise ValueError("state session capacity reached; no existing decisions evicted")
+        value = {"contract": "", "prompt": "", "problem": "current request unavailable", "history": [], "coverage": [], "coverage_notice": "", "stop_notice": "", "posts": []}
+        self.save(sid, value)
+        return value
+
+    def save(self, sid, value):
+        self.db.execute("INSERT INTO sessions(id,family,touched,data) VALUES(?,?,?,?)", (sid, self.family or sid, time.time(), json.dumps(value)))
+
+    def update(self, sid, value):
+        # Do not REPLACE an existing parent: that would cascade-delete decisions.
+        self.db.execute("UPDATE sessions SET touched=?,data=? WHERE id=?", (time.time(), json.dumps(value), sid))
+
+    def close(self):
+        self.db.close()
+
+
+def file_facts(paths, cwd, limit):
+    facts = []
+    for name in sorted(set(paths)):
+        path = Path(cwd) / name
+        resolved = path.resolve()
+        if not beneath(resolved, Path(cwd).resolve()) or path.is_symlink():
+            facts.append([digest(name), "outside-observed-scope"])
+            continue
+        try:
+            if not stat.S_ISREG(resolved.stat().st_mode):
+                facts.append([digest(name), "non-regular-unassessed"])
+                continue
+            with resolved.open("rb") as source:
+                data = source.read(limit + 1)
+            facts.append([digest(name), hashlib.sha256(data).hexdigest() if len(data) <= limit else "oversized-unassessed"])
+        except FileNotFoundError:
+            facts.append([digest(name), "absent"])
+        except OSError:
+            facts.append([digest(name), "unreadable-unassessed"])
+    return facts
+
+
+def handle(payload, cfg, reviewer=necessity_review.review):
+    event = payload.get("hook_event_name")
+    if event not in EVENTS:
+        return {}
+    # A dedicated reviewer has no model tools; only our own hooks are suppressed.
+    # Other native security hooks remain enabled and subject to normal trust.
+    if os.environ.get("AGENT_RULES_NECESSITY_REVIEWER") == "1":
+        if event == "PreToolUse":
+            return {"hookSpecificOutput": {"hookEventName": event, "permissionDecision": "deny", "permissionDecisionReason": "Necessity reviewer must judge supplied evidence without tools."}}
+        return {}
+    cwd = Path(payload.get("cwd", "")).resolve()
+    if not any(beneath(cwd, Path(p).resolve()) for p in cfg["scopes"]) or any(beneath(cwd, Path(p).resolve()) for p in cfg["excludes"]):
+        return {}
+    if not isinstance(payload.get("session_id"), str) or not payload["session_id"]:
+        raise ValueError("native session identifier missing")
+    actor = payload.get("agent_id") or payload.get("transcript_path") or "root"
+    sid = digest([str(cwd), payload["session_id"], actor])
+    store = Store(cfg)
+    store.family = digest([str(cwd), payload["session_id"]])
+    try:
+        store.transaction()
+        state = store.session(sid)
+        if event == "UserPromptSubmit":
+            prompt = payload.get("prompt")
+            if not isinstance(prompt, str) or not prompt.strip():
+                state["problem"] = "current request unavailable"
+            else:
+                try:
+                    prompt = safe_text(prompt, cwd)
+                    # The first request is retained for continuation; every new prompt
+                    # changes the exact decision key, so previous permission is not reused.
+                    state["prompt"] = prompt
+                    if not state["contract"]:
+                        state["contract"] = prompt
+                    state["problem"] = ""
+                    if "https://github.com/" in prompt:
+                        # URL alone is not the contract. Fetch once outside the state lock.
+                        state["problem"] = "referenced request must be resolved"
+                except ValueError as exc:
+                    state["problem"] = str(exc)
+            state["stop_notice"] = ""
+            store.update(sid, state)
+            store.db.commit()
+            if state["problem"] == "referenced request must be resolved":
+                try:
+                    contract = necessity_review.resolve_request(payload["prompt"], cfg)
+                    contract = safe_text(contract, cwd)
+                    if len(contract.encode()) > cfg["max_input_bytes"]:
+                        raise ValueError("request exceeds input limit; not truncated")
+                    problem = ""
+                except (ValueError, OSError) as exc:
+                    contract, problem = "", str(exc)
+                store.transaction()
+                current = store.session(sid)
+                if current["prompt"] == state["prompt"]:
+                    current["contract"], current["problem"] = contract, problem
+                    store.update(sid, current)
+                store.db.commit()
+            return {}
+        if event == "SessionStart":
+            pending = store.db.execute("SELECT id,result FROM candidates WHERE session=? AND resolution IS NULL AND notified=0", (sid,)).fetchall()
+            store.update(sid, state)
+            store.db.commit()
+            if pending:
+                return context_output(event, "Unresolved necessity reviews: " + bounded_summary(pending, cfg["max_output_bytes"]))
+            return {}
+        if event in {"Stop", "SubagentStop"}:
+            rows = store.db.execute("SELECT id,status,result FROM candidates WHERE session=? AND resolution IS NULL AND notified=0", (sid,)).fetchall()
+            messages = ["%s: %s" % (row[0], row[2] or row[1]) for row in rows]
+            if digest(state["coverage"]) != state["coverage_notice"]:
+                messages += state["coverage"]
+            pending_digest = digest(messages)
+            if messages and state["stop_notice"] != pending_digest:
+                state["stop_notice"] = pending_digest
+                state["coverage_notice"] = digest(state["coverage"])
+                store.db.execute("UPDATE candidates SET notified=1 WHERE session=?", (sid,))
+                store.update(sid, state)
+                store.db.commit()
+                message = "Necessity review: preserve these unresolved/proposed items in the existing task result, with disposition or explicit incomplete status; do not implement a proposed reusable feature automatically. " + bounded_summary(messages, cfg["max_output_bytes"])
+                if payload.get("stop_hook_active"):
+                    return {"systemMessage": message + " Further continuation suppressed; unresolved work remains."}
+                return {"decision": "block", "reason": message}
+            store.db.commit()
+            return {}
+        name = payload.get("tool_name")
+        tool = payload.get("tool_input", {})
+        command = tool.get("command", tool.get("cmd", "")) if isinstance(tool, dict) else ""
+        operation_cwd = Path(tool.get("workdir", str(cwd))).resolve() if isinstance(tool, dict) else cwd
+        if not beneath(operation_cwd, cwd):
+            store.db.commit()
+            return decision_output(event, "outside-session-scope", unassessed("tool working directory is outside the observed session scope")) if event == "PreToolUse" else {}
+        if name == "apply_patch":
+            # Patch bytes are data, not an immediate management program. Track observed
+            # targets for subsequent execution without persisting patch contents.
+            analysis = {"features": [], "coverage": [], "writes": re.findall(r"^\*\*\* (?:Add|Update) File: (.+)$", command, re.M), "executes": [], "responsibilities": ["write"]}
+        elif name in {"Bash", "exec_command", "shell", "shell_command"}:
+            native_shell = tool.get("shell") or cfg.get("shell") or ("bash" if os.name == "posix" else "unknown-native-shell")
+            analysis = necessity_select.analyze(command, native_shell, parser_timeout=cfg["deadline_seconds"])
+        else:
+            store.db.commit()
+            return {}
+        coverage = analysis["coverage"]
+        for item in coverage:
+            if item not in state["coverage"]:
+                state["coverage"].append(item)
+        history = state["history"]
+        targets = analysis["writes"] + analysis["executes"]
+        target_ids = {digest(str((operation_cwd / p).resolve())) for p in targets}
+        features = list(analysis["features"])
+        executed = {digest(str((operation_cwd / p).resolve())) for p in analysis["executes"]}
+        if any(executed.intersection(h["writes"]) for h in history):
+            features.append("execute-observed-generated-file")
+        if any(target_ids.intersection(h["targets"]) and analysis["writes"] for h in history):
+            features.append("repeat-write-observed-target")
+        related = [h for h in history if target_ids.intersection(h["targets"])]
+        if any(h["outcome"] == "failed" for h in related):
+            features.append("reconstruction-after-observed-failure")
+        if event == "PostToolUse":
+            post_id = digest([payload.get("turn_id"), payload.get("tool_use_id"), name, command])
+            if post_id in state["posts"]:
+                store.db.commit()
+                return {}
+            state["posts"].append(post_id)
+            response = payload.get("tool_response", {})
+            # Only machine-readable status is evidence; output prose is not an exit code.
+            code = response.get("exit_code") if isinstance(response, dict) else None
+            outcome = "failed" if type(code) is int and code != 0 else "succeeded" if code == 0 else "unknown"
+            history.append({"targets": sorted(target_ids), "writes": [digest(str((operation_cwd / p).resolve())) for p in analysis["writes"]], "responsibilities": analysis["responsibilities"], "outcome": outcome})
+            # The same configured input budget bounds local history; no raw program stored.
+            while len(json.dumps(history).encode()) > cfg["max_input_bytes"]:
+                history.pop(0)
+                if "older operation history expired" not in state["coverage"]:
+                    state["coverage"].append("older operation history expired")
+            while len(json.dumps(state["posts"]).encode()) > cfg["max_input_bytes"]:
+                state["posts"].pop(0)
+            store.update(sid, state)
+            store.db.commit()
+            return {}
+        store.update(sid, state)
+        if not features and not coverage:
+            store.db.commit()
+            return {}
+        facts = file_facts(targets, operation_cwd, cfg["max_input_bytes"])
+        key = digest([str(cwd), actor, payload.get("turn_id"), state["contract"], state["prompt"], state["problem"], command, cfg, facts, related])
+        row = store.db.execute("SELECT status,result,started FROM candidates WHERE session=? AND id=?", (sid, key)).fetchone()
+        if row:
+            if row[0] == "reviewing" and time.time() - row[2] > cfg["deadline_seconds"] * 2:
+                interrupted = unassessed("previous review was interrupted; no automatic charged retry")
+                store.db.execute("UPDATE candidates SET status=?,result=? WHERE session=? AND id=?", ("interrupted", json.dumps(interrupted), sid, key))
+                row = ("interrupted", json.dumps(interrupted), row[2])
+            store.db.commit()
+            result = json.loads(row[1]) if row[1] else unassessed("identical candidate already under review or interrupted; no duplicate model call")
+            return decision_output(event, key, result)
+        count = store.db.execute("SELECT COUNT(*) FROM candidates JOIN sessions ON candidates.session=sessions.id WHERE sessions.family=?", (store.family,)).fetchone()[0]
+        if count >= cfg["reviews_per_session"]:
+            if "candidate/session budget exhausted" not in state["coverage"]:
+                state["coverage"].append("candidate/session budget exhausted")
+            store.update(sid, state)
+            store.db.commit()
+            return decision_output(event, key, unassessed("candidate/session budget exhausted; no additional review"))
+        store.db.execute("INSERT INTO candidates(session,id,status,started) VALUES(?,?,?,?)", (sid, key, "reviewing", time.time()))
+        store.db.commit()  # No lock across model or network calls.
+        started = time.monotonic()
+        usage = None
+        try:
+            if state["problem"]:
+                raise ValueError(state["problem"])
+            if coverage or any("unassessed" in f[1] or f[1] == "outside-observed-scope" for f in facts):
+                raise ValueError("incomplete syntax/file coverage: " + "; ".join(coverage))
+            generated_sources = {}
+            confirmed_entries = []
+            for name in analysis["executes"]:
+                path = operation_cwd / name
+                if not path.is_file() or path.is_symlink() or not beneath(path.resolve(), operation_cwd):
+                    continue
+                if any(digest(str(path.resolve())) in h["writes"] for h in history):
+                    with path.open("rb") as source:
+                        content = source.read(cfg["max_input_bytes"] + 1)
+                    if len(content) > cfg["max_input_bytes"]:
+                        raise ValueError("observed generated file exceeds input bound")
+                    generated_sources[safe_text(str(path), cwd)] = safe_text(content.decode("utf-8"), cwd)
+                else:
+                    confirmed_entries.append({"path": safe_text(str(path), cwd), "evidence": "observed existing file; behavior/arguments not verified"})
+            request = {"candidate_id": key, "contract": state["contract"], "current_prompt": state["prompt"], "operation": safe_text(command, cwd), "features": features, "related_outcomes": related, "confirmed_entries": confirmed_entries, "generated_sources": generated_sources, "file_facts": facts}
+            if len(json.dumps(request).encode()) > cfg["max_input_bytes"]:
+                raise ValueError("review input exceeds configured limit; not truncated")
+            result = reviewer(request, cfg)
+            usage = result.pop("_usage", None) if isinstance(result, dict) else None
+            necessity_review.validate(result, key)
+        except (ValueError, OSError) as exc:
+            result = unassessed(str(exc))
+        notify = result["action"] != "continue" or result["disposition"] == "integrate"
+        store.transaction()
+        saved_result = dict(result, elapsed_seconds=time.monotonic() - started, usage=usage)
+        store.db.execute("UPDATE candidates SET status=?,result=?,notified=? WHERE session=? AND id=?", ("reviewed", json.dumps(saved_result), 0 if notify else 1, sid, key))
+        store.db.commit()
+        return decision_output(event, key, result)
+    finally:
+        store.close()
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", required=True)
+    args = parser.parse_args(argv)
+    payload = {}
+    try:
+        cfg = load_config(args.config)
+        raw = sys.stdin.buffer.read(cfg["max_input_bytes"] + 1)
+        if len(raw) > cfg["max_input_bytes"]:
+            raise ValueError("hook input exceeds configured limit; not truncated or approved")
+        payload = json.loads(raw)
+        result = handle(payload, cfg)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    except (ValueError, OSError, sqlite3.Error, TypeError, KeyError, RecursionError) as exc:
+        # Do not echo raw inputs or database contents in diagnostics.
+        message = "Necessity hook unassessed: " + type(exc).__name__ + "; inspect installation/state via the management check. Preserve incomplete status."
+        event = payload.get("hook_event_name") if isinstance(payload, dict) else None
+        if event == "PreToolUse":
+            print(json.dumps(decision_output(event, "unavailable", unassessed(message))))
+            return 0
+        if event in {"Stop", "SubagentStop"}:
+            print(json.dumps({"systemMessage": message + " Stop cannot recover state; work remains unassessed."}))
+            return 0
+        print(message, file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
