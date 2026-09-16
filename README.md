@@ -918,6 +918,11 @@ only file contents are compared; POSIX execute bits are not managed.
 
 ## Package development and publication
 
+An optional [Codex necessity-review hook](docs/necessity-hooks.md) adds candidate
+selection and restricted review through native synchronous hooks. It is enabled
+explicitly with `place.py necessity` or `agent-rules necessity`; normal rules and
+skills setup does not enable it or invoke a model.
+
 In a development Python environment, from this checkout root:
 
 ```console

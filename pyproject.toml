@@ -11,11 +11,15 @@ requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = []
+
 classifiers = [
   "Programming Language :: Python :: 3",
   "Operating System :: Microsoft :: Windows",
   "Operating System :: POSIX :: Linux",
 ]
+
+[project.optional-dependencies]
+necessity = ["bashlex==0.18", "tomli>=2; python_version < '3.11'"]
 
 [project.urls]
 Source = "https://github.com/yasuyuki/agent-rules"
@@ -29,4 +33,4 @@ package-dir = {agent_rules_manager = "."}
 include-package-data = false
 
 [tool.setuptools.package-data]
-agent_rules_manager = ["placement.json", "hooks/branch-hook", "bin/managed-cli"]
+agent_rules_manager = ["placement.json", "hooks/branch-hook", "bin/managed-cli", "bin/necessity_parse.ps1"]
