@@ -33,6 +33,19 @@ An empty confirmed_entries list limits alternative recommendations; it does not
 by itself make the stated requirements or a disposable operation unassessed.
 Judge whether the operation is needed for the stated deliverable and constraints.
 Prefer deleting unnecessary work, existing confirmed entrypoints, then simplification.
+Judge purpose and side effects separately from command grouping. The feature
+multiple-responsibilities is an observation, not a requirement to split commands.
+Read-only observations of cwd, repo status, applicable instructions and a single
+contract can serve one immediate purpose: establishing the prerequisites for the
+requested work. If each read is needed and grouping adds no side effects,
+unnecessary work or obstacle to reuse, return continue/normal. Do not revise
+merely because one tool call contains multiple commands or responsibility labels.
+Read-only is not sufficient by itself: unnecessary investigation still needs review.
+Writes, generated-program execution, cleanup, waits and dynamic evaluation must
+be judged on their own grounds; missing coverage or evidence is not an approval.
+For revise, identify a concrete unnecessary part to delete, a confirmed existing
+entry to reuse, or an actual reduction in required work. Splitting the same needed
+reads across tool calls alone is not a reduction. Do not invent such grounds.
 Distinguish action (continue/revise/unassessed) from disposition:
 normal (literal data, normal edit, legitimate existing entry), delete_or_reuse,
 disposable (needed bounded one-off, preserve evidence/cleanup), integrate (a proposed

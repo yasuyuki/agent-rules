@@ -28,6 +28,27 @@ if PWSH is None and os.name == "nt":
 
 
 class HookTests(unittest.TestCase):
+    @unittest.skipUnless(PWSH, "requires native PowerShell parser")
+    def test_saved_orientation_review_decision_is_not_overridden_by_grouping(self):
+        fixture = json.loads((BIN.parent / "tests/fixtures/necessity-orientation.json").read_text())
+        self.cfg.update(shell="pwsh", deadline_seconds=10)
+        self.disposition = "normal"
+        self.prompt(fixture["contract"])
+        for case in fixture["cases"]:
+            with self.subTest(candidate=case["original_candidate_id"]):
+                before = len(self.calls)
+                output = self.event("PreToolUse", tool_name="Bash", tool_input={"command": case["operation"]})
+                self.assertEqual(before + 1, len(self.calls))
+                self.assertEqual(case["operation"], self.calls[-1]["operation"])
+                self.assertEqual(fixture["contract"], self.calls[-1]["contract"])
+                self.assertEqual(["multiple-responsibilities"], self.calls[-1]["features"])
+                self.assertNotEqual("deny", output.get("hookSpecificOutput", {}).get("permissionDecision"))
+        # Read-only grouping remains reviewable for semantic irrelevance.
+        self.action = "revise"
+        output = self.event("PreToolUse", tool_name="Bash", tool_input={"command":
+            fixture["cases"][1]["operation"] + "; Get-Content unrelated.txt"})
+        self.assertEqual("deny", output["hookSpecificOutput"]["permissionDecision"])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -508,6 +529,36 @@ class HookTests(unittest.TestCase):
             review.bounded_run([sys.executable, "-c", "import time; time.sleep(5)"], "", cwd=self.root, env=os.environ.copy(), deadline=0.1, limit=100)
         with self.assertRaisesRegex(ValueError, "output limit"):
             review.bounded_run([sys.executable, "-c", "print('x'*10000)"], "", cwd=self.root, env=os.environ.copy(), deadline=2, limit=100)
+
+    @unittest.skipUnless(os.environ.get("AGENT_RULES_NECESSITY_LIVE") == "1", "explicit limited Codex connection only")
+    @unittest.skipUnless(PWSH, "requires native PowerShell parser")
+    def test_live_saved_orientation_review_only(self):
+        # Replay reported shapes without executing them or changing native hooks.
+        fixture = json.loads((BIN.parent / "tests/fixtures/necessity-orientation.json").read_text())
+        self.cfg.update(shell="pwsh", model="gpt-5.6-terra", effort="low",
+                        deadline_seconds=24, reviews_per_session=2)
+        if os.environ.get("AGENT_RULES_NECESSITY_CODEX_EXECUTABLE"):
+            self.cfg["codex_executable"] = os.environ["AGENT_RULES_NECESSITY_CODEX_EXECUTABLE"]
+        self.prompt(fixture["contract"])
+        results = []
+        def live(request, config):
+            started = time.monotonic()
+            result = review.review(request, config)
+            results.append(dict(result))
+            print(json.dumps({"kind": "saved-orientation-equivalent-review-not-native-delivery",
+                              "source_candidate": case["original_candidate_id"],
+                              "request": request, "result": result,
+                              "model": config["model"], "elapsed_seconds": time.monotonic() - started}))
+            return result
+        for case in fixture["cases"]:
+            payload = dict(hook_event_name="PreToolUse", cwd=str(self.root), session_id="root", turn_id="turn1",
+                           tool_name="Bash", tool_input={"command": case["operation"]})
+            before = len(results)
+            output = hook.handle(payload, self.cfg, live)
+            # Stop at the first failure; do not sample repeatedly for a pass.
+            self.assertEqual(before + 1, len(results), output)
+            self.assertEqual(("continue", "normal"), (results[-1]["action"], results[-1]["disposition"]), output)
+            self.assertNotEqual("deny", output.get("hookSpecificOutput", {}).get("permissionDecision"))
 
     @unittest.skipUnless(os.environ.get("AGENT_RULES_NECESSITY_LIVE") == "1", "explicit limited Codex connection only")
     def test_live_reviewer_round_trip_not_native_hook_delivery(self):
