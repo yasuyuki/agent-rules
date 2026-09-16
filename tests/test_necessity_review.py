@@ -75,10 +75,10 @@ class NecessityReviewTests(unittest.TestCase):
         def run(argv, text, **kwargs):
             calls.append((argv, text, kwargs))
             if argv[-3:] == ["mcp", "list", "--json"]:
-                return json.dumps({"mcp_servers": [{"name": "safe name"}, {"name": "x.y"}]}), ""
+                return json.dumps({"mcp_servers": [{"name": "node_repl"}, {"name": "safe-name"}]}), ""
             return json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(verdict)}}) + "\n", ""
 
-        with mock.patch.object(review.managed_entry, "resolve_executable", return_value="codex.cmd"), \
+        with mock.patch.object(review.managed_entry, "resolve_executable", return_value="codex.exe"), \
              mock.patch.object(review, "bounded_run", side_effect=run):
             result = review.review(self.request, self.cfg)
         self.assertEqual(result["candidate_id"], "candidate-1")
@@ -86,8 +86,8 @@ class NecessityReviewTests(unittest.TestCase):
         self.assertNotIn("--ignore-user-config", argv)
         self.assertIn("--sandbox", argv)
         configs = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value == "-c"]
-        self.assertIn('mcp_servers."safe name".enabled=false', configs)
-        self.assertIn('mcp_servers."x.y".enabled=false', configs)
+        self.assertIn('mcp_servers.node_repl.enabled=false', configs)
+        self.assertIn('mcp_servers.safe-name.enabled=false', configs)
         self.assertIn("features.plugins=false", configs)
         self.assertIn("features.multi_agent=false", configs)
         self.assertIn("web_search=\"disabled\"", configs)
@@ -95,6 +95,31 @@ class NecessityReviewTests(unittest.TestCase):
         self.assertEqual(calls[0][0][1], "-c")
         self.assertNotIn("--strict-config", calls[0][0])
         self.assertNotIn("-C", calls[0][0])
+
+    def test_unsupported_mcp_name_does_not_launch_reviewer(self):
+        for name in ('x.y', 'quoted"name', 'x&echo injected'):
+            with self.subTest(name=name), \
+                 mock.patch.object(review.managed_entry, "resolve_executable", return_value="codex.exe"), \
+                 mock.patch.object(review, "mcp_names", return_value=(name,)), \
+                 mock.patch.object(review, "bounded_run") as run:
+                with self.assertRaisesRegex(ValueError, "cannot be safely disabled"):
+                    review.review(self.request, self.cfg)
+                run.assert_not_called()
+
+    @unittest.skipUnless(os.name == "nt", "Windows batch launch boundary")
+    def test_windows_batch_rejected_before_any_child_launch(self):
+        for suffix in (".cmd", ".BAT"):
+            shim = self.root / ("codex" + suffix)
+            shim.write_text("@echo should-not-run\n")
+            for configured in (False, True):
+                cfg = dict(self.cfg, codex_executable=str(shim)) if configured else self.cfg
+                with self.subTest(suffix=suffix, configured=configured), \
+                     mock.patch.object(review.managed_entry, "resolve_executable", return_value=str(shim)), \
+                     mock.patch.object(review, "mcp_names", return_value=("x&echo injected",)), \
+                     mock.patch.object(review, "bounded_run") as run:
+                    with self.assertRaisesRegex(ValueError, "native Codex .exe"):
+                        review.review(self.request, cfg)
+                    run.assert_not_called()
 
     def test_schema_invalid_or_invalid_mcp_json_withholds_verdict(self):
         bad = {"candidate_id": "candidate-1", "action": "continue", "disposition": "normal"}

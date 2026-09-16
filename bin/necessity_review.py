@@ -183,8 +183,12 @@ def _restricted_config(cfg, mcp_names=()):
               "apps._default.enabled=false", "include_apps_instructions=false",
               "include_collaboration_mode_instructions=false", "web_search=\"disabled\"",
               "model_reasoning_effort=" + json.dumps(cfg["effort"])]
-    # TOML quotes every component, so a server name cannot alter the config path.
-    values.extend("mcp_servers.%s.enabled=false" % json.dumps(name) for name in mcp_names)
+    # The CLI splits dotted override keys literally; TOML quoting a component
+    # creates a different server instead of escaping its name. Fail closed for
+    # names that cannot be represented by this narrow override path.
+    if any(not re.fullmatch(r"[A-Za-z0-9_-]+", name) for name in mcp_names):
+        raise ValueError("MCP server name cannot be safely disabled by CLI override")
+    values.extend("mcp_servers.%s.enabled=false" % name for name in mcp_names)
     return values
 
 
@@ -231,6 +235,8 @@ def review(request, cfg):
     executable = cfg.get("codex_executable") or managed_entry.resolve_executable("codex")
     if not executable:
         raise ValueError("Codex vendor executable unavailable")
+    if os.name == "nt" and Path(executable).suffix.lower() != ".exe":
+        raise ValueError("Windows reviewer requires a native Codex .exe; batch shims are not supported")
     # A neutral directory prevents project MCP/AGENTS/config from entering the child.
     # User authentication is retained; no credentials or HOME are copied or replaced.
     with tempfile.TemporaryDirectory(prefix="agent-rules-review-") as temp:

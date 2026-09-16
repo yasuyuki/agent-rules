@@ -29,6 +29,7 @@ Prepare one private setup JSON with these fields; it is not a per-task input:
 - Optional `codex_executable`: absolute vendor executable when the normal site
   entry appends incompatible privilege/sandbox arguments. Otherwise the existing
   managed-entry resolver is used. Never loosen the review sandbox to use a wrapper.
+  Windows requires a native `.exe`; `.cmd`/`.bat` shims are refused before launch.
 - Optional `shell`: confirmed native shell (`bash`, `sh`, `powershell`, `pwsh`)
   when hook payloads omit it. Missing Windows shell information is unassessed;
   do not infer PowerShell or Bash from the canonical `Bash` hook name.
@@ -96,6 +97,8 @@ specialized tool coverage is not a zero-tool or same-user tamper-proof boundary.
 Review uses the existing Codex executable/auth in a neutral temporary cwd,
 read-only sandbox, no approvals, no project instructions/skills/apps/plugins or
 collaboration, web search disabled, and configured MCP servers explicitly disabled.
+MCP names containing characters other than ASCII letters, digits, `_` or `-`
+remain unassessed: the CLI's dotted override keys cannot safely encode them.
 The reviewer is told to use supplied evidence only; observed tool attempts
 invalidate its result. Strict structured output validates candidate identity and
 both decision axes. No SDK, copied authentication, daemon or autonomous Issue
