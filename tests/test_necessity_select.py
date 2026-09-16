@@ -118,6 +118,33 @@ print("result")
         self.assertEqual("Write-Output '$not executed'", kwargs["input"])
         self.assertEqual(7, kwargs["timeout"])
 
+    def test_static_python_version_only_is_negative(self):
+        for command in ("python --version", "python3 -V", "py --version"):
+            with self.subTest(command=command):
+                facts = selector.analyze(command)
+                self.assertEqual([], facts["coverage"], facts)
+                self.assertEqual([], facts["features"], facts)
+        for command in ("python -v", "python --version extra", "python -m unittest", "python --version > result.txt"):
+            with self.subTest(command=command):
+                self.assertTrue(selector.analyze(command)["coverage"])
+        facts = selector.analyze("python --version $(touch unexpected)")
+        self.assertIn("command-substitution", facts["features"])
+        self.assertTrue(facts["coverage"])
+
+    @unittest.skipUnless(shutil.which("pwsh"), "pwsh is unavailable")
+    def test_native_powershell_static_python_version_and_counterexamples(self):
+        for command in ("python --version", "python -V", "py --version", "python.exe '--version'"):
+            with self.subTest(command=command):
+                facts = selector.analyze(command, shell="pwsh", parser_timeout=24)
+                self.assertEqual([], facts["coverage"], facts)
+                self.assertEqual([], facts["features"], facts)
+        for command in ("python -v", "python --version extra", "python -c 'print(1)'",
+                        "python -m unittest", "python $version", "python --version $(Get-Date)", "python --version > result.txt",
+                        "Set-Content run.py 'print(1)'; python run.py"):
+            with self.subTest(command=command):
+                facts = selector.analyze(command, shell="pwsh", parser_timeout=24)
+                self.assertIn("powershell:unassessed (nested interpreter or evaluation alias)", facts["coverage"], facts)
+
     def test_powershell_requires_deadline(self):
         with mock.patch.object(selector.shutil, "which", return_value="pwsh"):
             facts = selector.analyze("Write-Output ok", shell="powershell.exe")

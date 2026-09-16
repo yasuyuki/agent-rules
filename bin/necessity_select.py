@@ -116,7 +116,9 @@ def _analyse_bash(source, result):
                 if words[1] in generated: _add(result, "features", "generated-file-execution")
             else: _add(result, "responsibilities", "process"); _add(result, "executes", words[0])
         elif head in {"python", "python3", "py"}:
-            if "-c" in words and len(words) > words.index("-c") + 1: _analyse_python(words[words.index("-c") + 1], result)
+            if len(words) == 2 and words[1] in {"--version", "-V"} and not redirects:
+                _add(result, "responsibilities", "process"); _add(result, "executes", words[0])
+            elif "-c" in words and len(words) > words.index("-c") + 1: _analyse_python(words[words.index("-c") + 1], result)
             elif "-m" in words: _add(result, "coverage", "python:unassessed (module execution)")
             else:
                 heredoc = next((_bash_heredoc(item) for item in redirects if _bash_heredoc(item) is not None), None)

@@ -55,8 +55,18 @@ function Observe-Ast($tree) {
         $nested = [System.Management.Automation.Language.Parser]::ParseInput($argument, [ref]$nestedTokens, [ref]$nestedErrors)
         if (@($nestedErrors).Count) { Add-Unique $coverage 'powershell:unassessed (nested syntax error)' } else { Observe-Ast $nested }
       } else { Add-Unique $coverage 'powershell:unassessed (dynamic invoke-expression)' }
-    } elseif ($name -in 'python','python3','python.exe','py','py.exe','pwsh','pwsh.exe','powershell','powershell.exe','bash','bash.exe','cmd','cmd.exe','wsl','wsl.exe','iex') {
-      Add-Unique $coverage 'powershell:unassessed (nested interpreter or evaluation alias)'
+    } elseif ($name -in 'python','python3','python.exe','python3.exe','py','py.exe','pwsh','pwsh.exe','powershell','powershell.exe','bash','bash.exe','cmd','cmd.exe','wsl','wsl.exe','iex') {
+      # Only an exact static Python version query has no supplied program.
+      # Other flags, extra arguments and expansions remain unassessed.
+      $versionArgument = if ($elements.Count -eq 2) { Literal-Text $elements[1] } else { $null }
+      if ($elements.Count -eq 2 -and $elements[1] -is [System.Management.Automation.Language.CommandParameterAst]) {
+        $versionArgument = $elements[1].Extent.Text
+      }
+      if ($name -in 'python','python3','python.exe','python3.exe','py','py.exe' -and $versionArgument -cin '--version','-V' -and $command.Redirections.Count -eq 0) {
+        Add-Unique $responsibilities 'process'; Add-Unique $executes $commandName
+      } else {
+        Add-Unique $coverage 'powershell:unassessed (nested interpreter or evaluation alias)'
+      }
     } else {
       # Static existing commands are normal entrypoints, not newly assembled
       # code merely because their command name is outside this small role map.
