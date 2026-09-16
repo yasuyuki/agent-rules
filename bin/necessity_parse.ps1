@@ -54,7 +54,7 @@ function Static-Argv($tree) {
   if ($command -isnot [System.Management.Automation.Language.CommandAst]) { return $null }
   $argv = Static-CommandArgv $command
   if ($null -eq $argv) { return $null }
-  $name = [IO.Path]::GetFileName($argv[0]).ToLowerInvariant()
+  $name = [IO.Path]::GetFileName($argv[0].Replace('\', '/')).ToLowerInvariant()
   if ($name -in 'invoke-expression','iex','.', 'source') { return $null }
   return $argv
 }
@@ -78,7 +78,7 @@ function Observe-Ast($tree) {
   foreach ($command in $commands) {
     $commandName = $command.GetCommandName()
     if (-not $commandName) { Add-Unique $coverage 'powershell:unassessed (dynamic command)'; continue }
-    $name = [IO.Path]::GetFileName($commandName).ToLowerInvariant()
+    $name = [IO.Path]::GetFileName($commandName.Replace('\', '/')).ToLowerInvariant()
     $elements = @($command.CommandElements)
     $argument = Command-Argument $elements
     $staticArgv = Static-CommandArgv $command
