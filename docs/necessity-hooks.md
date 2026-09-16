@@ -129,6 +129,15 @@ separate decisions: current action and normal/delete-or-reuse/disposable/
 integration-proposal/unassessed disposition. An integration proposal is not
 authorization to implement another feature.
 
+`multiple-responsibilities` is a selection observation, not a splitting rule.
+The reviewer judges purpose and side effects separately: needed read-only repo,
+instruction and contract observations may share one immediate purpose and return
+`continue/normal`. Grouping alone cannot justify `revise`; revision must identify
+unnecessary work to remove, a confirmed entry to reuse, or an actual reduction in
+work. Read-only operations are not generally exempt. Other selection features,
+coverage gaps and the owner/entry evidence required for reuse or integration
+remain unchanged.
+
 The adapter never returns `allow`, edits tool input, overrides security decisions,
 or replaces original PostToolUse output. Denials use native PreToolUse `deny`.
 Stop requests one pass to preserve pending results; a recursive Stop reports

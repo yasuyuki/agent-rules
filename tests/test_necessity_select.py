@@ -1,5 +1,6 @@
 """Focused regression tests for bounded command selection facts."""
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -18,6 +19,35 @@ SPEC.loader.exec_module(selector)
 
 
 class NecessitySelectTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("pwsh"), "requires native PowerShell parser")
+    def test_saved_orientation_grouping_remains_semantic_review_not_exemption(self):
+        fixture = json.loads((ROOT / "tests/fixtures/necessity-orientation.json").read_text())
+        for case in fixture["cases"]:
+            with self.subTest(candidate=case["original_candidate_id"]):
+                facts = selector.analyze(case["operation"], shell="pwsh", parser_timeout=10)
+                self.assertEqual([], facts["coverage"])
+                self.assertEqual([], facts["writes"])
+                self.assertEqual(["multiple-responsibilities"], facts["features"])
+                self.assertTrue({"state", "process"}.issubset(facts["responsibilities"]))
+
+    @unittest.skipUnless(shutil.which("pwsh"), "requires native PowerShell parser")
+    def test_orientation_does_not_hide_other_candidate_or_coverage_grounds(self):
+        orientation = "git status --short; Get-Content AGENTS.md; Get-Content README.md; "
+        cases = [
+            ("Set-Content result.txt 'data'", "writes", "result.txt"),
+            ("Set-Content run.py 'print(1)'; python run.py", "features", "generated-file-execution"),
+            ("Remove-Item result.txt", "responsibilities", "cleanup"),
+            ("Start-Sleep 1", "responsibilities", "wait"),
+            ("Invoke-Expression $code", "coverage", "powershell:unassessed (dynamic invoke-expression)"),
+            ("& $command", "coverage", "powershell:unassessed (dynamic command)"),
+            ("[IO.File]::ReadAllText('unknown.txt')", "coverage", "powershell:unassessed (method invocation)"),
+        ]
+        for suffix, field, expected in cases:
+            with self.subTest(suffix=suffix):
+                facts = selector.analyze(orientation + suffix, shell="pwsh", parser_timeout=10)
+                self.assertIn(expected, facts[field])
+                self.assertIn("multiple-responsibilities", facts["features"])
+
     def test_ordinary_process_and_completion_message_is_negative(self):
         self.assertEqual(selector.analyze("pytest -q; echo done")["features"], [])
         self.assertEqual(selector.analyze("import subprocess; subprocess.run(['pytest']); print('done')", shell="python")["features"], [])
