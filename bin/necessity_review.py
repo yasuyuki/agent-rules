@@ -153,7 +153,7 @@ def bounded_run(argv, text, *, cwd, env, deadline, limit):
         for thread in threads:
             thread.join(timeout=max(0, cleanup_end - time.monotonic()))
         if os.name == "nt" and not cleaned:
-            raise ValueError("Windows cannot safely verify cleanup after the reviewer leader exited") from exc
+            raise ValueError(str(exc) + "; Windows descendant cleanup could not be verified") from exc
         raise
     finally:
         # Never close a buffered pipe from another thread: that may wait on a

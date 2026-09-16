@@ -55,8 +55,12 @@ function Observe-Ast($tree) {
         $nested = [System.Management.Automation.Language.Parser]::ParseInput($argument, [ref]$nestedTokens, [ref]$nestedErrors)
         if (@($nestedErrors).Count) { Add-Unique $coverage 'powershell:unassessed (nested syntax error)' } else { Observe-Ast $nested }
       } else { Add-Unique $coverage 'powershell:unassessed (dynamic invoke-expression)' }
+    } elseif ($name -in 'python','python3','python.exe','py','py.exe','pwsh','pwsh.exe','powershell','powershell.exe','bash','bash.exe','cmd','cmd.exe','wsl','wsl.exe','iex') {
+      Add-Unique $coverage 'powershell:unassessed (nested interpreter or evaluation alias)'
     } else {
-      Add-Unique $coverage "powershell:unassessed (unknown command: $commandName)"
+      # Static existing commands are normal entrypoints, not newly assembled
+      # code merely because their command name is outside this small role map.
+      Add-Unique $responsibilities 'process'; Add-Unique $executes $commandName
     }
   }
   foreach ($member in $tree.FindAll({ param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst] }, $true)) {

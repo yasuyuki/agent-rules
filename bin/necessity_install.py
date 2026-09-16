@@ -39,7 +39,7 @@ MANIFEST = ".necessity-install.json"
 CONFIG = "config.json"
 EVENTS = ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SubagentStop")
 BAD_PATH = set("\0\n\r")
-WINDOWS_CMD_META = set("% !&|<>()^\n\r")
+WINDOWS_CMD_META = set("%!&|<>()^\n\r")
 
 
 class InstallError(RuntimeError):

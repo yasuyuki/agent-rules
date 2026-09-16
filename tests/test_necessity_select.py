@@ -2,6 +2,7 @@
 import importlib.util
 from pathlib import Path
 import shutil
+import tempfile
 import unittest
 from unittest import mock
 
@@ -124,15 +125,18 @@ print("result")
 
     @unittest.skipUnless(shutil.which("pwsh"), "pwsh is unavailable")
     def test_native_powershell_ast_does_not_execute_marker(self):
-        marker = ROOT / "must-not-exist-from-parser"
-        marker.unlink(missing_ok=True)
-        facts = selector.analyze(
-            f"Set-Content -Path 'guide.md' -Value 'long literal'; Invoke-Expression \"Set-Content -Path '{marker}' -Value x\"",
-            shell="pwsh", parser_timeout=5,
-        )
-        self.assertFalse(marker.exists())
-        self.assertIn("guide.md", facts["writes"])
-        self.assertIn(str(marker), facts["writes"])
+        with tempfile.TemporaryDirectory() as temp:
+            marker = Path(temp) / "must-not-exist-from-parser"
+            facts = selector.analyze(
+                f"Set-Content -Path 'guide.md' -Value 'long literal'; Invoke-Expression \"Set-Content -Path '{marker}' -Value x\"",
+                shell="pwsh", parser_timeout=5,
+            )
+            self.assertFalse(marker.exists())
+            self.assertIn("guide.md", facts["writes"])
+            self.assertIn(str(marker), facts["writes"])
+        ordinary = selector.analyze("git status --short; Write-Output 'done'", shell="pwsh", parser_timeout=5)
+        self.assertEqual(ordinary["features"], [])
+        self.assertEqual(ordinary["coverage"], [])
 
 
 if __name__ == "__main__":

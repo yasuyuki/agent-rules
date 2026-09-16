@@ -51,7 +51,7 @@ class ProjectCliTests(unittest.TestCase):
     def test_opt_in_necessity_installed_files_and_negative_event(self):
         home = self.root / "codex-home"
         settings = self.root / "necessity-settings.json"
-        settings.write_text(json.dumps(dict(version=1, scopes=[str(self.root)], excludes=[],
+        settings.write_text(json.dumps(dict(version=1, shell="bash", scopes=[str(self.root)], excludes=[],
             state_dir=str(self.root / "state"), model="fixture", effort="low", deadline_seconds=2,
             max_input_bytes=65536, max_output_bytes=65536, reviews_per_session=1,
             retention_seconds=3600, max_sessions=2)), encoding="utf-8")

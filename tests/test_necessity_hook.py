@@ -21,7 +21,7 @@ class HookTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.cfg = dict(version=1, scopes=[str(self.root)], excludes=[], state_dir=str(self.root / "state"),
+        self.cfg = dict(version=1, shell="bash", scopes=[str(self.root)], excludes=[], state_dir=str(self.root / "state"),
                         model="fixture", effort="low", deadline_seconds=2, max_input_bytes=65536,
                         max_output_bytes=65536, reviews_per_session=5, retention_seconds=3600, max_sessions=10)
         self.calls = []
