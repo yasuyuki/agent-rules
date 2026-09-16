@@ -171,9 +171,16 @@ def dependency_worktrees(source, python):
     return found.items()
 
 
-def installation_errors(repo, directory, state, *, source_check=True):
+def installation_errors(repo, directory, state, *, source_check=True, packing_check=True):
     require(state)
     errors = []
+    if packing_check:
+        for key in ('gc.packRefs', 'maintenance.pack-refs.enabled'):
+            value = git(repo, 'config', '--bool', '--get', key, optional=True)
+            if value != 'false':
+                raw = git(repo, 'config', '--get', key, optional=True)
+                problem = 'missing' if raw is None else 'invalid or enabled'
+                errors.append(key + ' is ' + problem + '; expected false; repair with branch install')
     if git(repo, 'remote', 'get-url', state['remote'], optional=True) != state['remote_url']:
         errors.append('registered remote URL changed')
     # One fresh read per validation; last value matches `config --get`. NUL
@@ -301,6 +308,13 @@ def default_remote(repo, remote):
 def install(args):
     repo = Path(args.repo).resolve()
     default = default_remote(repo, args.remote)
+    packing_scopes = {}
+    for key in ('gc.packRefs', 'maintenance.pack-refs.enabled'):
+        scoped = git(repo, 'config', '--show-scope', '--get', key, optional=True)
+        scope = (scoped or '').partition('\t')[0]
+        if scope == 'command':
+            raise BranchError(key + ' has a command-scope override; remove it before branch install')
+        packing_scopes[key] = '--worktree' if scope == 'worktree' else '--local'
     # Lock before reading/pinning source bytes. Preserve existing locks and never
     # auto-unlock on rebind: another repository may still consume this checkout.
     for root, lock in dependency_worktrees(ROOT, sys.executable):
@@ -314,7 +328,10 @@ def install(args):
             if state['remote'] != args.remote or state['default'] != default:
                 raise BranchError('remote/default changed; resolve registration before installing')
             if not state.get('installing'):
-                errors = installation_errors(repo, directory, state, source_check=False)
+                # Only install owns repair of the two packing settings. Keep
+                # remote, installed hook and source-binding checks intact.
+                errors = installation_errors(repo, directory, state, source_check=False,
+                                             packing_check=False)
                 if errors:
                     raise BranchError('; '.join(errors))
                 if digest(dispatcher) != state['dispatcher_hash']:
@@ -381,8 +398,10 @@ def install(args):
         git(repo, 'config', '--local', 'agentBranch.source', state['source'])
         git(repo, 'config', '--local', 'core.hooksPath', str(target))
         # The hook cannot distinguish loose-ref pruning from branch deletion.
-        git(repo, 'config', '--local', 'maintenance.pack-refs.enabled', 'false')
-        git(repo, 'config', '--local', 'gc.packRefs', 'false')
+        for key, scope in packing_scopes.items():
+            git(repo, 'config', '--local', '--replace-all', key, 'false')
+            if scope == '--worktree':
+                git(repo, 'config', scope, '--replace-all', key, 'false')
         assert_install(repo, directory, state)
         state.pop('installing')
         save(directory, state)

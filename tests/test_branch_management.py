@@ -236,6 +236,100 @@ class BranchManagementTests(unittest.TestCase):
         hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         self.branch("check", repo=legacy, ok=False)
 
+    def test_packing_settings_check_and_explicit_repair(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        state = self.repo / '.git/agent-branches/state.json'
+        config = self.repo / '.git/config'
+        self.git('config', 'issue88.keep', 'unrelated')
+        (self.repo / 'README').write_bytes(b'staged\n')
+        self.git('add', 'README')
+        (self.repo / 'README').write_bytes(b'unstaged\n')
+        before = (state.read_bytes(), (self.repo / '.git/index').read_bytes(),
+                  self.git('show-ref').stdout)
+        for key in ('gc.packRefs', 'maintenance.pack-refs.enabled'):
+            for value in ('false', 'FALSE', 'no', 'off', '0', ''):
+                with self.subTest(key=key, accepted=value):
+                    self.git('config', key, value)
+                    self.branch('check')
+            for value in (None, 'true', '1', 'invalid'):
+                with self.subTest(key=key, rejected=value):
+                    if value is None:
+                        self.git('config', '--unset-all', key)
+                    else:
+                        self.git('config', key, value)
+                    unchanged = config.read_bytes()
+                    result = self.branch('check', ok=False)
+                    self.assertIn(key, result.stdout + result.stderr)
+                    self.assertIn('branch install', result.stdout + result.stderr)
+                    self.assertIn('missing' if value is None else 'invalid or enabled',
+                                  result.stdout + result.stderr)
+                    self.assertEqual(config.read_bytes(), unchanged)
+                    self.branch('install')
+                    self.branch('check')
+                    self.assertEqual(self.git('config', '--bool', '--get', key).stdout.strip(), 'false')
+                    self.assertEqual(before, (state.read_bytes(),
+                        (self.repo / '.git/index').read_bytes(), self.git('show-ref').stdout))
+                    self.assertEqual((self.repo / 'README').read_bytes(), b'unstaged\n')
+                    self.assertEqual(self.git('config', 'issue88.keep').stdout.strip(), 'unrelated')
+
+    def test_packing_repair_keeps_other_install_guards(self):
+        self.git('config', '--unset-all', 'gc.packRefs')
+        self.git('remote', 'set-url', 'origin', self.remote.as_uri())
+        self.assertIn('registered remote URL changed', self.branch('install', ok=False).stderr)
+        self.git('remote', 'set-url', 'origin', str(self.remote))
+        source = self.git('config', 'agentBranch.source').stdout.strip()
+        self.git('config', 'agentBranch.source', 'wrong-source')
+        self.assertIn('agentBranch.source', self.branch('install', ok=False).stderr)
+        self.git('config', 'agentBranch.source', source)
+        hook = Path(self.git('config', 'core.hooksPath').stdout.strip()) / 'pre-push'
+        hook.write_bytes(b'#!/bin/sh\nexit 0\n')
+        self.assertIn('hook', self.branch('install', ok=False).stderr)
+        self.assertNotEqual(self.git('config', '--get', 'gc.packRefs', ok=False).returncode, 0)
+
+    def test_packing_gc_failure_and_repair(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        # Simulate drift only in this disposable repository. Git can pack refs
+        # before rejecting loose-ref pruning, so preserve the semantic refs.
+        before = self.git('show-ref').stdout
+        self.git('config', 'gc.packRefs', 'true')
+        # Some Git versions report pack-refs failure but return zero from gc.
+        failed = self.git('gc', '--no-detach', ok=None)
+        self.assertIn('reference', failed.stderr.lower())
+        self.assertIn('failed to run pack-refs', failed.stderr)
+        self.branch('install')
+        self.branch('check')
+        repaired = self.git('gc', '--no-detach')
+        self.assertNotIn('failed to run pack-refs', repaired.stderr)
+        self.assertEqual(self.git('show-ref').stdout, before)
+
+    def test_packing_worktree_and_command_scope_repair(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        self.git('config', 'extensions.worktreeConfig', 'true')
+        for key in ('gc.packRefs', 'maintenance.pack-refs.enabled'):
+            with self.subTest(key=key):
+                self.git('config', '--worktree', key, 'true')
+                self.branch('check', ok=False)
+                self.branch('install')
+                self.branch('check')
+                self.assertEqual(self.git('config', '--bool', '--get', key).stdout.strip(), 'false')
+                self.git('config', '--worktree', '--add', key, 'true')
+                self.branch('check', ok=False)
+                self.branch('install')
+                self.branch('check')
+                self.git('config', '--worktree', key, 'true')
+                paths = [self.repo / '.git' / name for name in
+                         ('config', 'config.worktree', 'agent-branches/state.json')]
+                before = [path.read_bytes() for path in paths]
+                from unittest.mock import patch
+                for override in ('true', 'false'):
+                    with patch.dict(os.environ, {'GIT_CONFIG_COUNT': '1',
+                            'GIT_CONFIG_KEY_0': key, 'GIT_CONFIG_VALUE_0': override}):
+                        result = self.branch('install', ok=False)
+                    self.assertIn('command-scope override', result.stderr)
+                    self.assertEqual([path.read_bytes() for path in paths], before)
+                self.branch('install')
+                self.branch('check')
+
     def test_declare_agent_updates_only_a_registered_source_catalog(self):
         # Inventory consumes the source checkout's managed rules/skills; the
         # installed wheel exposes project commands and branch hooks only. Keep

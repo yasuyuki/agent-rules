@@ -1055,6 +1055,13 @@ remains enabled. Git's hook interface cannot distinguish pruning a loose referen
 from deleting the branch itself. `git pack-refs --all --no-prune` is supported;
 reference pruning remains rejected. This preserves branch-deletion protection
 without a maintenance wrapper or a hook bypass.
+`branch check` requires both effective settings to be false according to Git's
+boolean interpretation. Missing, enabled or invalid values are reported without
+changing the repository. Re-run `branch install --repo REPO --remote REMOTE`
+from the reviewed fixed source to repair these settings; other installation
+guards still apply.
+Repair also normalizes an effective worktree override. Command-scope overrides
+must be removed before installation so they cannot mask persistent settings.
 
 Register existing integration and topic checkouts with `branch begin --mode
 adopt --repo REPO --task ID --request REQUEST --branch BRANCH --worktree PATH

@@ -19,6 +19,8 @@ class InstallationConfigTests(unittest.TestCase):
             repo = Path(temp)
             subprocess.run(['git', 'init', '-q', temp], check=True)
             management.git(repo, 'remote', 'add', 'origin', 'https://example.invalid/repo')
+            for key in ('gc.packRefs', 'maintenance.pack-refs.enabled'):
+                management.git(repo, 'config', key, 'false')
             directory = repo / '.git/agent-branches'
             state = dict(version=1, remote='origin', remote_url='https://example.invalid/repo',
                          python='python path', source='source path', hook_hashes={}, hook_executable={})
