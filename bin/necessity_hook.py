@@ -21,6 +21,63 @@ import necessity_select
 import necessity_review
 
 EVENTS = {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SubagentStop"}
+TOOLS = {"apply_patch", "Bash", "exec_command", "shell", "shell_command"}
+
+
+class IntakeError(ValueError):
+    """A stable, content-free diagnostic reason."""
+
+
+def scope_of(payload, cfg):
+    value = payload.get("cwd")
+    if not isinstance(value, str) or not Path(value).is_absolute():
+        return "unknown"
+    cwd = Path(value).resolve()
+    if any(beneath(cwd, Path(p).resolve()) for p in cfg["excludes"]):
+        return "excluded"
+    return "inside" if any(beneath(cwd, Path(p).resolve()) for p in cfg["scopes"]) else "outside"
+
+
+def diagnostic(cfg, payload, event, raw, exc):
+    """Persist only fixed labels, sizes and a digest, never rejected content."""
+    reason = str(exc) if isinstance(exc, IntakeError) else (
+        "invalid_json" if isinstance(exc, (json.JSONDecodeError, UnicodeDecodeError)) else
+        "state_error" if isinstance(exc, sqlite3.Error) else "internal_" + type(exc).__name__)
+    # Exception messages, arbitrary event/tool names, paths and identifiers are
+    # not safe evidence. Only known protocol labels cross this boundary.
+    payload = payload if isinstance(payload, dict) else {}
+    tool = payload.get("tool_name")
+    info = {"reason_code": reason, "event": event if isinstance(event, str) and event in EVENTS else "unknown",
+            "tool": tool if isinstance(tool, str) and tool in TOOLS | {"view_image"} else "other",
+            "scope": "unknown", "input_bytes": len(raw),
+            "review_limit_bytes": cfg.get("max_input_bytes") if cfg else None,
+            "evidence_sha256": hashlib.sha256(raw).hexdigest(), "status": "unassessed"}
+    reference = digest(info)
+    saved = False
+    if cfg:
+        store = None
+        try:
+            info["scope"] = scope_of(payload, cfg)
+            reference = digest(info)
+            store = Store(cfg)
+            store.transaction()
+            store.db.execute("DELETE FROM diagnostics WHERE touched < ?", (time.time() - cfg["retention_seconds"],))
+            store.db.execute("INSERT OR REPLACE INTO diagnostics(id,touched,data) VALUES(?,?,?)",
+                             (reference, time.time(), json.dumps(info)))
+            # Reuse the selected-evidence byte budget for bounded diagnostics;
+            # eviction here cannot remove any candidate or its resolution.
+            while store.db.execute("SELECT COALESCE(SUM(length(CAST(data AS BLOB))),0) FROM diagnostics").fetchone()[0] > cfg["max_input_bytes"]:
+                store.db.execute("DELETE FROM diagnostics WHERE id=(SELECT id FROM diagnostics ORDER BY touched LIMIT 1)")
+            saved = store.db.execute("SELECT 1 FROM diagnostics WHERE id=?", (reference,)).fetchone() is not None
+            store.db.commit()
+        except Exception:
+            # Diagnostic failure must not replace the original tool outcome.
+            pass
+        finally:
+            if store:
+                store.close()
+    return "Necessity hook unassessed: %s; diagnostic %s (%s). Inspect necessity status/check; preserve incomplete status." % (
+        reason, reference, "saved" if saved else "not persisted")
 
 
 def digest(value):
@@ -98,6 +155,7 @@ class Store:
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.execute("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, family TEXT NOT NULL, touched REAL NOT NULL, data TEXT NOT NULL)")
         self.db.execute("CREATE TABLE IF NOT EXISTS candidates (session TEXT REFERENCES sessions(id) ON DELETE CASCADE, id TEXT, status TEXT, result TEXT, notified INTEGER DEFAULT 0, started REAL NOT NULL, resolution TEXT, PRIMARY KEY(session,id))")
+        self.db.execute("CREATE TABLE IF NOT EXISTS diagnostics (id TEXT PRIMARY KEY, touched REAL NOT NULL, data TEXT NOT NULL)")
         self.cfg = cfg
         self.family = ""
 
@@ -276,15 +334,28 @@ def handle(payload, cfg, reviewer=necessity_review.review):
         if event == "PreToolUse":
             return {"hookSpecificOutput": {"hookEventName": event, "permissionDecision": "deny", "permissionDecisionReason": "Necessity reviewer must judge supplied evidence without tools."}}
         return {}
-    cwd = Path(payload.get("cwd", "")).resolve()
-    if not any(beneath(cwd, Path(p).resolve()) for p in cfg["scopes"]) or any(beneath(cwd, Path(p).resolve()) for p in cfg["excludes"]):
+    scope = scope_of(payload, cfg)
+    if scope in {"outside", "excluded"}:
         return {}
+    if event in {"PreToolUse", "PostToolUse"} and payload.get("tool_name") not in TOOLS:
+        return {}
+    if scope == "unknown":
+        raise IntakeError("missing_absolute_cwd")
+    cwd = Path(payload["cwd"]).resolve()
     # Recovery cannot depend on request resolution, a candidate slot, or even
     # opening candidate state. Post must not create pending work for it either.
     if event in {"PreToolUse", "PostToolUse"} and management_call(payload, cfg):
         return {}
+    if event in {"PreToolUse", "PostToolUse"}:
+        tool = payload.get("tool_input")
+        if not isinstance(tool, dict) or not isinstance(tool.get("command", tool.get("cmd")), str):
+            raise IntakeError("missing_tool_command")
+        if len(tool.get("command", tool.get("cmd")).encode()) > cfg["max_input_bytes"]:
+            raise IntakeError("selected_command_too_large")
+    if event == "UserPromptSubmit" and isinstance(payload.get("prompt"), str) and len(payload["prompt"].encode()) > cfg["max_input_bytes"]:
+        raise IntakeError("selected_prompt_too_large")
     if not isinstance(payload.get("session_id"), str) or not payload["session_id"]:
-        raise ValueError("native session identifier missing")
+        raise IntakeError("missing_session_id")
     actor = payload.get("agent_id") or payload.get("transcript_path") or "root"
     sid = digest([str(cwd), payload["session_id"], actor])
     store = Store(cfg)
@@ -485,25 +556,40 @@ def handle(payload, cfg, reviewer=necessity_review.review):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
+    parser.add_argument("--event", choices=sorted(EVENTS))
     args = parser.parse_args(argv)
     payload = {}
+    cfg = None
+    raw = b""
+    event = args.event
     try:
         cfg = load_config(args.config)
-        raw = sys.stdin.buffer.read(cfg["max_input_bytes"] + 1)
-        if len(raw) > cfg["max_input_bytes"]:
-            raise ValueError("hook input exceeds configured limit; not truncated or approved")
+        # Native transport is not review text. In particular image/base64
+        # results are never selected or persisted by handle().
+        raw = sys.stdin.buffer.read()
         payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            payload = {}
+            raise IntakeError("invalid_envelope")
+        if args.event and payload.get("hook_event_name") != args.event:
+            raise IntakeError("event_mismatch")
+        event = args.event or payload.get("hook_event_name")
         result = handle(payload, cfg)
         print(json.dumps(result, ensure_ascii=False))
         return 0
-    except (ValueError, OSError, sqlite3.Error, TypeError, KeyError, RecursionError) as exc:
+    except Exception as exc:
         # Do not echo raw inputs or database contents in diagnostics.
-        message = "Necessity hook unassessed: " + type(exc).__name__ + "; inspect installation/state via the management check. Preserve incomplete status."
-        event = payload.get("hook_event_name") if isinstance(payload, dict) else None
+        try:
+            message = diagnostic(cfg, payload, event, raw, exc)
+        except Exception:
+            message = "Necessity hook unassessed; diagnostic unavailable. Inspect necessity status/check; preserve incomplete status."
+        if event == "PostToolUse":
+            print(json.dumps(context_output(event, message)))
+            return 0
         if event == "PreToolUse":
             print(json.dumps(decision_output(event, "unavailable", unassessed(message))))
             return 0
-        if event in {"Stop", "SubagentStop"}:
+        if isinstance(event, str) and event in {"Stop", "SubagentStop"}:
             print(json.dumps({"systemMessage": message + " Stop cannot recover state; work remains unassessed."}))
             return 0
         print(message, file=sys.stderr)
