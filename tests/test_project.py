@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -67,6 +68,22 @@ class ProjectCliTests(unittest.TestCase):
                                 input=json.dumps(event), text=True, capture_output=True, cwd=self.root)
         self.assert_ok(result)
         self.assertEqual(json.loads(result.stdout), {})
+        manifest = json.loads(script.with_name(".necessity-install.json").read_text(encoding="utf-8"))
+        entry = Path(manifest["management"]["source"]) / "place.py"
+        self.assertTrue(entry.is_file())
+        # The installed public entry remains reachable with a broken candidate
+        # database, through the installed hook in both phases.
+        (self.root / "state" / "necessity.sqlite3").write_bytes(b"invalid database fixture")
+        event["tool_input"]["command"] = shlex.join([sys.executable, str(entry), "necessity", "check", "--codex-home", str(home)])
+        for phase in ("PreToolUse", "PostToolUse"):
+            event["hook_event_name"] = phase
+            result = subprocess.run([sys.executable, str(script), "--config", str(script.with_name("config.json"))],
+                                    input=json.dumps(event), text=True, capture_output=True, cwd=self.root)
+            self.assert_ok(result)
+            self.assertEqual(json.loads(result.stdout), {})
+        result = subprocess.run([sys.executable, str(entry), "necessity", "check", "--codex-home", str(home)],
+                                text=True, capture_output=True, cwd=self.root)
+        self.assert_ok(result)
         self.assert_ok(self.run_cli("necessity", "remove", "--codex-home", str(home)))
         self.assertFalse(script.exists())
 

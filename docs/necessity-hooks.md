@@ -75,6 +75,22 @@ record --codex-home PATH --candidate ID --outcome handled|deferred|unassessed
 candidate. It cannot change the original verdict, authorize a denied operation,
 or create an exception; no internal JSON editing is needed.
 
+Use the same absolute Python executable used for installation and the installing
+source's `bin/place.py` for recovery. The ownership manifest pins that entry and
+its management implementation. A single static invocation of `necessity --help`,
+or `check`, `status`, `record`, or `remove` (including their help), adds no necessity
+decision in either PreToolUse or PostToolUse. It is recognized before opening
+candidate state, so missing requests, exhausted budgets, unavailable reviewers,
+and unavailable state cannot prevent reaching diagnosis or removal. Commands
+still validate their inputs and report real database/permission errors. This
+does not fix interpreter-name mismatches in older ownership manifests.
+
+The exemption does not cover a different entry or Python executable, installation,
+other `place.py` operations, appended commands, redirections, or dynamic code.
+Literal evidence is data even when it contains command examples. Reviewer
+children retain their tool prohibition. Normal permissions and other hooks still
+apply; no `allow` decision or input replacement is returned.
+
 ## Runtime behavior and limits
 
 UserPromptSubmit supplies the current request automatically. A single explicitly
@@ -123,6 +139,9 @@ Consult the existing task result for evidence outside the configured retention.
 An exact static Python `--version` or `-V` query without extra arguments or
 redirection is a normal selector negative, not a permission grant. Code, module
 execution and unsupported interpreter syntax retain their existing assessment.
+Static Python script calls in PowerShell observe both the process and script
+path. They are not inline programs; running a script observed as generated or
+modified in the same session still reaches candidate selection.
 
 PostToolUse status is recorded only from structured exit status; prose is not
 interpreted as a successful/failed exit. `write_stdin` cannot be certified before

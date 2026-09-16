@@ -191,6 +191,74 @@ def file_facts(paths, cwd, limit):
     return facts
 
 
+def management_call(payload, cfg):
+    """Recognize one owned static recovery call without accessing review state."""
+    if payload.get("tool_name") not in {"Bash", "exec_command", "shell", "shell_command"}:
+        return False
+    tool = payload.get("tool_input")
+    if not isinstance(tool, dict):
+        return False
+    try:
+        manifest = json.loads((HERE / ".necessity-install.json").read_text(encoding="utf-8"))
+        owner = manifest["management"]
+        # Do not resolve Python symlinks: registration and execution must use
+        # the same interpreter entry, not an apparently equivalent alias.
+        def same_path(left, right):
+            return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
+        if not same_path(owner["python"], sys.executable) or not same_path(owner["home"], HERE.parent):
+            return False
+        source = Path(owner["source"])
+        if not source.is_absolute() or source.is_symlink():
+            return False
+        for name in ("place.py", "necessity_install.py"):
+            path = source / name
+            if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != owner["files"][name]:
+                return False
+        shell = tool.get("shell") or cfg.get("shell") or ("bash" if os.name == "posix" else "unknown-native-shell")
+        words = necessity_select.static_argv(tool.get("command", tool.get("cmd", "")), shell,
+                                              parser_timeout=cfg["deadline_seconds"])
+        if not words or len(words) < 4 or not Path(words[0]).is_absolute():
+            return False
+        cwd = Path(tool.get("workdir", payload.get("cwd", "")))
+        if not same_path(words[0], owner["python"]) or not same_path(cwd / words[1], source / "place.py") or words[2] != "necessity":
+            return False
+        if words[3:] in (["--help"], ["-h"]):
+            return True
+        operation = words[3]
+        if operation not in {"check", "status", "record", "remove"}:
+            return False
+        # Parse only the existing management option grammar. Literal option
+        # values (especially evidence) never become shell code or new options.
+        options = {"--codex-home"}
+        if operation == "check":
+            options.add("--settings")
+        if operation == "record":
+            options.update({"--candidate", "--outcome", "--evidence"})
+        home, help_requested, index = None, False, 4
+        while index < len(words):
+            word = words[index]
+            if word in {"--help", "-h"}:
+                help_requested = True
+                index += 1
+                continue
+            flag, separator, value = word.partition("=")
+            if flag not in options:
+                return False
+            if not separator:
+                index += 1
+                if index == len(words):
+                    return False
+                value = words[index]
+            if flag == "--codex-home":
+                if home is not None or not Path(value).is_absolute() or not same_path(value, owner["home"]):
+                    return False
+                home = value
+            index += 1
+        return home is not None or help_requested
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+
+
 def handle(payload, cfg, reviewer=necessity_review.review):
     event = payload.get("hook_event_name")
     if event not in EVENTS:
@@ -203,6 +271,10 @@ def handle(payload, cfg, reviewer=necessity_review.review):
         return {}
     cwd = Path(payload.get("cwd", "")).resolve()
     if not any(beneath(cwd, Path(p).resolve()) for p in cfg["scopes"]) or any(beneath(cwd, Path(p).resolve()) for p in cfg["excludes"]):
+        return {}
+    # Recovery cannot depend on request resolution, a candidate slot, or even
+    # opening candidate state. Post must not create pending work for it either.
+    if event in {"PreToolUse", "PostToolUse"} and management_call(payload, cfg):
         return {}
     if not isinstance(payload.get("session_id"), str) or not payload["session_id"]:
         raise ValueError("native session identifier missing")

@@ -3,6 +3,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -14,7 +16,13 @@ from unittest.mock import patch
 BIN = Path(__file__).resolve().parents[1] / "bin"
 sys.path.insert(0, str(BIN))
 import necessity_hook as hook
+import necessity_install as installer
 import necessity_review as review
+
+PWSH = shutil.which("pwsh") or shutil.which("pwsh.exe")
+if PWSH is None and os.name == "nt":
+    candidate = Path(os.environ.get("ProgramFiles", "")) / "PowerShell" / "7" / "pwsh.exe"
+    PWSH = str(candidate) if candidate.is_file() else None
 
 
 class HookTests(unittest.TestCase):
@@ -54,6 +62,144 @@ class HookTests(unittest.TestCase):
 
     def command(self, cmd="python3 -c 'import subprocess; from pathlib import Path; Path(\"result\").write_text(\"pending\"); subprocess.run([\"true\"]); print(\"done\")'", **kw):
         return self.event("PreToolUse", tool_name="Bash", tool_use_id="tool1", tool_input={"command": cmd}, **kw)
+
+    def managed_install(self, *, source=BIN, shell="bash"):
+        """Install the actual hook files, including the recovery manifest pin."""
+        home = self.root / "codex-home"
+        settings = self.root / "necessity-settings.json"
+        config = dict(self.cfg, shell=shell)
+        settings.write_text(json.dumps(config), encoding="utf-8")
+        self.assertEqual(installer.install(home, settings, source=source), 0)
+        return home, home / "necessity-review"
+
+    def management_command(self, home, operation, *, source=BIN, shell="bash", extra=()):
+        argv = [str(sys.executable), str(source / "place.py"), "necessity", operation, *extra]
+        if shell == "bash":
+            return " ".join(shlex.quote(word) for word in argv)
+        return "& " + " ".join("'%s'" % word.replace("'", "''") for word in argv)
+
+    def management_payload(self, command, event="PreToolUse", *, shell="bash", session="recovery"):
+        return dict(hook_event_name=event, cwd=str(self.root), session_id=session, turn_id="recovery",
+                    tool_name="Bash", tool_use_id="recovery-tool",
+                    tool_input={"command": command, "shell": shell})
+
+    def assert_recovery_without_state(self, installed, payload):
+        previous_calls = len(self.calls)
+        with patch.object(hook, "HERE", installed), patch.object(hook, "Store", side_effect=AssertionError("state opened")):
+            self.assertEqual(hook.handle(payload, self.cfg, self.reviewer), {})
+        self.assertEqual(len(self.calls), previous_calls)
+
+    def assert_not_recovery(self, installed, payload):
+        with patch.object(hook, "HERE", installed), patch.object(hook, "Store", side_effect=RuntimeError("state opened")):
+            with self.assertRaisesRegex(RuntimeError, "state opened"):
+                hook.handle(payload, self.cfg, self.reviewer)
+
+    def test_owned_management_recovery_needs_no_request_or_state_for_pre_and_post(self):
+        home, installed = self.managed_install()
+        japanese_evidence = '既存の確認結果: "引用符を含む"。例: `python place.py necessity check`。'
+        commands = [
+            self.management_command(home, "--help"),
+            self.management_command(home, "check", extra=("--codex-home", str(home))),
+            self.management_command(home, "status", extra=("--codex-home", str(home))),
+            self.management_command(home, "record", extra=("--codex-home", str(home), "--candidate", "candidate-1",
+                                                             "--outcome", "deferred", "--evidence", japanese_evidence)),
+            self.management_command(home, "remove", extra=("--codex-home", str(home))),
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                self.assert_recovery_without_state(installed, self.management_payload(command))
+                self.assert_recovery_without_state(installed, self.management_payload(command, "PostToolUse"))
+
+    @unittest.skipUnless(PWSH, "pwsh is unavailable")
+    def test_owned_management_recovery_is_literal_in_powershell(self):
+        home, installed = self.managed_install(shell="pwsh")
+        evidence = '日本語の証跡: "引用" と `Get-Date` は単なる記録です。'
+        for operation, extra in (
+            ("--help", ()),
+            ("check", ("--codex-home", str(home))),
+            ("status", ("--codex-home", str(home))),
+            ("record", ("--codex-home", str(home), "--candidate", "candidate-1", "--outcome", "handled", "--evidence", evidence)),
+            ("remove", ("--codex-home", str(home))),
+        ):
+            command = self.management_command(home, operation, shell="pwsh", extra=extra)
+            with self.subTest(operation=operation):
+                with patch.object(hook.necessity_select.shutil, "which", return_value=PWSH):
+                    self.assert_recovery_without_state(installed, self.management_payload(command, shell="pwsh"))
+                    self.assert_recovery_without_state(installed, self.management_payload(command, "PostToolUse", shell="pwsh"))
+
+    def test_management_recovery_bypasses_actual_full_state_budgets(self):
+        self.cfg.update(max_sessions=1, reviews_per_session=1)
+        self.prompt()
+        self.action, self.disposition = "unassessed", "unassessed"
+        self.command()
+        self.assertEqual(len(self.calls), 1)
+        home, installed = self.managed_install()
+        command = self.management_command(home, "status", extra=("--codex-home", str(home)))
+        # The retained candidate consumes the only candidate budget and a new
+        # session would also exceed the actual session capacity.
+        self.assert_recovery_without_state(installed, self.management_payload(command, session="different-session"))
+
+    def test_management_recovery_remains_available_after_reviewer_timeout_denial(self):
+        self.prompt()
+        payload = self.management_payload(self.command.__defaults__[0])
+        def timed_out(request, config):
+            raise TimeoutError("fixture reviewer timed out")
+        denied = hook.handle(payload, self.cfg, timed_out)
+        self.assertEqual(denied["hookSpecificOutput"]["permissionDecision"], "deny")
+        home, installed = self.managed_install()
+        recovery = self.management_command(home, "check", extra=("--codex-home", str(home)))
+        self.assert_recovery_without_state(installed, self.management_payload(recovery))
+
+    def test_recovery_refuses_unowned_or_evaluated_management_shapes(self):
+        home, installed = self.managed_install()
+        good = self.management_command(home, "check", extra=("--codex-home", str(home)))
+        other = self.root / "other-source"
+        other.mkdir()
+        other_place = other / "place.py"
+        other_place.write_text("# same name, not the pinned source\n", encoding="utf-8")
+        cases = {
+            "same-name source": self.management_command(home, "check", source=other, extra=("--codex-home", str(home))),
+            "wrong interpreter": good.replace(str(sys.executable), str(self.root / "wrong-python"), 1),
+            "wrong home": self.management_command(self.root / "other-home", "check", extra=("--codex-home", str(self.root / "other-home"))),
+            "appended command": good + "; echo unexpected",
+            "redirect": good + " > recovery.log",
+            "evaluation": "eval " + shlex.quote(good),
+        }
+        for label, command in cases.items():
+            with self.subTest(label=label):
+                self.assert_not_recovery(installed, self.management_payload(command))
+
+    def test_recovery_refuses_modified_pinned_source_without_mutating_public_source(self):
+        copied = self.root / "pinned-source-copy"
+        shutil.copytree(BIN, copied)
+        home, installed = self.managed_install(source=copied)
+        command = self.management_command(home, "check", source=copied, extra=("--codex-home", str(home)))
+        self.assert_recovery_without_state(installed, self.management_payload(command))
+        (copied / "place.py").write_text("# modified only in this fixture copy\n", encoding="utf-8")
+        self.assert_not_recovery(installed, self.management_payload(command))
+
+    def test_reviewer_child_tool_prohibition_precedes_management_recovery(self):
+        home, installed = self.managed_install()
+        payload = self.management_payload(self.management_command(home, "status", extra=("--codex-home", str(home))))
+        with patch.object(hook, "HERE", installed), patch.dict(os.environ, {"AGENT_RULES_NECESSITY_REVIEWER": "1"}):
+            result = hook.handle(payload, self.cfg, self.reviewer)
+        self.assertEqual(result["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    @unittest.skipUnless(PWSH, "pwsh is unavailable")
+    def test_generated_python_still_reviews_after_powershell_patch_observation(self):
+        self.cfg["shell"] = "pwsh"
+        self.prompt()
+        script = self.root / "generated.py"
+        script.write_text("print('generated')\n", encoding="utf-8")
+        self.event("PostToolUse", tool_name="apply_patch", tool_use_id="ps-write",
+                   tool_input={"command": "*** Begin Patch\n*** Add File: generated.py\n+print('generated')\n*** End Patch"},
+                   tool_response={"exit_code": 0})
+        command = "python 'generated.py'"
+        with patch.object(hook.necessity_select.shutil, "which", return_value=PWSH):
+            result = self.event("PreToolUse", tool_name="Bash", tool_use_id="ps-run",
+                                tool_input={"command": command, "shell": "pwsh"})
+        self.assertNotIn("permissionDecision", result["hookSpecificOutput"])
+        self.assertEqual(len(self.calls), 1)
 
     def test_negative_no_model_and_no_permission_grant(self):
         self.prompt()

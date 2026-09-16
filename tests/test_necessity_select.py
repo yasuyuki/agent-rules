@@ -131,6 +131,14 @@ print("result")
         self.assertIn("command-substitution", facts["features"])
         self.assertTrue(facts["coverage"])
 
+    @unittest.skipUnless(importlib.util.find_spec("bashlex"), "bashlex is unavailable")
+    def test_static_argv_accepts_literal_bash_words_and_rejects_expansion(self):
+        command = "git commit -m 'long evidence: bash -c example; $not_expanded is data'"
+        self.assertEqual(["git", "commit", "-m", "long evidence: bash -c example; $not_expanded is data"], selector.static_argv(command))
+        for command in ("git status; echo done", "git status | cat", "git status > status.txt", "git $branch", "git *", "git ~", "eval 'git status'", ". ./command"):
+            with self.subTest(command=command):
+                self.assertIsNone(selector.static_argv(command))
+
     @unittest.skipUnless(shutil.which("pwsh"), "pwsh is unavailable")
     def test_native_powershell_static_python_version_and_counterexamples(self):
         for command in ("python --version", "python -V", "py --version", "python.exe '--version'"):
@@ -140,10 +148,37 @@ print("result")
                 self.assertEqual([], facts["features"], facts)
         for command in ("python -v", "python --version extra", "python -c 'print(1)'",
                         "python -m unittest", "python $version", "python --version $(Get-Date)", "python --version > result.txt",
-                        "Set-Content run.py 'print(1)'; python run.py"):
+                        "python -"):
             with self.subTest(command=command):
                 facts = selector.analyze(command, shell="pwsh", parser_timeout=24)
                 self.assertIn("powershell:unassessed (nested interpreter or evaluation alias)", facts["coverage"], facts)
+
+    @unittest.skipUnless(shutil.which("pwsh"), "pwsh is unavailable")
+    def test_native_powershell_static_python_script_tracks_executable_script_and_generated_file(self):
+        executable = r"C:\Program Files\Python\python.exe"
+        script = r"C:\証拠 フォルダー\collect.py"
+        command = f"& '{executable}' '{script}' --evidence 'bash -c example; $not_expanded is evidence data'"
+        facts = selector.analyze(command, shell="pwsh", parser_timeout=24)
+        self.assertEqual([], facts["coverage"], facts)
+        self.assertEqual([executable, script], facts["executes"], facts)
+        self.assertEqual([executable, script, "--evidence", "bash -c example; $not_expanded is evidence data"], selector.static_argv(command, shell="pwsh", parser_timeout=24))
+
+        generated = selector.analyze("Set-Content -Path run.py -Value 'print(1)'; python run.py --evidence 'long literal'", shell="pwsh", parser_timeout=24)
+        self.assertIn("run.py", generated["writes"], generated)
+        self.assertIn("python", generated["executes"], generated)
+        self.assertIn("run.py", generated["executes"], generated)
+        self.assertIn("generated-file-execution", generated["features"], generated)
+
+    @unittest.skipUnless(shutil.which("pwsh"), "pwsh is unavailable")
+    def test_static_argv_rejects_powershell_non_simple_or_dynamic_input(self):
+        for command in (
+            "git status; Write-Output done", "git status | Out-Host", "git status > status.txt",
+            "$name = 'status'; git $name", "& { git status }", "Invoke-Expression 'git status'",
+            ". ./command.ps1", "python -c 'print(1)'", "python -",
+            "using module ./untrusted.psm1\ngit status", "#requires -Modules ./untrusted.psm1\ngit status",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(selector.static_argv(command, shell="pwsh", parser_timeout=24))
 
     def test_powershell_requires_deadline(self):
         with mock.patch.object(selector.shutil, "which", return_value="pwsh"):

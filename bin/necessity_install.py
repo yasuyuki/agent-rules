@@ -267,6 +267,15 @@ def install(codex_home, settings_path, *, source=None):
         raise InstallError("refusing symlink installation root")
     source = HERE if source is None else Path(source)
     scripts, config, command, timeout = _expected(source, settings, root)
+    management = None
+    if (source / "place.py").is_file() and (source / "necessity_install.py").is_file():
+        if any((source / name).is_symlink() for name in ("place.py", "necessity_install.py")):
+            raise InstallError("management source must not be symlinked")
+        management = {
+            "python": str(Path(sys.executable)), "home": str(home),
+            "source": str(source.resolve()),
+            "files": {name: _digest(source / name) for name in ("place.py", "necessity_install.py")},
+        }
     hooks_path = home / "hooks.json"
     toml = home / "config.toml"
     with _lock(home):
@@ -279,7 +288,7 @@ def install(codex_home, settings_path, *, source=None):
         existing = _json(manifest_path, missing=None)
         if existing is not None:
             existing = _manifest(root)
-            if _same_install(existing, scripts, settings_bytes, command, timeout, root):
+            if existing.get("management") == management and _same_install(existing, scripts, settings_bytes, command, timeout, root):
                 if _exact_hooks(hooks, command, timeout):
                     return 0
             # Never update an established installation: it may contain an
@@ -306,6 +315,10 @@ def install(codex_home, settings_path, *, source=None):
         files = dict(scripts)
         files[CONFIG] = hashlib.sha256(settings_bytes).hexdigest()
         manifest = {"version": 1, "command": command, "timeout": timeout, "files": files}
+        # Pin the existing public management entry, not every Python invocation.
+        # Keep the executable spelling used at registration (including venvs).
+        if management is not None:
+            manifest["management"] = management
         _atomic(manifest_path, (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode())
         if (hooks_path.read_bytes() if hooks_path.exists() else None) != old_hooks_bytes:
             for name, digest in files.items():
@@ -328,11 +341,19 @@ def check(codex_home, settings_path=None):
         command = manifest["command"]
         files_ok = all((root / name).is_file() and not (root / name).is_symlink() and _digest(root / name) == digest
                        for name, digest in manifest["files"].items())
+        management = manifest.get("management")
+        if management is not None:
+            source = Path(management["source"])
+            files_ok = files_ok and management["python"] == str(Path(sys.executable)) and management["home"] == str(home)
+            files_ok = files_ok and source.is_absolute() and not source.is_symlink() and all(
+                (source / name).is_file() and not (source / name).is_symlink()
+                and _digest(source / name) == management["files"][name]
+                for name in ("place.py", "necessity_install.py"))
         hooks_ok = _exact_hooks(hooks, command, manifest["timeout"])
         if settings_path is not None:
             expected = (json.dumps(_settings(_absolute(settings_path, "settings")), sort_keys=True, indent=2) + "\n").encode()
             files_ok = files_ok and (root / CONFIG).read_bytes() == expected
-    except (InstallError, OSError) as exc:
+    except (InstallError, OSError, KeyError, TypeError, ValueError) as exc:
         print("FAIL: %s" % exc)
         return 1
     print("%s: hook definitions and owned files %s; native trust, load, and event delivery cannot be attested"

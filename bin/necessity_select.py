@@ -26,6 +26,17 @@ def _path(node):
     if value := _literal(node): return value
     if isinstance(node, ast.Call) and _call_name(node.func) in {"Path", "pathlib.Path"} and node.args: return _literal(node.args[0])
     return None
+def _command_basename(value): return value.replace("\\", "/").rsplit("/", 1)[-1].lower()
+def _is_static_invocation(argv):
+    if not argv or not all(isinstance(word, str) and word for word in argv): return False
+    name = _command_basename(argv[0])
+    if name in {".", "source", "eval", "invoke-expression", "iex"}: return False
+    first = argv[1].lower() if len(argv) > 1 else ""
+    if name in {"python", "python3", "python.exe", "python3.exe", "py", "py.exe"}:
+        return first != "-" and not first.startswith(("-c", "-m"))
+    if name in {"bash", "bash.exe", "sh", "sh.exe", "zsh", "zsh.exe", "cmd", "cmd.exe", "pwsh", "pwsh.exe", "powershell", "powershell.exe"}:
+        return first != "-" and first not in {"-c", "/c", "-command", "-encodedcommand"} and not first.startswith("-encodedcommand")
+    return True
 def _finalize(result):
     roles = set(result["responsibilities"])
     if len(roles) > 1 and roles != {"process", "report"}:
@@ -140,6 +151,56 @@ def _analyse_bash(source, result):
     for node in nodes: visit(node)
 
 
+def _static_bash_argv(source):
+    try:
+        nodes = importlib.import_module("bashlex").parse(source)
+    except (ImportError, Exception):
+        return None
+    if len(nodes) != 1 or getattr(nodes[0], "kind", "") != "command": return None
+    parts = getattr(nodes[0], "parts", [])
+    if not parts or any(getattr(part, "kind", "") != "word" or getattr(part, "parts", None) for part in parts): return None
+    if any(_bash_unquoted_expansion(source[part.pos[0]:part.pos[1]]) for part in parts): return None
+    argv = [part.word for part in parts]
+    return argv if _is_static_invocation(argv) else None
+
+
+def _bash_unquoted_expansion(word):
+    quote, escaped = None, False
+    for index, char in enumerate(word):
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            if char == quote: quote = None
+        elif char in "'\"":
+            quote = char
+        elif char in "*?[{" or (char == "~" and index == 0):
+            return True
+    return False
+
+
+def _powershell_details(source, parser_timeout):
+    pwsh, parser = shutil.which("pwsh"), Path(__file__).with_name("necessity_parse.ps1")
+    if not pwsh or not parser.is_file() or parser_timeout is None: return None
+    try:
+        completed = subprocess.run([pwsh, "-NoProfile", "-NonInteractive", "-File", str(parser)], input=source, text=True, encoding="utf-8", capture_output=True, timeout=parser_timeout, check=False)
+        return json.loads(completed.stdout) if not completed.returncode else None
+    except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
+        return None
+
+
+def static_argv(command: str, shell: str = "bash", parser_timeout: float | None = None) -> list[str] | None:
+    """Return one literal, standalone command invocation, else ``None``."""
+    if not isinstance(command, str): return None
+    name = Path(shell).name.lower().removesuffix(".exe")
+    if name in {"bash", "sh", "zsh"}: return _static_bash_argv(command)
+    if name not in {"powershell", "pwsh"}: return None
+    details = _powershell_details(command, parser_timeout)
+    argv = details.get("static_argv") if isinstance(details, dict) and not details.get("errors") else None
+    return argv if isinstance(argv, list) and _is_static_invocation(argv) else None
+
+
 def _analyse_powershell(source, result, parser_timeout):
     pwsh, parser = shutil.which("pwsh"), Path(__file__).with_name("necessity_parse.ps1")
     if not pwsh: _add(result, "coverage", "powershell:unsupported (pwsh unavailable)"); return
@@ -147,12 +208,12 @@ def _analyse_powershell(source, result, parser_timeout):
     if parser_timeout is None:
         _add(result, "coverage", "powershell:unassessed (missing parser timeout)"); return
     try:
-        completed = subprocess.run([pwsh, "-NoProfile", "-NonInteractive", "-File", str(parser)], input=source, text=True, capture_output=True, timeout=parser_timeout, check=False)
+        completed = subprocess.run([pwsh, "-NoProfile", "-NonInteractive", "-File", str(parser)], input=source, text=True, encoding="utf-8", capture_output=True, timeout=parser_timeout, check=False)
         details = json.loads(completed.stdout)
     except subprocess.TimeoutExpired: _add(result, "coverage", "powershell:unassessed (parser timeout)"); return
     except (OSError, json.JSONDecodeError): _add(result, "coverage", "powershell:unassessed (parser failure)"); return
     if completed.returncode or details.get("errors"): _add(result, "coverage", "powershell:unassessed (syntax error)"); return
-    for key in ("coverage", "writes", "executes", "responsibilities"):
+    for key in ("features", "coverage", "writes", "executes", "responsibilities"):
         for value in details.get(key, []): _add(result, key, value)
 
 

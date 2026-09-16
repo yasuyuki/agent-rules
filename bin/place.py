@@ -36,6 +36,12 @@ from pathlib import Path
 # material to classify's read-only contract: local imports must not emit pyc.
 sys.dont_write_bytecode = True
 
+# The pinned necessity recovery entry does not execute unrelated local modules.
+# Keep this direct-script path before the placement/controller imports below.
+if __name__ == "__main__" and sys.argv[1:2] == ["necessity"]:
+    import necessity_install
+    raise SystemExit(necessity_install.main(sys.argv[2:]))
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 entry_spec = importlib.util.spec_from_file_location("managed_entry", HERE / "managed_entry.py")

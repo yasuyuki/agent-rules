@@ -4,10 +4,13 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -93,6 +96,46 @@ class NecessityInstallTests(unittest.TestCase):
         self.assertIn('"' if os.name == "nt" else "'", command)
         with self.assertRaisesRegex(installer.InstallError, "cmd metacharacters"):
             installer._command(Path("C:/bad%name/config.json"), windows=True)
+
+    def test_manifest_pins_existing_management_entry_when_public_sources_are_present(self):
+        (self.source / "place.py").write_text("# public entry\n", encoding="utf-8")
+        (self.source / "necessity_install.py").write_text("# public installer\n", encoding="utf-8")
+        self.assertEqual(installer.install(self.home, self.settings, source=self.source), 0)
+        manifest = json.loads((self.home / "necessity-review" / installer.MANIFEST).read_text(encoding="utf-8"))
+        management = manifest["management"]
+        self.assertEqual(management["python"], str(Path(sys.executable)))
+        self.assertEqual(management["home"], str(self.home))
+        self.assertEqual(management["source"], str(self.source.resolve()))
+        self.assertEqual(management["files"], {
+            "place.py": installer._digest(self.source / "place.py"),
+            "necessity_install.py": installer._digest(self.source / "necessity_install.py"),
+        })
+        (self.source / "place.py").write_text("# tampered public entry\n", encoding="utf-8")
+        self.assertEqual(installer.check(self.home), 1)
+        self.assertEqual(installer.remove(self.home), 0)
+
+    def test_public_necessity_help_does_not_import_unrelated_placement_modules(self):
+        for name in ("place.py", "necessity_install.py"):
+            shutil.copyfile(ROOT / "bin" / name, self.source / name)
+        marker = "managed-entry-must-not-be-imported"
+        (self.source / "managed_entry.py").write_text("raise RuntimeError(%r)\n" % marker, encoding="utf-8")
+        completed = subprocess.run([sys.executable, str(self.source / "place.py"), "necessity", "--help"],
+                                   cwd=self.source, text=True, capture_output=True, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("usage:", completed.stdout)
+        self.assertNotIn(marker, completed.stderr)
+
+    def test_corrupt_state_does_not_block_check_or_remove_and_status_record_report_errors(self):
+        self.assertEqual(installer.install(self.home, self.settings, source=self.source), 0)
+        state = Path(json.loads(self.settings.read_text(encoding="utf-8"))["state_dir"])
+        state.mkdir()
+        (state / "necessity.sqlite3").write_bytes(b"not a sqlite database")
+        self.assertEqual(installer.check(self.home), 0)
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(installer.main(["status", "--codex-home", str(self.home)]), 1)
+            self.assertEqual(installer.main(["record", "--codex-home", str(self.home), "--candidate", "candidate-1",
+                                            "--outcome", "handled", "--evidence", "real database error"]), 1)
+        self.assertEqual(installer.remove(self.home), 0)
 
     def test_modified_hook_refuses_remove_and_preserves_scripts_and_state(self):
         self.assertEqual(installer.install(self.home, self.settings, source=self.source), 0)
