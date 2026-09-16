@@ -148,12 +148,16 @@ def _settings(path):
     return document
 
 
-def _command(config, *, windows=None):
+def _command(config, *, event=None, windows=None):
     """Encode the fixed argv without resolving away an active virtualenv."""
     executable = str(Path(sys.executable))
     if not Path(executable).is_absolute():
         raise InstallError("Python executable must be absolute")
+    if event is not None and event not in EVENTS:
+        raise InstallError("unsupported hook event")
     argv = (executable, str(config.parent / "necessity_hook.py"), "--config", str(config))
+    if event is not None:
+        argv += ("--event", event)
     windows = os.name == "nt" if windows is None else windows
     if windows:
         if any(any(ch in WINDOWS_CMD_META for ch in value) for value in argv):
@@ -164,6 +168,15 @@ def _command(config, *, windows=None):
 
 def _entry(command, timeout):
     return {"type": "command", "command": command, "timeout": timeout}
+
+
+def _event_command(command, event):
+    """Bind a manifest's historical base command to one native event."""
+    if event not in EVENTS:
+        raise InstallError("unsupported hook event")
+    # Event names are a fixed ASCII enum, so this is valid for both shell
+    # encodings produced by _command and does not reinterpret a path.
+    return command + " --event " + event
 
 
 def _hook_map(document):
@@ -194,13 +207,27 @@ def _owned_entries(hooks, command):
 
 
 def _exact_hooks(hooks, command, timeout):
-    """Require the six unmodified groups we installed, not merely six matches."""
+    """Require the six event-bound groups currently installed."""
+    return (not _owned_entries(hooks, command) and all(_owned_entries(hooks, _event_command(command, event)) == [
+        (event, {"hooks": [_entry(_event_command(command, event), timeout)]},
+         _entry(_event_command(command, event), timeout))]
+        for event in EVENTS))
+
+
+def _exact_legacy_hooks(hooks, command, timeout):
+    """Recognize pre-event manifests so their ownership remains removable."""
     found = _owned_entries(hooks, command)
-    if len(found) != len(EVENTS) or {event for event, _, _ in found} != set(EVENTS):
-        return False
     expected = _entry(command, timeout)
-    return all(group == {"hooks": [expected]} and hook == expected
-               for _, group, hook in found)
+    return (len(found) == len(EVENTS) and {event for event, _, _ in found} == set(EVENTS)
+            and all(group == {"hooks": [expected]} and hook == expected
+                    for _, group, hook in found))
+
+
+def _any_owned_entries(hooks, command):
+    entries = _owned_entries(hooks, command)
+    for event in EVENTS:
+        entries.extend(_owned_entries(hooks, _event_command(command, event)))
+    return entries
 
 
 def _valid_toml(path):
@@ -296,7 +323,7 @@ def install(codex_home, settings_path, *, source=None):
             raise InstallError("existing necessity installation differs; refusing overwrite")
         if any((root / name).exists() for name in tuple(scripts) + (CONFIG, MANIFEST)):
             raise InstallError("necessity installation directory already contains unmanaged files")
-        if _owned_entries(hooks, command):
+        if _any_owned_entries(hooks, command):
             raise InstallError("conflicting owned necessity command already exists")
         # Re-read immediately before replacement: lock coordinates cooperating
         # installers; this detects edits made outside that protocol.
@@ -308,7 +335,7 @@ def install(codex_home, settings_path, *, source=None):
             groups = hook_map.setdefault(event, [])
             if not isinstance(groups, list):
                 raise InstallError("hooks.json event %s is malformed" % event)
-            groups.append({"hooks": [_entry(command, timeout)]})
+            groups.append({"hooks": [_entry(_event_command(command, event), timeout)]})
         for name in scripts:
             _atomic(root / name, (source / name).read_bytes())
         _atomic(config, settings_bytes)
@@ -370,21 +397,22 @@ def remove(codex_home):
         previous = hooks_path.read_bytes() if hooks_path.exists() else None
         hooks = _json(hooks_path, missing={})
         command = manifest["command"]
-        expected = _entry(command, manifest["timeout"])
-        if not _exact_hooks(hooks, command, manifest["timeout"]):
+        bound = _exact_hooks(hooks, command, manifest["timeout"])
+        legacy = _exact_legacy_hooks(hooks, command, manifest["timeout"])
+        if not bound and not legacy:
             raise InstallError("incomplete removal: modified or duplicate owned definitions; resolve ownership first")
-        hook_map = _hook_map(hooks)
-        retained = [(event, group) for event, group, hook in _owned_entries(hooks, command)
-                    if event not in EVENTS or group != {"hooks": [expected]} or hook != expected]
-        if retained:
-            # The copied hook remains referenced.  Keep its scripts, settings,
-            # and manifest intact so this failed remove cannot make it broken.
+        if len(_any_owned_entries(hooks, command)) != len(EVENTS):
             raise InstallError("owned necessity hook was modified or co-owned; refusing incomplete removal")
+        hook_map = _hook_map(hooks)
         for event in list(hook_map):
             groups = hook_map[event]
             for group in list(groups):
                 # A modified or co-owned group is no longer exclusively ours.
-                if group == {"hooks": [expected]}:
+                if event in EVENTS:
+                    expected = _entry(command if legacy else _event_command(command, event), manifest["timeout"])
+                else:
+                    expected = None
+                if expected is not None and group == {"hooks": [expected]}:
                     groups.remove(group)
             if not groups:
                 del hook_map[event]
@@ -408,6 +436,10 @@ def _status_rows(database, limit):
         db = sqlite3.connect(uri, uri=True)
         try:
             columns = {row[1] for row in db.execute("PRAGMA table_info(candidates)")}
+            if not columns:
+                return [], 0
+            if not {"id", "status", "result"}.issubset(columns):
+                raise InstallError("necessity state candidates schema is malformed")
             query = "SELECT id,status,result" + (",resolution" if "resolution" in columns else "") + " FROM candidates ORDER BY rowid DESC"
             rows = db.execute(query).fetchall()
         finally:
@@ -448,6 +480,50 @@ def _status_rows(database, limit):
     return entries, omitted
 
 
+def _diagnostic_rows(database, limit, candidates, candidate_omitted):
+    """Read hook-failure metadata when newer state has the diagnostics table."""
+    uri = database.resolve().as_uri() + "?mode=ro"
+    try:
+        db = sqlite3.connect(uri, uri=True)
+        try:
+            columns = {row[1] for row in db.execute("PRAGMA table_info(diagnostics)")}
+            if not {"id", "touched", "data"}.issubset(columns):
+                return [], 0
+            rows = db.execute("SELECT id,data FROM diagnostics ORDER BY rowid DESC").fetchall()
+        finally:
+            db.close()
+    except sqlite3.Error as exc:
+        raise InstallError("cannot read necessity state") from exc
+    entries = []
+    omitted = 0
+    fields = ("reason_code", "event", "tool", "scope", "input_bytes",
+              "review_limit_bytes", "evidence_sha256", "status")
+    for identifier, raw_data in rows:
+        try:
+            metadata = json.loads(raw_data)
+        except (TypeError, ValueError):
+            omitted += 1
+            continue
+        if not isinstance(identifier, str) or not isinstance(metadata, dict):
+            omitted += 1
+            continue
+        # Stored diagnostics are deliberately metadata-only.  Do not turn a
+        # malformed or future record into a reportable candidate.
+        metadata = {field: metadata[field] for field in fields if field in metadata}
+        if metadata.get("status") != "unassessed":
+            omitted += 1
+            continue
+        entry = {"diagnostic_id": identifier, "data": metadata}
+        proposed = {"candidates": candidates, "omitted": candidate_omitted,
+                    "diagnostics": entries + [entry], "diagnostics_omitted": omitted,
+                    "native": "trust, load, and event delivery are not attested"}
+        if len(json.dumps(proposed, ensure_ascii=False).encode("utf-8")) > limit:
+            omitted += 1
+        else:
+            entries.append(entry)
+    return entries, omitted
+
+
 def status(codex_home):
     """Report persisted candidate outcomes without modifying SQLite or state."""
     home = _absolute(codex_home, "codex_home")
@@ -464,17 +540,23 @@ def status(codex_home):
         if database.is_symlink():
             raise InstallError("refusing symlink state file")
         if not database.exists():
-            document = {"candidates": [], "omitted": 0, "state": "no persisted candidate events",
+            document = {"candidates": [], "omitted": 0, "diagnostics": [], "diagnostics_omitted": 0,
+                        "state": "no persisted candidate events",
                         "native": "trust, load, and event delivery are not attested"}
         else:
             candidates, omitted = _status_rows(database, config["max_output_bytes"])
+            diagnostics, diagnostics_omitted = _diagnostic_rows(
+                database, config["max_output_bytes"], candidates, omitted)
             document = {"candidates": candidates, "omitted": omitted,
+                        "diagnostics": diagnostics, "diagnostics_omitted": diagnostics_omitted,
                         "native": "trust, load, and event delivery are not attested"}
         if len(json.dumps(document, ensure_ascii=False).encode("utf-8")) > config["max_output_bytes"]:
             # A valid compact report is preferable to truncating JSON or hiding
             # that records were omitted.  Tiny configured limits cannot hold
             # the normal native-attestation text.
-            document = {"omitted": document.get("omitted", 0) + len(document.get("candidates", []))}
+            document = {"omitted": document.get("omitted", 0) + len(document.get("candidates", [])),
+                        "diagnostics_omitted": document.get("diagnostics_omitted", 0)
+                        + len(document.get("diagnostics", []))}
         print(json.dumps(document, ensure_ascii=False))
         return 0
     except (InstallError, OSError) as exc:

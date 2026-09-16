@@ -1,5 +1,7 @@
 """Behavioral tests for native event handling; no model or user configuration."""
 import importlib.util
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -59,6 +61,91 @@ class HookTests(unittest.TestCase):
 
     def prompt(self, text="Verify a bounded subprocess fixture and return its result."):
         return self.event("UserPromptSubmit", prompt=text)
+
+    def intake(self, payload, event=None):
+        config = self.root / "intake.json"
+        config.write_text(json.dumps(self.cfg))
+        raw = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+        stdout, stderr = io.StringIO(), io.StringIO()
+        argv = ["--config", str(config)] + (["--event", event] if event else [])
+        with patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(raw))), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = hook.main(argv)
+        return code, json.loads(stdout.getvalue()) if stdout.getvalue() else None, stderr.getvalue()
+
+    def test_native_irrelevant_payload_sizes_do_not_open_state(self):
+        for size in (8, 65537, 262144):
+            for change in ({"cwd": str(self.root.parent)}, {"cwd": str(self.root / "excluded")},
+                           {"tool_name": "view_image"}, {"hook_event_name": "UnrelatedEvent"}):
+                with self.subTest(size=size, change=change):
+                    self.cfg["excludes"] = [str(self.root / "excluded")]
+                    payload = dict(hook_event_name="PostToolUse", cwd=str(self.root), session_id="root",
+                                   tool_name="Bash", tool_input={"command": "echo hello"},
+                                   tool_response={"data": "A" * size})
+                    payload.update(change)
+                    with patch.object(hook, "Store", side_effect=AssertionError("state opened")), patch.object(hook, "safe_text", side_effect=AssertionError("content selected")):
+                        self.assertEqual(self.intake(payload), (0, {}, ""))
+        self.assertFalse((self.root / "state").exists())
+
+    def test_large_post_result_is_never_selected_or_persisted(self):
+        self.prompt()
+        payload = dict(hook_event_name="PostToolUse", cwd=str(self.root), session_id="root",
+                       tool_name="Bash", tool_input={"command": "echo hello"},
+                       tool_response={"exit_code": 0, "data": "RAW_IMAGE_MARKER" * 10000,
+                                      "authorization": "Bearer SECRET_MARKER"})
+        with patch.object(hook, "safe_text", side_effect=AssertionError("result sanitized")):
+            self.assertEqual(self.intake(payload, "PostToolUse"), (0, {}, ""))
+        self.assertEqual(self.calls, [])
+        db = sqlite3.connect(self.root / "state" / "necessity.sqlite3")
+        self.addCleanup(db.close)
+        self.assertEqual(db.execute("SELECT count(*) FROM candidates").fetchone()[0], 0)
+        self.assertEqual(json.loads(db.execute("SELECT data FROM sessions").fetchone()[0])["history"][-1]["outcome"], "succeeded")
+        self.assertNotIn("MARKER", "\n".join(db.iterdump()))
+
+    def test_pre_candidate_intake_diagnostics_are_safe_and_separate(self):
+        raw = b'{"credential":"Bearer SECRET_MARKER", "image":"RAW_IMAGE_MARKER"'
+        code, result, _ = self.intake(raw, "PostToolUse")
+        self.assertEqual(code, 0)
+        self.assertIn("unassessed", json.dumps(result))
+        self.assertIn("saved", json.dumps(result))
+        db = sqlite3.connect(self.root / "state" / "necessity.sqlite3")
+        self.addCleanup(db.close)
+        self.assertEqual(db.execute("SELECT count(*) FROM candidates").fetchone()[0], 0)
+        self.assertEqual(db.execute("SELECT count(*) FROM sessions").fetchone()[0], 0)
+        info = json.loads(db.execute("SELECT data FROM diagnostics").fetchone()[0])
+        self.assertEqual(info["reason_code"], "invalid_json")
+        self.assertEqual(info["event"], "PostToolUse")
+        self.assertEqual(info["scope"], "unknown")
+        self.assertEqual(info["input_bytes"], len(raw))
+        self.assertNotIn("MARKER", "\n".join(db.iterdump()))
+        code, result, _ = self.intake(raw, "PreToolUse")
+        self.assertEqual(code, 0)
+        self.assertEqual(result["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_post_intake_and_diagnostic_failure_never_fail_delivery(self):
+        payload = dict(hook_event_name="PostToolUse", cwd=str(self.root), session_id="root",
+                       tool_name="Bash", tool_input={"command": "echo hello"})
+        for failure in (RuntimeError("SECRET_MARKER"), sqlite3.OperationalError("SECRET_MARKER")):
+            with patch.object(hook, "Store", side_effect=failure):
+                code, result, _ = self.intake(payload, "PostToolUse")
+            self.assertEqual(code, 0)
+            self.assertIn("unassessed", json.dumps(result))
+            self.assertNotIn("SECRET_MARKER", json.dumps(result))
+        with patch.object(hook, "load_config", side_effect=ValueError("SECRET_MARKER")):
+            self.assertEqual(self.intake(payload, "PostToolUse")[0], 0)
+        for malformed in (b'[]', b'{"hook_event_name":[]}', b'not JSON'):
+            self.assertEqual(self.intake(malformed, "PostToolUse")[0], 0)
+            self.assertEqual(self.intake(malformed, "PreToolUse")[1]["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_selected_large_command_remains_unassessed_without_review(self):
+        for event in ("PreToolUse", "PostToolUse"):
+            payload = dict(hook_event_name=event, cwd=str(self.root), session_id="root",
+                           tool_name="Bash", tool_input={"command": "python3 -c '" + "A" * 65537 + "'"})
+            code, result, _ = self.intake(payload, event)
+            self.assertEqual(code, 0)
+            self.assertIn("selected_command_too_large", json.dumps(result))
+            if event == "PreToolUse":
+                self.assertEqual(result["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertFalse(self.calls)
 
     def command(self, cmd="python3 -c 'import subprocess; from pathlib import Path; Path(\"result\").write_text(\"pending\"); subprocess.run([\"true\"]); print(\"done\")'", **kw):
         return self.event("PreToolUse", tool_name="Bash", tool_use_id="tool1", tool_input={"command": cmd}, **kw)

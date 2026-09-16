@@ -39,9 +39,14 @@ Prepare one private setup JSON with these fields; it is not a per-task input:
   Retention must cover at least the native hook timeout (twice the deadline).
 
 The installer intentionally has no production budget defaults. Input and output
-limits are byte limits, not violation scores. Choose enough input space for the
-request, candidate and observed generated file together; oversized input remains
-unassessed. The hook timeout is twice the review deadline to allow parsing/state
+limits are byte limits, not violation scores. `max_input_bytes` bounds selected
+review text/evidence, not the raw native JSON envelope. Choose enough input space
+for the request, candidate and observed generated file together; oversized
+selected input remains unassessed. Native JSON is decoded before selecting the
+event, workspace scope/exclusions and tool. Non-target events/tools and excluded
+or outside workspaces return without opening state, sanitizing content or calling
+a reviewer. Image/base64 result bodies are not review input; PostToolUse selects
+only structured exit status and operation metadata. The hook timeout is twice the review deadline to allow parsing/state
 and feedback. Use a narrow evaluation scope before extending to registered normal
 development workspaces; exclude experiments, fixed comparisons and unattended
 wake workspaces explicitly. A broad parent root includes all descendants.
@@ -69,6 +74,23 @@ still calls it. Trust records are left to Codex's own interface.
 `necessity status --codex-home PATH` reads bounded candidate verdicts and available
 usage without printing saved prompts. A missing database means no persisted
 observations, not successful native acceptance.
+The separate `diagnostics` list reports failures before candidate creation using
+reason code, event/tool labels, scope classification, byte boundary and a digest
+reference. It contains no rejected input, image, credential or exception message.
+Diagnostics use the existing database and retention period; their combined
+metadata is bounded by `max_input_bytes`, evicting oldest diagnostics only. Tiny
+budgets or unavailable state can prevent persistence; the hook then explicitly
+reports that the diagnostic was not persisted. `diagnostics_omitted` counts
+records omitted by the status output budget. A diagnostic is unassessed and is
+not a candidate that can be resolved with `record`.
+
+Installed commands bind their native event with `--event`, including when JSON
+or configuration cannot be read. PostToolUse intake, observation and diagnostic
+failures return nonblocking context with exit zero, preserving the already
+executed tool's result delivery. This is not an approval. PreToolUse retains its
+deny/unassessed behavior and all ordinary permission boundaries. Old unbound
+installations remain removable through the management entry; adopt changed
+source using the intact old installation's normal remove, then install/check.
 After handling a delivered candidate, the execution agent can use `necessity
 record --codex-home PATH --candidate ID --outcome handled|deferred|unassessed
 --evidence TEXT`. This records a bounded disposition and evidence for that exact

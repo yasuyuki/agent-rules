@@ -48,6 +48,10 @@ class NecessityInstallTests(unittest.TestCase):
         installed = json.loads((self.home / "hooks.json").read_text(encoding="utf-8"))
         self.assertEqual(installed["hooks"]["Stop"][0], original["hooks"]["Stop"][0])
         self.assertEqual(sum(len(g["hooks"]) for g in installed["hooks"]["Stop"]), 2)
+        manifest = json.loads((self.home / "necessity-review" / installer.MANIFEST).read_text())
+        for event in installer.EVENTS:
+            group = installed["hooks"][event][-1]
+            self.assertEqual(group["hooks"][0]["command"], manifest["command"] + " --event " + event)
         self.assertEqual(installer.install(self.home, self.settings, source=self.source), 0)
         self.assertEqual(installer.check(self.home), 0)
         self.assertEqual(installer.remove(self.home), 0)
@@ -177,6 +181,62 @@ class NecessityInstallTests(unittest.TestCase):
             installer.remove(self.home)
         self.assertEqual(path.read_bytes(), before)
         self.assertTrue((self.home / "necessity-review" / "necessity_hook.py").is_file())
+
+    def test_legacy_base_commands_remain_removable_but_do_not_pass_check(self):
+        self.assertEqual(installer.install(self.home, self.settings, source=self.source), 0)
+        hooks_path = self.home / "hooks.json"
+        hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
+        manifest = json.loads((self.home / "necessity-review" / installer.MANIFEST).read_text())
+        for event in installer.EVENTS:
+            hooks["hooks"][event][-1]["hooks"][0]["command"] = manifest["command"]
+        hooks_path.write_text(json.dumps(hooks), encoding="utf-8")
+        self.assertEqual(installer.check(self.home), 1)
+        with self.assertRaisesRegex(installer.InstallError, "differs"):
+            installer.install(self.home, self.settings, source=self.source)
+        self.assertEqual(installer.remove(self.home), 0)
+
+    def test_remove_keeps_foreign_events_and_bound_check_rejects_base_duplicate(self):
+        self.assertEqual(installer.install(self.home, self.settings, source=self.source), 0)
+        hooks_path = self.home / "hooks.json"
+        hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
+        hooks["hooks"]["ForeignEvent"] = [{"hooks": [{"type": "command", "command": "/usr/bin/foreign"}]}]
+        hooks_path.write_text(json.dumps(hooks), encoding="utf-8")
+        self.assertEqual(installer.remove(self.home), 0)
+        remaining = json.loads(hooks_path.read_text(encoding="utf-8"))
+        self.assertIn("ForeignEvent", remaining["hooks"])
+
+        self.assertEqual(installer.install(self.home, self.settings, source=self.source), 0)
+        hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
+        manifest = json.loads((self.home / "necessity-review" / installer.MANIFEST).read_text())
+        hooks["hooks"]["Stop"].append({"hooks": [installer._entry(manifest["command"], manifest["timeout"])]})
+        hooks_path.write_text(json.dumps(hooks), encoding="utf-8")
+        self.assertEqual(installer.check(self.home), 1)
+
+    def test_status_reads_bounded_diagnostics_without_candidates(self):
+        settings = json.loads(self.settings.read_text(encoding="utf-8"))
+        settings["max_output_bytes"] = 4096
+        self.settings.write_text(json.dumps(settings), encoding="utf-8")
+        self.assertEqual(installer.install(self.home, self.settings, source=self.source), 0)
+        state = Path(settings["state_dir"])
+        state.mkdir()
+        db = sqlite3.connect(state / "necessity.sqlite3")
+        try:
+            db.execute("CREATE TABLE diagnostics (id TEXT PRIMARY KEY, touched REAL NOT NULL, data TEXT NOT NULL)")
+            db.execute("INSERT INTO diagnostics VALUES(?,?,?)", (
+                "diagnostic-1", 1.0, json.dumps({"reason_code": "invalid-input", "event": "PostToolUse",
+                "tool": "Bash", "scope": "in", "input_bytes": 12, "review_limit_bytes": 20,
+                "evidence_sha256": "a" * 64, "status": "unassessed", "prompt": "must not report"})))
+            db.commit()
+        finally:
+            db.close()
+        capture = io.StringIO()
+        with redirect_stdout(capture):
+            self.assertEqual(installer.status(self.home), 0)
+        report = json.loads(capture.getvalue())
+        self.assertEqual(report["candidates"], [])
+        self.assertEqual(report["diagnostics"][0]["diagnostic_id"], "diagnostic-1")
+        self.assertNotIn("prompt", report["diagnostics"][0]["data"])
+        self.assertEqual(report["diagnostics_omitted"], 0)
 
     def test_status_reads_candidate_state_without_prompts_and_reports_missing_db(self):
         settings = json.loads(self.settings.read_text(encoding="utf-8"))
