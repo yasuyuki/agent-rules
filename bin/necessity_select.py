@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import importlib
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -184,7 +185,9 @@ def _powershell_details(source, parser_timeout):
     pwsh, parser = shutil.which("pwsh"), Path(__file__).with_name("necessity_parse.ps1")
     if not pwsh or not parser.is_file() or parser_timeout is None: return None
     try:
-        completed = subprocess.run([pwsh, "-NoProfile", "-NonInteractive", "-File", str(parser)], input=source, text=True, encoding="utf-8", capture_output=True, timeout=parser_timeout, check=False)
+        # This non-executing helper needs no telemetry UUID or its first-use mutex.
+        completed = subprocess.run([pwsh, "-NoProfile", "-NonInteractive", "-File", str(parser)], input=source, text=True, encoding="utf-8", capture_output=True, timeout=parser_timeout, check=False,
+                                   env=dict(os.environ, POWERSHELL_TELEMETRY_OPTOUT="1"))
         return json.loads(completed.stdout) if not completed.returncode else None
     except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
         return None
@@ -208,7 +211,8 @@ def _analyse_powershell(source, result, parser_timeout):
     if parser_timeout is None:
         _add(result, "coverage", "powershell:unassessed (missing parser timeout)"); return
     try:
-        completed = subprocess.run([pwsh, "-NoProfile", "-NonInteractive", "-File", str(parser)], input=source, text=True, encoding="utf-8", capture_output=True, timeout=parser_timeout, check=False)
+        completed = subprocess.run([pwsh, "-NoProfile", "-NonInteractive", "-File", str(parser)], input=source, text=True, encoding="utf-8", capture_output=True, timeout=parser_timeout, check=False,
+                                   env=dict(os.environ, POWERSHELL_TELEMETRY_OPTOUT="1"))
         details = json.loads(completed.stdout)
     except subprocess.TimeoutExpired: _add(result, "coverage", "powershell:unassessed (parser timeout)"); return
     except (OSError, json.JSONDecodeError): _add(result, "coverage", "powershell:unassessed (parser failure)"); return

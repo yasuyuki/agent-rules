@@ -19,6 +19,9 @@ installation remains dependency-free. Bash selection uses bashlex, Python uses
 `ast`, and PowerShell uses its installed standard parser. Missing parsers and
 unsupported syntax are explicit coverage gaps, never safe results. No inspected
 program is evaluated by the selector. PowerShell requires `pwsh` on PATH.
+The parser child opts out of PowerShell telemetry so first-use UUID creation
+cannot block parsing on its telemetry mutex. This changes only the child's
+environment; parser deadlines and fail-closed timeout handling are unchanged.
 
 Prepare one private setup JSON with these fields; it is not a per-task input:
 

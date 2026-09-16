@@ -1,8 +1,12 @@
 """Focused regression tests for bounded command selection facts."""
 import importlib.util
+import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
+import textwrap
 import unittest
 from unittest import mock
 
@@ -117,6 +121,46 @@ print("result")
         self.assertNotIn("-Command", args[0])
         self.assertEqual("Write-Output '$not executed'", kwargs["input"])
         self.assertEqual(7, kwargs["timeout"])
+
+    def test_powershell_parser_child_opts_out_without_changing_parent_or_deadline(self):
+        runner = mock.Mock(return_value=mock.Mock(returncode=0, stdout='{"errors": 0, "static_argv": ["git", "status"]}'))
+        with mock.patch.dict(os.environ, {"POWERSHELL_TELEMETRY_OPTOUT": "0"}), mock.patch.object(selector.shutil, "which", return_value="pwsh"), mock.patch.object(selector.subprocess, "run", runner):
+            self.assertEqual([], selector.analyze("git status", shell="pwsh", parser_timeout=7)["coverage"])
+            self.assertEqual(["git", "status"], selector.static_argv("git status", shell="pwsh", parser_timeout=7))
+            self.assertEqual("0", os.environ["POWERSHELL_TELEMETRY_OPTOUT"])
+            for call in runner.call_args_list:
+                self.assertEqual(dict(os.environ, POWERSHELL_TELEMETRY_OPTOUT="1"), call.kwargs["env"])
+                self.assertEqual(7, call.kwargs["timeout"])
+            runner.side_effect = subprocess.TimeoutExpired("pwsh", 7)
+            self.assertIn("powershell:unassessed (parser timeout)", selector.analyze("git status", shell="pwsh", parser_timeout=7)["coverage"])
+            self.assertIsNone(selector.static_argv("git status", shell="pwsh", parser_timeout=7))
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("pwsh"), "requires pwsh and an isolated POSIX mutex session")
+    def test_native_powershell_cold_parser_does_not_wait_for_telemetry_mutex(self):
+        # .NET's unqualified named mutexes are POSIX-session scoped. Both the
+        # holder and parser run in this new session, never a user's live session.
+        probe = textwrap.dedent('''
+            import os, subprocess, sys
+            sys.path.insert(0, sys.argv[1])
+            import necessity_select as selector
+            code = "$m=[Threading.Mutex]::new($false,'CreateUniqueUserId'); $null=$m.WaitOne(); [Console]::Out.WriteLine('ready'); $null=[Console]::In.ReadLine(); $m.ReleaseMutex(); $m.Dispose()"
+            holder = subprocess.Popen([sys.argv[2], '-NoProfile', '-NonInteractive', '-Command', code],
+                env=dict(os.environ, POWERSHELL_TELEMETRY_OPTOUT='1'),
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                assert holder.stdout.readline().strip() == 'ready'
+                facts = selector.analyze("python 'generated.py'", shell='pwsh', parser_timeout=10)
+                assert facts['coverage'] == [], facts
+                assert facts['executes'] == ['python', 'generated.py'], facts
+                assert selector.static_argv("python 'generated.py'", shell='pwsh', parser_timeout=10) == ['python', 'generated.py']
+            finally:
+                holder.communicate('\\n', timeout=10)
+        ''')
+        with tempfile.TemporaryDirectory() as temp:
+            completed = subprocess.run([sys.executable, "-c", probe, str(ROOT / "bin"), shutil.which("pwsh")],
+                env=dict(os.environ, XDG_CACHE_HOME=temp, POWERSHELL_TELEMETRY_OPTOUT="0"),
+                start_new_session=True, capture_output=True, text=True, timeout=24)
+        self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
 
     def test_static_python_version_only_is_negative(self):
         for command in ("python --version", "python3 -V", "py --version"):
