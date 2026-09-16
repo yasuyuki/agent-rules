@@ -80,7 +80,10 @@ or create an exception; no internal JSON editing is needed.
 UserPromptSubmit supplies the current request automatically. A single explicitly
 referenced GitHub issue/comment can be fetched through existing `gh` auth; no
 whole issue/comment crawl is performed. Missing/ambiguous requests remain
-unassessed. Normal tool negatives call no model. Candidate reviews return two
+unassessed. Ordinary workers without their own prompt inherit only an unambiguous
+direct request in the same native session family and workspace; later parent
+prompts refresh that context, and explicit worker prompts supersede it. Verdicts
+and caches are not inherited. Normal tool negatives call no model. Candidate reviews return two
 separate decisions: current action and normal/delete-or-reuse/disposable/
 integration-proposal/unassessed disposition. An integration proposal is not
 authorization to implement another feature.

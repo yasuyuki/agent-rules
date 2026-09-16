@@ -37,6 +37,17 @@ class HookTests(unittest.TestCase):
     def event(self, event, **kw):
         return hook.handle(dict(hook_event_name=event, cwd=str(self.root), session_id="root", turn_id="turn1", **kw), self.cfg, self.reviewer)
 
+    def lane_event(self, lane, event, session_id="root", **kw):
+        return hook.handle(dict(hook_event_name=event, cwd=str(self.root), session_id=session_id, agent_id=lane,
+                                turn_id="turn1", **kw), self.cfg, self.reviewer)
+
+    def lane_state(self, lane, session_id="root"):
+        sid = hook.digest([str(self.root.resolve()), session_id, lane])
+        db = sqlite3.connect(self.root / "state" / "necessity.sqlite3")
+        encoded = db.execute("SELECT data FROM sessions WHERE id=?", (sid,)).fetchone()[0]
+        db.close()
+        return json.loads(encoded)
+
     def prompt(self, text="Verify a bounded subprocess fixture and return its result."):
         return self.event("UserPromptSubmit", prompt=text)
 
@@ -66,10 +77,57 @@ class HookTests(unittest.TestCase):
         self.action, self.disposition = "unassessed", "unassessed"
         result = self.command()
         self.assertEqual(result["hookSpecificOutput"]["permissionDecision"], "deny")
-        self.assertIn("additionalContext", self.event("SessionStart", source="compact")["hookSpecificOutput"])
         self.assertEqual(self.event("Stop", stop_hook_active=False)["decision"], "block")
         self.assertEqual(self.event("Stop", stop_hook_active=True), {})
         self.assertEqual(self.event("Stop", stop_hook_active=False), {})
+        # A compact/resume must restore the unresolved judgment, but it must not
+        # reset the Stop notification and create another Stop loop.
+        self.assertIn("additionalContext", self.event("SessionStart", source="compact")["hookSpecificOutput"])
+        self.assertEqual(self.event("Stop", stop_hook_active=False), {})
+
+    def test_worker_inherits_unique_parent_request_context(self):
+        self.prompt("Parent request: construct the bounded fixture.")
+        self.lane_event("worker", "PreToolUse", tool_name="Bash", tool_use_id="worker-one",
+                        tool_input={"command": self.command.__defaults__[0]})
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0]["contract"], "Parent request: construct the bounded fixture.")
+        self.assertEqual(self.calls[0]["current_prompt"], "Parent request: construct the bounded fixture.")
+        self.assertTrue(self.lane_state("worker")["request_origin"].startswith("inherited:"))
+
+    def test_inherited_context_refreshes_when_parent_prompt_changes(self):
+        self.prompt("Parent request: first bounded fixture.")
+        command = self.command.__defaults__[0]
+        self.lane_event("worker", "PreToolUse", tool_name="Bash", tool_use_id="worker-one", tool_input={"command": command})
+        self.prompt("Parent request: revised bounded fixture requirements.")
+        self.lane_event("worker", "PreToolUse", tool_name="Bash", tool_use_id="worker-two", tool_input={"command": command})
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.calls[-1]["current_prompt"], "Parent request: revised bounded fixture requirements.")
+
+    def test_cross_family_and_ambiguous_requests_are_unassessed(self):
+        self.prompt("Root family request.")
+        cross_family = self.lane_event("worker", "PreToolUse", session_id="other-session", tool_name="Bash",
+                                       tool_use_id="cross", tool_input={"command": self.command.__defaults__[0]})
+        self.assertEqual(cross_family["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertFalse(self.calls)
+        self.lane_event("other-parent", "UserPromptSubmit", prompt="A different direct request.")
+        ambiguous = self.lane_event("worker", "PreToolUse", tool_name="Bash", tool_use_id="ambiguous",
+                                    tool_input={"command": self.command.__defaults__[0]})
+        self.assertEqual(ambiguous["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertFalse(self.calls)
+        self.assertEqual(self.lane_state("worker")["request_origin"], "ambiguous")
+
+    def test_explicit_child_prompt_supersedes_inherited_context(self):
+        self.prompt("Parent request: bounded fixture.")
+        command = self.command.__defaults__[0]
+        self.lane_event("worker", "PreToolUse", tool_name="Bash", tool_use_id="worker-one", tool_input={"command": command})
+        self.lane_event("worker", "UserPromptSubmit", prompt="Child request: inspect only this fixture.")
+        self.lane_event("worker", "PreToolUse", tool_name="Bash", tool_use_id="worker-two", tool_input={"command": command})
+        self.prompt("Parent request: changed again.")
+        self.lane_event("worker", "PreToolUse", tool_name="Bash", tool_use_id="worker-three", tool_input={"command": command})
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.calls[-1]["contract"], "Child request: inspect only this fixture.")
+        self.assertEqual(self.calls[-1]["current_prompt"], "Child request: inspect only this fixture.")
+        self.assertEqual(self.lane_state("worker")["request_origin"], "direct")
 
     def test_missing_contract_secret_and_bad_schema_never_approve(self):
         self.assertEqual(self.command()["hookSpecificOutput"]["permissionDecision"], "deny")

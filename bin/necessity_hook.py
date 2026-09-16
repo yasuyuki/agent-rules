@@ -109,10 +109,15 @@ class Store:
         self.db.execute("DELETE FROM sessions WHERE touched < ?", (now - self.cfg["retention_seconds"],))
         row = self.db.execute("SELECT data FROM sessions WHERE id=?", (sid,)).fetchone()
         if row:
-            return json.loads(row[0])
+            value = json.loads(row[0])
+            # Older state predates request inheritance. It could only have been
+            # populated by this lane's prompt hook, so preserve it as direct.
+            if "request_origin" not in value:
+                value["request_origin"] = "direct" if value.get("contract") and value.get("prompt") else "unavailable"
+            return value
         if self.db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] >= self.cfg["max_sessions"]:
             raise ValueError("state session capacity reached; no existing decisions evicted")
-        value = {"contract": "", "prompt": "", "problem": "current request unavailable", "history": [], "coverage": [], "coverage_notice": "", "stop_notice": "", "posts": []}
+        value = {"contract": "", "prompt": "", "problem": "current request unavailable", "request_origin": "unavailable", "history": [], "coverage": [], "coverage_notice": "", "stop_notice": "", "posts": []}
         self.save(sid, value)
         return value
 
@@ -125,6 +130,43 @@ class Store:
 
     def close(self):
         self.db.close()
+
+
+def direct_context(state):
+    """Return a usable lane-local prompt context, never a derived one."""
+    contract, prompt = state.get("contract"), state.get("prompt")
+    if state.get("request_origin") != "direct" or state.get("problem"):
+        return None
+    if not isinstance(contract, str) or not contract.strip() or not isinstance(prompt, str) or not prompt.strip():
+        return None
+    return contract, prompt
+
+
+def refresh_request_context(store, sid, state):
+    """Refresh a non-direct lane from one unambiguous direct family context."""
+    if state.get("request_origin") == "direct":
+        return
+    contexts = {}
+    for source, encoded in store.db.execute("SELECT id,data FROM sessions WHERE family=? AND id<>?", (store.family, sid)):
+        source_state = json.loads(encoded)
+        if "request_origin" not in source_state:
+            source_state["request_origin"] = "direct" if source_state.get("contract") and source_state.get("prompt") else "unavailable"
+        context = direct_context(source_state)
+        if context:
+            contexts.setdefault(context, []).append(source)
+    if len(contexts) == 1:
+        (contract, prompt), sources = next(iter(contexts.items()))
+        state["contract"], state["prompt"], state["problem"] = contract, prompt, ""
+        # Retain the source identity without importing that lane's decisions or cache.
+        state["request_origin"] = "inherited:" + min(sources)
+    elif len(contexts) > 1:
+        state["contract"], state["prompt"] = "", ""
+        state["problem"] = "ambiguous direct request contexts in session family"
+        state["request_origin"] = "ambiguous"
+    else:
+        state["contract"], state["prompt"] = "", ""
+        state["problem"] = "current request unavailable"
+        state["request_origin"] = "unavailable"
 
 
 def file_facts(paths, cwd, limit):
@@ -173,7 +215,10 @@ def handle(payload, cfg, reviewer=necessity_review.review):
         state = store.session(sid)
         if event == "UserPromptSubmit":
             prompt = payload.get("prompt")
+            inherited = state.get("request_origin", "").startswith("inherited:")
+            state["request_origin"] = "direct"
             if not isinstance(prompt, str) or not prompt.strip():
+                state["contract"], state["prompt"] = "", ""
                 state["problem"] = "current request unavailable"
             else:
                 try:
@@ -181,13 +226,14 @@ def handle(payload, cfg, reviewer=necessity_review.review):
                     # The first request is retained for continuation; every new prompt
                     # changes the exact decision key, so previous permission is not reused.
                     state["prompt"] = prompt
-                    if not state["contract"]:
+                    if inherited or not state["contract"]:
                         state["contract"] = prompt
                     state["problem"] = ""
                     if "https://github.com/" in prompt:
                         # URL alone is not the contract. Fetch once outside the state lock.
                         state["problem"] = "referenced request must be resolved"
                 except ValueError as exc:
+                    state["contract"], state["prompt"] = "", ""
                     state["problem"] = str(exc)
             state["stop_notice"] = ""
             store.update(sid, state)
@@ -208,9 +254,12 @@ def handle(payload, cfg, reviewer=necessity_review.review):
                     store.update(sid, current)
                 store.db.commit()
             return {}
+        refresh_request_context(store, sid, state)
+        # Store a refreshed inherited context even when this event has no relevant
+        # tool, so a later candidate cannot use stale parent requirements.
+        store.update(sid, state)
         if event == "SessionStart":
-            pending = store.db.execute("SELECT id,result FROM candidates WHERE session=? AND resolution IS NULL AND notified=0", (sid,)).fetchall()
-            store.update(sid, state)
+            pending = store.db.execute("SELECT id,result FROM candidates WHERE session=? AND resolution IS NULL", (sid,)).fetchall()
             store.db.commit()
             if pending:
                 return context_output(event, "Unresolved necessity reviews: " + bounded_summary(pending, cfg["max_output_bytes"]))
