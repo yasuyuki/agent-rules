@@ -17,7 +17,41 @@ env:
   PYTHONUNBUFFERED: "1"
 
 jobs:
+  documentation:
+    runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.changes.outputs.full }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Classify the complete event range
+        id: changes
+        run: python tests/ci_changes.py
+      - name: Documentation references and CI selection contract
+        run: python tests/ci_runner.py --output ci-results/documentation.json --timeout 300 test_docs_check test_ci_changes
+      - name: Check maintained documentation
+        run: python tests/docs_check.py
+      - name: README distribution metadata
+        if: steps.changes.outputs.full == 'false' && steps.changes.outputs.readme == 'true'
+        run: |
+          python -m pip install build twine
+          python -m build
+          python -m twine check --strict dist/*
+      - name: Retain timings and outcomes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-results-documentation-${{ github.run_attempt }}
+          path: ci-results/
+          if-no-files-found: error
+
   checkout:
+    needs: documentation
+    if: needs.documentation.outputs.full == 'true'
     timeout-minutes: 35
     strategy:
       fail-fast: false
@@ -64,6 +98,8 @@ jobs:
           if-no-files-found: error
 
   package:
+    needs: documentation
+    if: needs.documentation.outputs.full == 'true'
     timeout-minutes: 35
     strategy:
       fail-fast: false
@@ -132,7 +168,7 @@ jobs:
   # Preserve the existing check names and require every configuration/partition.
   # always() makes failure, cancellation and unexpected skips explicit failures.
   test:
-    needs: [checkout, package]
+    needs: [documentation, checkout, package]
     if: always()
     strategy:
       fail-fast: false
@@ -141,11 +177,11 @@ jobs:
         python: ["3.10", "3.12"]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Require all verification results
         env:
-          CHECKOUT_RESULT: ${{ needs.checkout.result }}
-          PACKAGE_RESULT: ${{ needs.package.result }}
-        shell: bash
-        run: |
-          test "$CHECKOUT_RESULT" = success
-          test "$PACKAGE_RESULT" = success
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python tests/ci_changes.py --gate

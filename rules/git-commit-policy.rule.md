@@ -37,5 +37,5 @@ state 直編集や自動 reset / stash / clean で解消しない。分離不能
 
 force push、rebase、reset、tag、release、または履歴の書き換えは commit や通常の push と別の操作で
 あり、明示的なユーザー承認が必要である。`git add -A` と `git commit -a` で他者の変更を巻き込まない。
-ドキュメントだけの commit には `docs-skip-ci-commit` に従い `[skip ci]` を含め、コードまたは設定を
-含む commit には付けない。完了報告には commit SHA と、push した場合は push 先を記す。
+CI の実行選択は repository の workflow に任せ、本人の明示指示がなければ commit に CI 全体を
+止める skip 指示を付けない。完了報告には commit SHA と、push した場合は push 先を記す。
