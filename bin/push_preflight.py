@@ -338,12 +338,22 @@ def collect_state(repo: Path, need_metadata: bool = True) -> dict[str, Any]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("repo", nargs="?", default=".")
-    parser.add_argument("--user-intent", choices=("auto", "push", "hold"), default="auto")
-    parser.add_argument("--temporary", action="store_true")
-    parser.add_argument("--oss", choices=("auto", "yes", "no"), default="auto")
-    parser.add_argument("--policy", type=Path, help="private repository push allowlist JSON")
+    parser = argparse.ArgumentParser(
+        description="Decide whether to make a normal, single-branch push without changing Git state.",
+        epilog=("Outputs JSON decision (push/hold/ask), reason, remote and destination. "
+                "All decisions exit 0: inspect decision, not the exit status. "
+                "Only push includes push_argv; execute it in the target repository. "
+                "For hold report the reason; for ask resolve the missing information. "
+                "Normal Git hooks and history protections still apply."))
+    parser.add_argument("repo", nargs="?", default=".", help="target repository (default: current directory)")
+    parser.add_argument("--user-intent", choices=("auto", "push", "hold"), default="auto",
+                        help="explicit user push/hold instruction; default auto applies repository and branch policy")
+    parser.add_argument("--temporary", action="store_true",
+                        help="documented temporary-save intent, not inferred from a WIP subject; auto holds the push")
+    parser.add_argument("--oss", choices=("auto", "yes", "no"), default="auto",
+                        help="explicit OSS/non-OSS classification; auto uses hosting license metadata")
+    parser.add_argument("--policy", type=Path,
+                        help="environment-supplied default-branch push policy JSON; never omit a configured file")
     args = parser.parse_args()
     need_metadata = args.user_intent == "auto" and not args.temporary
     policy = load_policy(args.policy) if need_metadata and args.policy is not None else None

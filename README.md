@@ -728,7 +728,8 @@ Automatic license recognition currently covers OSI-approved
 classification; the helper does not infer approval from an arbitrary SPDX ID.
 The helper must be available from the source checkout; rule projection does not
 install executables. Do not replace an unavailable helper with an improvised
-push decision. See `rules/git-commit-policy.rule.md` for the policy order.
+push decision. `bin/push_preflight.py --help` describes the command contract;
+`decide` in that module is the source for policy ordering and destination selection.
 
 Offline fixtures exercise default and topic branches, upstream selection, forks,
 visibility, detached HEAD, and unsafe remote configuration:
