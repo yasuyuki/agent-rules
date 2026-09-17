@@ -36,6 +36,15 @@ to paste, separately from the instructions to the person. Include the receiving
 environment in the payload itself, so it survives forwarding without the
 surrounding explanation. Include necessary URLs
 as literal text inside the copyable payload, not only hyperlink attributes.
+For an environment-routed request, the payload must also name the concrete
+environment and logical runtime principal, its existing entry point, requested
+approval/sandbox mode, acceptance risk, material exclusions or forbidden
+operations, capability evidence, and any unknown condition.  Do not infer those
+facts from a shared distro, OS label, or an environment's active state, and do
+not describe a contract-changing environment modification as preparation. Keep
+the requested approval/sandbox mode distinct from the recipient's observed
+effective mode. Risk accepted inside the named environment does not extend to
+its host or another environment.
 Use a plain-text code block without quote prefixes or list decorations that the
 person must remove. Do not ask them to reconstruct references or edit the request.
 Keep shared-task content and state under the `handoff` rule when available; this
@@ -70,16 +79,16 @@ download directly into a shell. Verify the saved file, the available retrieval
 path, and the target shell; state the working directory, success output and
 failure behavior. Distinguish a validated handoff from execution by its recipient.
 
-As soon as this need arises, analyze why the work requires a script-like human
-handoff and whether an existing entry point can remove it. Separate observed
-failures from suspected causes. If the need is likely to recur, find and update
-the relevant existing issue or register one in the project's established issue
-tracker. Record the symptom, affected entry point, reproduction conditions and
-reason recurrence is expected; distinguish the immediate handoff workaround from
-the unresolved cause. Do not wait for another failure, duplicate an existing
-issue, or expand the task into fixing the underlying interface without authority.
-If issue registration is unavailable, preserve the pending registration in the
-existing handoff record and report the limitation.
+Before adding a script-like handoff, check whether the existing ordinary entry
+point can perform the work. Do not retain an unnecessary workaround as code.
+Record an unresolved cause only when it threatens a required outcome, data
+protection, or recovery with substantial human monitoring, approval waits or
+repeated work. Reuse the designated task or established issue tracker; do not
+create an issue or handoff update solely because a manual step may recur or an
+easily recoverable problem occurred. Distinguish an observed failure from a
+suspected cause, and do not expand the authorized repair scope. Keep any required
+but unavailable recording pending in the existing handoff, without copying the
+task's contract or results into a second ledger.
 
 Validate the exact presented syntax in the stated shell and use a safe dry run
 or version query through the same argument path where available. Syntax checks
