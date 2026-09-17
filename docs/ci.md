@@ -152,3 +152,47 @@ setup and is deferred in favor of scheduling-only changes. Cherry-pick fixture
 reuse would add sequencer-abort coupling. No production engine, fixture,
 assertion, lock, fsync or validation cache is changed in this follow-up; existing
 legacy-hook and inspection-path negative regressions remain in the full suite.
+
+## Deterministic fixture boundaries (#124)
+
+The September 16 investigation separated the saved PowerShell parser startup
+failures (already addressed by #119's child-only telemetry opt-out) from the
+remaining causes. The checkout/package matrices and worker counts stay intact:
+the evidence identified fixture and dependency-lock boundaries, not a need to
+remove platform coverage or serialize every real-Git contract.
+
+* The descendant-pipe test previously required two Python processes and parent
+  exit within 150 ms, then raced `/proc/<pid>/stat` existence against process
+  reaping. It now observes the real leader's exit before starting the unchanged
+  pipe-drain budget and treats ENOENT/ESRCH during procfs reads as completed exit.
+  A deterministic clock test separately checks the shared wait budget and bounded
+  cleanup; runner scheduling speed is not a product latency requirement. The
+  live subprocess test still requires the pipe-open error and descendant death.
+* Parallel installs into independent repositories can share one linked source.
+  Dependency locking accepts a failed native lock command only if the native
+  lock postcondition now exists, preserving a concurrent installer's lock.
+  The source validation suite forces concurrent callers past the initial check
+  against a disposable real linked worktree. Existing-lock preservation and
+  failure without a completed lock remain checked. No dependency is unlocked.
+* The filter-lock adoption fixture writes and commits exact LF bytes before
+  applying `-text`, which otherwise preserves a platform-dependent CRLF base
+  blob. Exact filtered bytes and unlocked filter execution are still required.
+  Separate CRLF preservation cases remain in both checkout and installed-wheel
+  coverage.
+
+Local full regression additionally exposed a POSIX terminal fixture's asynchronous
+SIGINT/pause scheduling race (also reproduced without the managed entry). The vendor now blocks SIGINT before announcing
+TTY readiness and consumes the pending signal with `sigwait`; the real standard
+entry, all three TTY descriptors, and signal-derived exit status remain checked.
+The pack-refs repair regression also asserts the product-owned configuration
+refusal instead of Git's version-dependent English spelling of "reference";
+pack-refs failure, successful repair, and unchanged semantic refs remain required.
+
+The regression tests use the existing necessity/source stages and remote
+adoption collection; no new job, retry, skip, deadline increase, or failure
+suppression is introduced. The parent-exit fixture setup is bounded by the
+existing CI runner timeout rather than the product's pipe-drain deadline.
+Investigation, before/after evidence, final revisions and residual limitations
+are recorded in [work-records #124](https://github.com/yasuyuki/work-records/issues/124).
+This removes the identified causes; finite validation does not establish that
+host scheduling, future dependency updates or external services can never fail.

@@ -1,6 +1,7 @@
 """Restricted reviewer process behavior, with no Codex invocation."""
 import json
 import os
+import errno
 from pathlib import Path
 import sys
 import tempfile
@@ -40,22 +41,64 @@ class NecessityReviewTests(unittest.TestCase):
         pid_file = self.root / "descendant.pid"
         code = (
             "import pathlib, subprocess, sys; "
-            "p=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(10)']); "
+            "p=subprocess.Popen([sys.executable, '-c', 'import signal; signal.pause()']); "
             "pathlib.Path(sys.argv[1]).write_text(str(p.pid))"
         )
-        started = time.monotonic()
-        with self.assertRaisesRegex(ValueError, "output remained"):
+        popen = review.subprocess.Popen
+
+        def exited_leader(*args, **kwargs):
+            process = popen(*args, **kwargs)
+            self.addCleanup(review.terminate_owned, process, self.cfg["deadline_seconds"])
+            # Fixture setup is not the pipe-drain deadline. Observe actual exit
+            # before returning the real process/pipes, even on a cold interpreter.
+            process.wait()
+            self.assertEqual(process.returncode, 0)
+            self.assertTrue(pid_file.exists())
+            return process
+
+        with mock.patch.object(review.subprocess, "Popen", side_effect=exited_leader), \
+             self.assertRaisesRegex(ValueError, "output remained"):
             review.bounded_run([sys.executable, "-c", code, str(pid_file)], "", cwd=self.root,
                                env=os.environ.copy(), deadline=.15, limit=100)
-        self.assertLess(time.monotonic() - started, .5)
         pid = int(pid_file.read_text())
         state = Path("/proc") / str(pid) / "stat"
-        # A process may briefly remain as a reaped zombie, but cannot still run.
+
+        def running():
+            try:
+                return state.read_text().rsplit(")", 1)[1].split()[0] != "Z"
+            except OSError as exc:
+                # procfs can disappear on open *or read* when the child is reaped.
+                if exc.errno in (errno.ENOENT, errno.ESRCH):
+                    return False
+                raise
+
+        # A killed process may briefly remain as a zombie, but cannot still run.
         until = time.monotonic() + .3
-        while state.exists() and state.read_text().split()[2] not in {"Z"} and time.monotonic() < until:
+        while running() and time.monotonic() < until:
             time.sleep(.01)
-        if state.exists():
-            self.assertEqual(state.read_text().split()[2], "Z")
+        self.assertFalse(running())
+
+    def test_pipe_waits_share_deadline_and_bounded_cleanup(self):
+        # Check the time budget independently of host scheduling/startup speed.
+        now = [0.0]
+        readers = [mock.Mock(), mock.Mock()]
+        writer = mock.Mock()
+        for thread in readers + [writer]:
+            thread.join.side_effect = lambda timeout: now.__setitem__(0, now[0] + timeout)
+        writer.is_alive.return_value = False
+        process = mock.Mock()
+        process.poll.return_value = 0
+        with mock.patch.object(review.subprocess, "Popen", return_value=process), \
+             mock.patch.object(review.threading, "Thread", side_effect=readers + [writer]), \
+             mock.patch.object(review.time, "monotonic", side_effect=lambda: now[0]), \
+             mock.patch.object(review, "terminate_owned", return_value=True) as terminate, \
+             self.assertRaisesRegex(ValueError, "output remained"):
+            review.bounded_run(["fixture"], "", cwd=self.root, env={}, deadline=.15, limit=100)
+        self.assertEqual(writer.join.call_args_list[0], mock.call(timeout=.15))
+        self.assertEqual(readers[0].join.call_args_list[0], mock.call(timeout=0))
+        self.assertEqual(readers[1].join.call_args_list[0], mock.call(timeout=0))
+        terminate.assert_called_once_with(process, timeout=.15 / 4)
+        self.assertAlmostEqual(now[0], .15 + .15 / 4)
 
     def test_environment_has_startup_essentials_without_ambient_secret(self):
         with mock.patch.dict(os.environ, {"PATH": "/bin", "HOME": "/home/test", "CODEX_HOME": "/codex",

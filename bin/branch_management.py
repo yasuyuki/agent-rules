@@ -171,6 +171,20 @@ def dependency_worktrees(source, python):
     return found.items()
 
 
+def lock_dependency_worktree(root, lock):
+    """Lock a dependency checkout, tolerating only a concurrent successful lock."""
+    if lock.is_file():
+        return
+    try:
+        git(root, 'worktree', 'lock', '--reason', 'branch management dependency', root)
+    except BranchError:
+        # A second installer can pass the pre-check just before its peer locks
+        # this linked worktree.  Accept only that completed postcondition; all
+        # other native Git failures remain installation failures.
+        if not lock.is_file():
+            raise
+
+
 def installation_errors(repo, directory, state, *, source_check=True, packing_check=True):
     require(state)
     errors = []
@@ -318,8 +332,7 @@ def install(args):
     # Lock before reading/pinning source bytes. Preserve existing locks and never
     # auto-unlock on rebind: another repository may still consume this checkout.
     for root, lock in dependency_worktrees(ROOT, sys.executable):
-        if not lock.exists():
-            git(root, 'worktree', 'lock', '--reason', 'branch management dependency', root)
+        lock_dependency_worktree(root, lock)
     with locked(repo, create=True) as (directory, state):
         target = directory / 'hooks'
         dispatcher = ROOT / 'hooks/branch-hook'

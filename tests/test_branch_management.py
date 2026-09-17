@@ -294,7 +294,7 @@ class BranchManagementTests(unittest.TestCase):
         self.git('config', 'gc.packRefs', 'true')
         # Some Git versions report pack-refs failure but return zero from gc.
         failed = self.git('gc', '--no-detach', ok=None)
-        self.assertIn('reference', failed.stderr.lower())
+        self.assertIn('gc.packRefs is invalid or enabled', failed.stderr)
         self.assertIn('failed to run pack-refs', failed.stderr)
         self.branch('install')
         self.branch('check')

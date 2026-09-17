@@ -233,11 +233,15 @@ class RemoteAdoptionAcceptanceTests(BranchManagementTests):
     def test_remote_resume_filter_runs_without_registration_lock(self):
         self.git('config', 'core.autocrlf', 'true')
         seed, base, _tip = self.remote_topic()
-        # Isolate the filter transformation from the host's newline defaults.
+        # Make the incoming blob deterministic before applying -text: the base
+        # README comes from the shared fixture and may have CRLF on Windows.
         # The separate CRLF cases exercise newline conversion itself.
+        (seed / 'README').write_bytes(b'base\n')
         (seed / '.gitattributes').write_text('README filter=acceptance-filter -text\n', encoding='utf-8')
-        self.git_at(seed, 'add', '.gitattributes')
+        self.git_at(seed, 'add', 'README', '.gitattributes')
         self.git_at(seed, 'commit', '-m', 'configure acceptance filter')
+        self.assertEqual(self.git_at(seed, 'rev-parse', 'HEAD:README').stdout.strip(),
+                         self.git_at(seed, 'hash-object', 'README').stdout.strip())
         self.git_at(seed, 'push', 'origin', 'incoming')
         self.git('fetch', 'origin')
         marker = self.root / 'filter-lock-observation'
