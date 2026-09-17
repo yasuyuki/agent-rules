@@ -16,10 +16,10 @@ import sys
 from urllib.parse import unquote
 
 
-LINK = re.compile(r"(?<!!)\[[^]\n]*\]\(([^()\s]+)(?:\s+[^)]*)?\)")
+LINK = re.compile(r"(?<![!\\])\[[^]\n]*\]\(([^()\s]+)(?:\s+[^)]*)?\)")
 HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
-INLINE_CODE = re.compile(r"`[^`\n]*`")
+INLINE_CODE = re.compile(r"(?<!`)(`+)(?!`)(.*?)\1(?!`)", re.DOTALL)
 
 
 @dataclass(frozen=True)

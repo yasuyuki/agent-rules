@@ -66,6 +66,8 @@ class DocsCheckTests(unittest.TestCase):
         problems = self.check({
             "README.md": """[web](https://example.test/missing) [placeholder]({path})
 `[inline](missing.md)`
+``[double inline](missing.md)``
+``[with ` delimiter](missing.md)``
 ```markdown
 [example](missing.md#missing)
 ```
