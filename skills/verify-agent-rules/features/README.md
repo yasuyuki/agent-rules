@@ -1,12 +1,11 @@
-# agent-rules Feature Map
+# Feature map
 
-| Feature | User entry point | Scope |
+| Profile | Select when | Evidence produced |
 | --- | --- | --- |
-| [Placement and safe update](placement.md) | `python3 bin/place.py apply/check --declaration ...` | One disposable local project; Codex file convention, independent of the driving agent |
-| [Dependent source composition and mirror](dependencies.md) | Repeated `--rules` on `apply/check`; `place.py mirror` and `mirror --check` | Opt in with `--environment-repo`; synthetic example from that checkout and a disposable mirror destination |
+| [Placement](placement.md) | Testing projection and safe reapplication in one disposable project | Managed rule/skill update, hand-written preservation, and collision rejection |
+| [Composition and mirror](dependencies.md) | Also testing one selected `agent-environment` example and a disposable generated-skill mirror | Additional source composition plus byte/execute-bit mirror drift and repair |
 
-Preparation, results and cleanup are in `SKILL.md`. The map covers one substantive
-function and its optional repository boundaries, not the full product. Package `agent-rules init/apply/check`, interactive
-onboarding, remote placement, other file conventions and native agent discovery
-are **not-run** in this recipe. A successful file projection does not establish
-that a product loaded or obeyed those files.
+The dependency profile includes placement. It is opt-in: the default run leaves
+composition and mirror `not-run`. These profiles exercise public file projection,
+not `agent-rules init`, native agent discovery/loading, remote placement, or a
+deployed environment.
