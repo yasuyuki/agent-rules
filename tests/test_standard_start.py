@@ -141,7 +141,10 @@ class StandardStartTests(unittest.TestCase):
         import select
         import signal
         vendor = self.root / 'vendor' / 'grok'
-        vendor.write_text('#!%s\nimport os,sys,signal\nsignal.signal(signal.SIGINT,lambda *_:sys.exit(42))\nprint("TTY="+str(all(os.isatty(fd) for fd in (0,1,2))),flush=True)\nsignal.pause()\n' % sys.executable, encoding='utf-8')
+        # Block before publishing readiness: SIGINT remains pending even if it
+        # arrives before sigwait. Do not couple delivery to the scheduling of
+        # Python's asynchronous signal handler and a separate pause call.
+        vendor.write_text('#!%s\nimport os,sys,signal\nsignal.pthread_sigmask(signal.SIG_BLOCK,{signal.SIGINT})\nprint("TTY="+str(all(os.isatty(fd) for fd in (0,1,2))),flush=True)\nreceived=signal.sigwait({signal.SIGINT})\nsys.exit(42 if received == signal.SIGINT else 1)\n' % sys.executable, encoding='utf-8')
         vendor.chmod(0o755)
         directory = self.root / 'entry'
         path = str(vendor.parent) + os.pathsep + os.environ['PATH']
