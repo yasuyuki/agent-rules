@@ -1,92 +1,90 @@
-# CI evidence and runtime
+# Development, verification and CI
 
-CI keeps Linux/Windows × Python 3.10/3.12. Pushes to topics without a PR still
-run; pull-request merge results and integrated main are separate evidence.
-The last 30 runs inspected on 2026-09-13 contained 29 push events and one dynamic
-event, no PR events and no duplicate SHA runs, so no event suppression was added.
-Concurrency replaces only the same workflow/event/repository/PR-or-ref.
-`fail-fast: false` obtains all four outcomes; cancellation is never a pass.
+Use an active Python environment in the checkout root. To build the sdist and
+wheel and validate their metadata:
 
-## Coverage allocation
+```console
+python -m pip install build twine
+python -m build
+python -m twine check --strict dist/*
+```
 
-| Contract | Checkout | Installed wheel |
-| --- | --- | --- |
-| Ref/commit/push rejection, remote identities, one-use merge/pick/tag approval, worktree protection and non-destructive retirement | Entire `test_branch_management` | Real unregistered-ref/no-verify/alternate-index rejection scenario |
-| Crash recovery, locks, concurrent operations, legacy-hook mutation revalidation | Entire `test_branch_recovery`, collected through its existing `load_tests` | Same shipped branch engine, exercised through installed hooks |
-| Operation receipts: refusal preservation, merge/pick/sync correspondence, conflicts, ignored collisions, binary and CRLF inputs | `test_branch_operations`, collected without inherited fixture cases | Representative completed merge and sync cases, plus contamination refusal, through the installed command |
-| Existing hook arguments/status and modified-hook detection | Entire branch suite | `test_install_preserves_an_existing_hook_and_detects_tampering` |
-| Source-only inventory catalog versus installed branch engine (previous wheel regression) | Entire branch suite | `test_declare_agent_updates_only_a_registered_source_catalog` |
-| Imports, package data, project CLI apply/check/update and non-destructive failures | Existing source tests | Entire `test_project`, installed in a clean venv; subprocess cwd is outside checkout |
-| Build from sdist, wheel metadata, installed entry point | Build and strict twine check | Installed `--version`/`--help` outside checkout in addition to E2E |
-| Inspection paths, ignore/no-Git/untrusted/missing discovery, private diagnostic redaction | Entire inventory inspection suite on all four configurations | Packaged engine shares source |
+The build makes the wheel from the sdist. Distributions include the shared
+engine and tool conventions, not the maintainer's rule/skill catalog.
+Install the built wheel into a separate clean environment, then use that
+interpreter for `tests/test_project.py`. Run installed `agent-rules --version`
+and `--help` outside the source tree as CI does. This distinguishes packaged
+code/data from imports accidentally satisfied by the checkout.
 
-Remote-only adoption additionally runs `test_branch_remote_adoption` in both
-checkout and installed-wheel jobs. Its loader selects only its own cases, without
-repeating inherited branch tests. Package artifacts include `installed-paths.txt`;
-the check rejects CLI/module paths inside the source checkout. The owned
-`config.lock` failure leaves a real checkout at Q before continuation, without
-fabricating registry fields. POSIX mode cases have explicit Windows skips;
-ordinary adoption, recovery, and operation correspondence run on every OS/Python
-configuration. `test_branch_operations` has its own `load_tests`, so adding it
-does not repeat `BranchManagementTests`; its installed-wheel case uses
-`AGENT_RULES_PLACE` and therefore exercises the packaged `branch_management.py`.
+For placement/composition/mirror behavior, use the existing
+[verification skill](../skills/verify-agent-rules/SKILL.md). It drives disposable
+public inputs and keeps evidence; it does not deploy to real environments.
+Use `python tests/test_rules.py` for loader/projection regressions and
+`python tests/test_verification_skill.py` for failures in that proof mechanism.
+The [acceptance record](verification-skill.md) identifies past demonstrations
+and unverified surfaces.
 
-| Invariant | Normal control | Counterexample / test suffix in `RemoteAdoptionAcceptanceTests` |
-| --- | --- | --- |
-| Original Q remains fixed | `clean_checkout_keeps_original_q_after_tracking_advances` | `committed_content_and_preserves_registration` |
-| Physical bytes and index survive | `clean_checkout_uses_target_attributes_and_preserves_crlf` | `crlf_byte_change_and_preserves_it`, `assume_unchanged_content_and_preserves_index`, `skip_worktree_content_and_preserves_index`, `staged_only_content_and_preserves_index` |
-| Execution bits survive ordinary config | `clean_checkout_with_filemode_disabled` | `executable_bit_removal_hidden_by_filemode`, `executable_bit_addition_hidden_by_filemode` |
-| Unrelated files remain untouched | Clean Q control | `ordinary_content_and_preserves_it`, `hidden_untracked_content_and_preserves_it`, `ignored_content_and_preserves_it` |
-| Existing new still accepts ordinary commits | `test_existing_new_creation_can_continue_after_an_ordinary_commit` | Remote committed-content case above |
-| Validation neither rewrites the index nor runs filters under the registry lock | `stale_real_index_stays_byte_identical`, `filter_runs_without_registration_lock` (valid smudge/clean conversion) | `final_snapshot_rejects_a_validation_race` |
-| Registered physical checkout is retained | Clean Q control | `leaf_symlink_swap_without_writes`, `parent_symlink_swap_without_writes` |
+## Documentation and regression selection
 
-Except for the explicitly named existing-new case, normal suffixes begin with
-`test_remote_resume_` and negative suffixes with `test_remote_resume_rejects_`.
-The final-snapshot case also uses `test_remote_resume_`.
-Per-test PASS/FAIL/SKIP results are in the existing checkout/wheel JSON artifacts;
-test counts are not a measure of completeness. Initial target/remote/base refusal,
-existing adopt, sync and ordinary Git authorization remain in the complete branch
-suite and its selected installed-boundary cases.
+Run `python tests/docs_check.py` locally for the same maintained local reference
+check as CI. [The checker](../tests/docs_check.py) defines the supported Markdown
+forms and exclusions; it does not certify semantic quality or crawl Web links.
+Use the reader-specific optimization skills for authoring and ordinary review
+for related prose when code/help changes.
 
-No existing assertion or real-Git scenario was removed. Each heavy test retains
-its own remote, index, worktrees, registration, hooks and approval tickets.
-Fixture seeding was not changed: traced repeated installation reads dominated
-process counts, while a shared seed would remove only a few setup processes.
-The dispatcher bytes, fsync, locks, source hashes and remote/ref checks remain.
-Git config reads are batched within one validation, never cached across hooks
-or mutations. Without an external legacy hook validation and enforcement share
-one lock scope; an executed pre-legacy hook is followed by a fresh validation.
+[ci_changes.py](../tests/ci_changes.py) is the single change classifier and
+required-job gate. Known explanatory README/docs changes can omit the heavy
+checkout/package regressions; README still requires distribution metadata
+build/check. Behavioral or uncertain changes keep full coverage. Do not add
+commit-level skip markers to choose jobs manually. PR diffs cover merge-base to
+head; pushes cover their complete commit range. Final topic, PR merge and main
+runs are distinct evidence.
 
-## Diagnostics and reuse
+## Coverage and diagnostics
 
-`tests/ci_runner.py` collects explicit unittest modules through their loaders,
-then assigns all collected IDs to six duration-balanced buckets, split across
-two independent checkout jobs with three child processes each. Recovery's
-`load_tests` prevents inherited base tests from being run again. The JSON records
-per-test status/elapsed time, fixture/cleanup times and outer Git/CLI invocation
-counts and durations. Outer command durations include nested hooks: they are not
-an independent CPU-time breakdown. Trace2 baseline counts likewise exclude the
-dependency probes that deliberately strip `GIT_*`; neither measure attributes
-unmeasured fsync or lock costs.
+[The workflow](../.github/workflows/ci.yml) owns exact commands, versions,
+partitions and installed-wheel selections. Full CI covers Windows/Linux and
+Python 3.10/3.12, with two checkout shards per configuration and a separate
+package job. The four existing `test` gates require successful documentation
+checks and either successful heavy matrices or their classification-authorized
+skip. Failures, cancellation and unexpected skips cannot satisfy them.
 
-Test starts/ends and tracebacks stream immediately. JSON records are persisted
-after each case. A bounded child process group is terminated on timeout, with
-its actual exit code and unfinished test retained. This applies only to the CI
-helper, never ordinary user Git commands. Existing OS-specific skips remain
-explicit `skip` records, not passes. Missing results, collection errors, failures
-and timeouts fail the stage. Metrics contain numeric observations and test IDs;
-CLI output stays in the normal test log rather than the timing artifact.
+| Boundary | Evidence |
+| --- | --- |
+| Source behavior | Full branch/recovery/operation/remote-adoption suites and the source, placement, handoff, inventory and optional-hook contracts |
+| Installed distribution | Build/metadata, project CLI end-to-end checks, packaged hook/data and representative real-Git cases; imports must resolve outside the checkout |
+| Selection and documentation | Whole-range classification, intentional/abnormal skips, and maintained local reference tests |
+| Real environment behavior | Separate authorized host acceptance; fixture/byte checks do not establish native agent loading or UI delivery |
 
-The matrix uploads results on success and failure, including resolved build
-packages, Python/Git versions and GitHub SHA/workflow/run identity. Compare the
-same SHA, workflow, dependency inputs and environment before reusing a result;
-never substitute a PR head for its merge SHA or an integrated main SHA. Inspect
-all four completed job conclusions and artifact outcomes, not just run status.
-GitHub's run/jobs API provides queue-inclusive wait, job start/end and step times.
-Sum job durations for runner time; do not sum overlapping nested command timings.
-Use natural successful runs for comparisons; do not retry merely to get green
-or manufacture percentile samples. With few observations report individual values.
+The existing `tests/ci_runner.py` retains each case's outcome and elapsed time,
+plus available fixture/cleanup and outer Git/CLI measurements. Its `--help`
+describes local invocation. Timeouts preserve partial outcomes and terminate
+only owned test processes. Tests keep independent mutable Git fixtures; weights
+in `tests/ci_checkout_weights.json` affect scheduling, never eligibility.
+
+Read failing case output in the normal log and retained `ci-results-*` artifacts.
+Artifacts include runtime/dependency identity and source/workflow/run metadata.
+Compare matching inputs before reusing evidence; a PR head is not its merge or
+integrated main revision. Platform skips remain explicit. Outer command timings
+include nested hooks, so summing them does not measure independent CPU work.
+Use existing job timestamps for elapsed/runner time and natural runs for
+comparisons; do not retry merely to manufacture green results or percentile data.
+
+## Publication
+
+Source installation is documented in the [README](../README.md). Publishing is
+a separate explicit release decision: verify package-name ownership, version,
+license, distribution contents and required CI before using the authorized
+publishing identity. No PyPI upload, tag or GitHub Release is triggered by normal
+pushes. If the name changes, update metadata, version lookup and install examples
+together. After an authorized publication, verify installation from the actual
+distribution source before changing the README's publication status.
+
+## Historical measurements
+
+The following observations and scheduling rationale are retained evidence from
+before the documentation selector above; their old job-selection description
+is not the current workflow contract.
 
 ## Baseline
 
@@ -98,7 +96,7 @@ took 1,753 seconds and 4,023 total runner seconds. Windows branch/recovery and t
 wheel composite step were the dominant costs; the composite is not build time.
 These are individual runs, not a p50/p95 estimate.
 
-## Five-minute integration follow-up
+## Historical scheduling rationale (before documentation selection)
 
 The source/handoff/rules contracts run in checkout partition 0; both partitions
 run their disjoint part of the complete real-Git collection. Package jobs have
@@ -196,3 +194,15 @@ Investigation, before/after evidence, final revisions and residual limitations
 are recorded in [work-records #124](https://github.com/yasuyuki/work-records/issues/124).
 This removes the identified causes; finite validation does not establish that
 host scheduling, future dependency updates or external services can never fail.
+
+## Agent report observation
+
+Live validation on 2026-09-08 (Linux, Python 3.14.4) used the existing public
+launch entry point, Codex 0.153.4 and Claude Code 2.1.263. Both returned valid
+partial inventories, including explicit unknowns, and produced HTML tables.
+The target's pre-existing instruction/configuration files were unchanged after
+the diagnostic. Cursor was unavailable through that environment's launcher;
+its failure was isolated and recorded in the same report. Real report data and
+launch configuration remain outside this repository. These observations do
+not establish completeness of the agents' self-reports or absence of startup
+side effects outside the target.
