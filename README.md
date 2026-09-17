@@ -919,6 +919,13 @@ only file contents are compared; POSIX execute bits are not managed.
 
 ## Package development and publication
 
+CI always checks maintained local documentation references. Run the same check
+locally with `python3 tests/docs_check.py`; its supported syntax and exclusions
+are described in [the checker](tests/docs_check.py). The shared
+[change selector](tests/ci_changes.py) keeps explanatory-only changes lightweight,
+retains README package metadata validation, and runs the full regression suite
+for behavioral or uncertain changes. Commit-level CI skip markers are unnecessary.
+
 An optional [Codex necessity-review hook](docs/necessity-hooks.md) adds candidate
 selection and restricted review through native synchronous hooks. It is enabled
 explicitly with `place.py necessity` or `agent-rules necessity`; normal rules and
