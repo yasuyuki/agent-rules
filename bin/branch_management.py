@@ -303,10 +303,23 @@ def within(child, parent):
 
 
 def main_worktree(repo):
-    for line in git(repo, 'worktree', 'list', '--porcelain').splitlines():
-        if line.startswith('worktree '):
-            return str(Path(line[len('worktree '):]).resolve())
+    for item in worktree_records(repo):
+        return item['worktree']
     raise BranchError('repository has no working tree')
+
+
+def worktree_records(repo):
+    records = []
+    for block in git_bytes(repo, 'worktree', 'list', '--porcelain', '-z').split(b'\0\0'):
+        item = {}
+        for field in block.split(b'\0'):
+            if field:
+                key, _, value = os.fsdecode(field).partition(' ')
+                item[key] = value
+        if 'worktree' in item:
+            item['worktree'] = str(Path(item['worktree']).absolute())
+            records.append(item)
+    return records
 
 
 def default_remote(repo, remote):
@@ -665,7 +678,7 @@ def begin(args):
     return output
 
 
-def retirement_checks(repo, state, key):
+def retirement_checks(repo, state, key, *, requesting=False):
     """Everything that must hold before a finished registration is closed.
 
     Refusal leaves both the registration and the files as they are. The
@@ -679,8 +692,10 @@ def retirement_checks(repo, state, key):
         raise BranchError('the default branch registration is not retired')
     if Path(path).resolve() == Path(main_worktree(repo)).resolve():
         raise BranchError('the repository working tree is not retired')
-    if top(repo) == path:
+    if not requesting and top(repo) == path:
         raise BranchError('retire from another checkout of this repository')
+    if not requesting and any(within(value, path) for value in (Path.cwd(), ROOT, sys.executable)):
+        raise BranchError('retire outside the active working directory and cleanup source/runtime')
     if not task.get('retirement_guarded'):
         raise BranchError('legacy/adopted registration needs dependency migration before retirement; keep checkout')
     # Removing the registered dispatcher source or runtime would break every
@@ -703,50 +718,426 @@ def retirement_checks(repo, state, key):
             or any(ticket['task'] == key for ticket in state['merges'].values())
             or any(pick.startswith(name + ':') for pick in state['picks'])):
         raise BranchError('in-flight permit or prepared integration; finish or retry it first')
-    if Path(path).exists():
+    operation = state.get('operations', {}).get(name)
+    if operation and not operation.get('completed') and not operation.get('preflight_rejected'):
+        raise BranchError('unfinished Git operation evidence remains; resolve it before retirement')
+    if os.path.lexists(path):
+        retirement_identity(path)
         if not same_checkout(repo, path, name):
             raise BranchError('registered worktree has changed')
-        if git(path, 'status', '--porcelain', '--ignored'):
+        if git(path, 'status', '--porcelain', '--untracked-files=all', '--ignored'):
             raise BranchError('checkout has uncommitted, untracked or ignored files; preserve and inspect')
     return task
 
 
-def retire(args):
-    """Close a finished registration: remove its worktree, keep its branch.
+def retirement_identity(path):
+    """Reject redirected paths and pin the containing filesystem before removal."""
+    path = Path(path).absolute()
+    for item in (path, *path.parents):
+        if not os.path.lexists(item):
+            raise BranchError('retirement path or parent is unavailable: ' + str(item))
+        info = item.lstat()
+        if (stat.S_ISLNK(info.st_mode) or
+                getattr(info, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+            raise BranchError('retirement path crosses a symlink/reparse point: ' + str(item))
+    info, parent = path.stat(), path.parent.stat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_dev != parent.st_dev or os.path.ismount(path):
+        raise BranchError('retirement target is not an ordinary directory on its parent filesystem')
+    return {'device': info.st_dev, 'inode': info.st_ino,
+            'parent_device': parent.st_dev, 'parent_inode': parent.st_ino}
 
-    The branch and its commits stay, unregistered, so nothing becomes
-    unreachable and no reference transaction is needed. Only the final removal
-    from `tasks` writes the registration, so an interrupted run is completed by
-    running the same command again."""
+
+def retirement_contents(path):
+    """Git's ignored status is insufficient for empty directories and nested repos."""
+    for current, directories, names in os.walk(path, followlinks=False):
+        for name in directories + names:
+            item = Path(current) / name
+            info = item.lstat()
+            if (stat.S_ISLNK(info.st_mode) or
+                    getattr(info, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                raise BranchError('retirement content contains a link/reparse point: ' + str(item))
+            if item != Path(path) / '.git' and name == '.git':
+                raise BranchError('retirement content contains a nested repository: ' + str(item))
+            if stat.S_ISDIR(info.st_mode) and (os.path.ismount(item) or info.st_dev != Path(path).stat().st_dev):
+                raise BranchError('retirement content crosses a filesystem boundary: ' + str(item))
+    if git(path, 'ls-files', '--stage').startswith('160000 ') or b'\x00160000 ' in git_bytes(path, 'ls-files', '--stage', '-z'):
+        raise BranchError('retirement content contains a submodule')
+    # Reuse the existing fresh-index check, including assume-unchanged and
+    # skip-worktree protection, without modifying the user's index.
+    verify_creation_checkout(path, {'worktree': str(path), 'branch': branch(path)}, oid(path, 'HEAD'))
+
+
+def process_identity(pid):
+    """Return a creation identity, None for a dead process; uncertainty raises."""
+    if os.name == 'nt':
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.GetProcessTimes.argtypes = (wintypes.HANDLE,) + (ctypes.POINTER(wintypes.FILETIME),) * 4
+        kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if not handle:
+            if ctypes.get_last_error() == 87:
+                return None
+            raise BranchError('cannot inspect session process: ' + str(pid))
+        try:
+            values = [wintypes.FILETIME() for _ in range(4)]
+            if not kernel.GetProcessTimes(handle, *(ctypes.byref(v) for v in values)):
+                raise BranchError('cannot inspect session creation time')
+            return str((values[0].dwHighDateTime << 32) | values[0].dwLowDateTime)
+        finally:
+            kernel.CloseHandle(handle)
+    try:
+        data = Path('/proc', str(pid), 'stat').read_text()
+        fields = data.rsplit(')', 1)[1].split()
+        if fields[0] == 'Z':
+            return None
+        return Path('/proc/sys/kernel/random/boot_id').read_text().strip() + ':' + fields[19]
+    except FileNotFoundError:
+        if Path('/proc').is_dir():
+            return None
+        raise BranchError('process identity inspection is unavailable')
+
+
+def active_leases(task):
+    remaining = {}
+    for token, lease in task.get('leases', {}).items():
+        if process_identity(lease['owner_pid']) == lease['owner_identity']:
+            remaining[token] = lease
+            continue
+        if 'child_pid' not in lease:
+            # The supervisor may have died between spawn and attachment.
+            remaining[token] = lease
+            continue
+        if lease['child_identity'] is not None and process_identity(lease['child_pid']) == lease['child_identity']:
+            remaining[token] = lease
+            continue
+        if lease.get('process_group'):
+            try:
+                os.killpg(lease['process_group'], 0)
+                remaining[token] = lease
+            except ProcessLookupError:
+                pass
+        elif lease.get('windows_job'):
+            job_active = windows_job_active(lease, token)
+            if job_active is None:
+                raise BranchError('Windows job name is unavailable; descendant release is unknown; '
+                                  'confirm external users and explicitly release lease ' + token)
+            if job_active:
+                remaining[token] = lease
+        elif not lease.get('released'):
+            # Without a process group/job completion proof descendants are unknown.
+            remaining[token] = lease
+    task['leases'] = remaining
+    return remaining
+
+
+def windows_session_id():
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    session = wintypes.DWORD()
+    if not kernel.ProcessIdToSessionId(os.getpid(), ctypes.byref(session)):
+        raise BranchError('cannot establish the current Windows session')
+    return session.value
+
+
+def windows_job_active(lease, token):
+    """Return True (alive), False (queried empty), or None (name unavailable).
+
+    Closing the last handle can make a job name unavailable while associated
+    processes still run. An absent name is never proof of descendant exit.
+    """
+    if os.name != 'nt' or lease.get('windows_session') != windows_session_id():
+        raise BranchError('Windows session differs from the retirement lease')
+    if lease['windows_job'] != 'Local\\agent-rules-retirement-' + token:
+        raise BranchError('Windows retirement job name differs from the lease token')
+    import ctypes
+    from ctypes import wintypes
+    class Accounting(ctypes.Structure):
+        _fields_ = [('times', ctypes.c_int64 * 4), ('page_faults', wintypes.DWORD),
+                    ('total', wintypes.DWORD), ('active', wintypes.DWORD), ('terminated', wintypes.DWORD)]
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenJobObjectW.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR)
+    kernel.OpenJobObjectW.restype = wintypes.HANDLE
+    kernel.QueryInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int,
+        ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p)
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    handle = kernel.OpenJobObjectW(4, False, lease['windows_job'])
+    if not handle:
+        if ctypes.get_last_error() == 2:
+            return None
+        raise BranchError('cannot inspect the retirement Windows job')
+    try:
+        info = Accounting()
+        if not kernel.QueryInformationJobObject(handle, 1, ctypes.byref(info), ctypes.sizeof(info), None):
+            raise BranchError('cannot inspect retirement Windows job processes')
+        return info.active != 0
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def acquire_worktree_lease(repo, path=None):
+    repo = Path(repo).resolve()
+    if not (common(repo) / 'agent-branches/state.json').is_file():
+        return None
+    with locked(repo) as (directory, state):
+        assert_install(repo, directory, state)
+        selected = top(path or repo)
+        matches = [(key, task) for key, task in state['tasks'].items()
+                   if selected == task['worktree']]
+        if not matches:
+            return None
+        if len(matches) != 1:
+            raise BranchError('ambiguous registered session worktree')
+        key, task = matches[0]
+        if task.get('retirement'):
+            raise BranchError('worktree has a retirement request; resolve it before resuming work')
+        token = uuid.uuid4().hex
+        task.setdefault('leases', {})[token] = {'owner_pid': os.getpid(),
+            'owner_identity': process_identity(os.getpid())}
+        save(directory, state)
+        return {'repo': main_worktree(repo), 'task': key, 'token': token}
+
+
+def attach_worktree_child(lease, pid, *, process_group=None, windows_job=None):
+    if lease is None:
+        return
+    with locked(lease['repo']) as (directory, state):
+        value = state['tasks'][lease['task']]['leases'][lease['token']]
+        value.update(child_pid=pid, child_identity=process_identity(pid), process_group=process_group)
+        if windows_job is not None:
+            if os.name != 'nt' or windows_job != 'Local\\agent-rules-retirement-' + lease['token']:
+                raise BranchError('Windows job must belong to this lease token')
+            value.update(windows_job=windows_job, windows_session=windows_session_id())
+        save(directory, state)
+
+
+def finish_worktree_lease(lease, *, child_exited=True, workspace=None):
+    if lease is None:
+        return {'ok': True, 'retired': [], 'pending': []}
+    repo = lease['repo']
+    with locked(repo) as (directory, state):
+        task = state['tasks'][lease['task']]
+        value = task['leases'][lease['token']]
+        if value['owner_pid'] != os.getpid() or value['owner_identity'] != process_identity(os.getpid()):
+            raise BranchError('session lease belongs to another supervisor')
+        if child_exited:
+            if value.get('process_group'):
+                try:
+                    os.killpg(value['process_group'], 0)
+                except ProcessLookupError:
+                    task['leases'].pop(lease['token'])
+            else:
+                task['leases'].pop(lease['token'])
+        save(directory, state)
+    return retry_pending(repo, workspace=workspace)
+
+
+def check_retirement_result(reference, path):
+    if not reference.startswith(('https://', 'http://')):
+        result_path = Path(reference).resolve()
+        if within(result_path, path) or not result_path.is_file():
+            raise BranchError('result reference must be an existing file outside the retirement worktree')
+
+
+def request_retirement(directory, state, key, args):
+    task = state['tasks'].get(key)
+    if task is None:
+        raise BranchError('unregistered work item: ' + str(key))
+    if task.get('retirement'):
+        return
+    if not getattr(args, 'users_released', False) or not getattr(args, 'result_ref', None):
+        raise BranchError('new retirement requires --users-released and --result-ref outside the worktree')
+    path = task['worktree']
+    if task['branch'] == state['default'] or Path(path).resolve() == Path(main_worktree(args.repo)).resolve():
+        raise BranchError('the default branch and repository working tree are not retired')
+    if not task.get('integrated') or task['integrated']['source'] != task['tip']:
+        raise BranchError('work is not integrated into its registered destination')
+    check_retirement_result(args.result_ref, path)
+    identity = retirement_identity(path)
+    task['retirement'] = {'worktree': path, 'branch': task['branch'], 'tip': task['tip'],
+        'integration': task.get('integrated'), 'result_ref': args.result_ref,
+        'users_released': True, 'identity': identity, 'phase': 'requested',
+        'reason': 'waiting for safety checks and managed session release'}
+    save(directory, state)
+
+
+def perform_retirement(repo, directory, state, key):
+    task = state['tasks'][key]
+    request = task['retirement']
+    try:
+        if any(request[field] != task[field] for field in ('worktree', 'branch', 'tip')) or request['integration'] != task.get('integrated'):
+            raise BranchError('retirement identity/tip/integration changed; preserve old request for inspection')
+        if active_leases(task):
+            raise BranchError('managed sessions or unconfirmed child processes still hold the worktree')
+        retirement_checks(repo, state, key)
+        path = Path(task['worktree'])
+        check_retirement_result(request['result_ref'], path)
+        parent = path.parent.stat()
+        identity = request['identity']
+        if [parent.st_dev, parent.st_ino] != [identity['parent_device'], identity['parent_inode']]:
+            raise BranchError('retirement parent filesystem changed or is unavailable')
+        exists = os.path.lexists(path)
+        if exists:
+            if retirement_identity(path) != identity:
+                raise BranchError('retirement physical directory identity changed')
+            retirement_contents(path)
+        elif request['phase'] != 'removing':
+            raise BranchError('worktree disappeared before authorized removal; cannot confirm filesystem identity')
+        request.update(phase='removing', reason='physical removal and postconditions pending')
+        save(directory, state)
+        listed = next((r for r in worktree_records(repo) if r['worktree'] == str(path)), None)
+        if listed:
+            if 'locked' in listed:
+                raise BranchError('worktree metadata remains locked: ' + listed['locked'])
+            git(repo, 'worktree', 'remove', str(path))
+        if os.path.lexists(path) or any(r['worktree'] == str(path) for r in worktree_records(repo)):
+            raise BranchError('worktree directory or metadata remains after removal')
+        if oid(repo, 'refs/heads/' + task['branch']) != task['tip']:
+            raise BranchError('retained branch ref changed during removal')
+        if [path.parent.stat().st_dev, path.parent.stat().st_ino] != [identity['parent_device'], identity['parent_inode']]:
+            raise BranchError('retirement parent filesystem changed during removal')
+        check_retirement_result(request['result_ref'], path)
+        output = {'task': key, 'branch': task['branch'], 'worktree': str(path), 'tip': task['tip'],
+                  'retired': True, 'branch_retained': True, 'result_ref': request['result_ref']}
+        state['tasks'].pop(key)
+        try:
+            save(directory, state)
+        except OSError:
+            state['tasks'][key] = task
+            raise
+        return output
+    except (BranchError, OSError) as exc:
+        request['reason'] = str(exc)
+        save(directory, state)
+        return {'task': key, 'retired': False, 'pending': True, 'reason': str(exc),
+                'leases': list(task.get('leases', {}))}
+
+
+def retry_pending(repo, workspace=None):
+    repo = Path(repo).resolve()
+    with locked(repo) as (directory, state):
+        assert_install(repo, directory, state)
+        reconcile(repo, state)
+        results = [perform_retirement(repo, directory, state, key)
+                   for key, task in list(state['tasks'].items())
+                   if task.get('retirement') and (workspace is None or within(task['worktree'], workspace))]
+        return {'ok': all(item['retired'] for item in results),
+                'retired': [item for item in results if item['retired']],
+                'pending': [item for item in results if not item['retired']]}
+
+
+def retire(args):
+    if getattr(args, 'pending', False):
+        if args.task:
+            raise BranchError('--pending cannot select a new task')
+        return retry_pending(args.repo, getattr(args, 'workspace', None))
+    if not args.task:
+        raise BranchError('retire requires --task or --pending')
     repo = Path(args.repo).resolve()
     with locked(repo) as (directory, state):
         assert_install(repo, directory, state)
         reconcile(repo, state)
-        task = retirement_checks(repo, state, args.task)
+        release = getattr(args, 'release_lease', None)
+        if release:
+            if not args.users_released or not args.result_ref:
+                raise BranchError('lease recovery requires --users-released and --result-ref')
+            task = state['tasks'].get(args.task)
+            lease = task.get('leases', {}).get(release) if task else None
+            if not lease:
+                raise BranchError('unknown session lease token')
+            if process_identity(lease['owner_pid']) == lease['owner_identity']:
+                raise BranchError('session supervisor is still running')
+            if lease.get('child_identity') and process_identity(lease['child_pid']) == lease['child_identity']:
+                raise BranchError('session child is still running')
+            if lease.get('process_group'):
+                try:
+                    os.killpg(lease['process_group'], 0)
+                except ProcessLookupError:
+                    pass
+                else:
+                    raise BranchError('session process group is still running')
+            if lease.get('windows_job') and windows_job_active(lease, release) is True:
+                raise BranchError('session Windows job still has live processes')
+            task['leases'].pop(release)
+            task.setdefault('released_leases', {})[release] = {'result_ref': args.result_ref,
+                'users_released': True}
+            save(directory, state)
+        request_retirement(directory, state, args.task, args)
+        if getattr(args, 'request', False):
+            return {'task': args.task, 'requested': True, 'pending': True,
+                    'reason': state['tasks'][args.task]['retirement']['reason']}
+        result = perform_retirement(repo, directory, state, args.task)
+        result['ok'] = result['retired']
+        return result
+
+
+def migrate_retirement(args):
+    """Admit one reviewed historical checkout without inventing integration."""
+    if not args.maintenance or not args.users_released or not args.result_ref or not args.consumer:
+        raise BranchError('migration requires a fixed consumer set, maintenance interval, user release and result reference')
+    repo = Path(args.repo).resolve()
+    with locked(repo) as (directory, state):
+        assert_install(repo, directory, state)
+        reconcile(repo, state)
+        task = state['tasks'].get(args.task)
+        if task is None:
+            raise BranchError('adopt the historical task before retirement migration')
+        path = task['worktree']
+        check_retirement_result(args.result_ref, path)
+        if (str(Path(args.expect_worktree).absolute()) != path or args.expect_tip != task['tip']
+                or args.base != task['base']):
+            raise BranchError('migration path/tip/base differs from registration')
+        retirement_identity(path)
+        if not same_checkout(repo, path, task['branch']) or oid(path, 'HEAD') != args.expect_tip:
+            raise BranchError('migration checkout differs from its pinned identity')
+        commit = oid(repo, args.integration_commit)
+        if commit != args.integration_commit or not ancestor(repo, task['base'], task['tip']):
+            raise BranchError('migration requires exact historical base and integration commit')
+        parents = git(repo, 'show', '-s', '--format=%P', commit).split()
+        if (len(parents) != 2 or parents[1] != task['tip']
+                or not ancestor(repo, commit, 'refs/heads/' + task['into'])):
+            raise BranchError('migration requires a two-parent integration of this exact tip into its destination')
+        candidate = {'source': task['tip'], 'destination': task['into'], 'commit': commit}
+        if task.get('integrated') and task['integrated'] != candidate:
+            raise BranchError('migration cannot replace existing integration evidence')
+        consumers = sorted({str(Path(value).resolve()) for value in args.consumer})
+        if str(Path(main_worktree(repo)).resolve()) not in consumers:
+            raise BranchError('consumer set must include this repository primary checkout')
+        # The explicit maintenance interval excludes installs by older clients,
+        # which cannot participate in a new lock protocol. Never infer a global
+        # consumer inventory by scanning HOME or all drives.
+        for consumer in consumers:
+            consumer_dir = common(consumer) / 'agent-branches'
+            consumer_state = json.loads((consumer_dir / 'state.json').read_text(encoding='utf-8'))
+            assert_install(consumer, consumer_dir, consumer_state)
+            for value in (consumer_state['source'], consumer_state['python'],
+                          str(Path(consumer_state['python']).resolve())):
+                if within(value, path):
+                    raise BranchError('consumer still references retirement checkout: ' + consumer)
+        if active_leases(task):
+            raise BranchError('managed session still holds migration checkout')
+        retirement_contents(path)
+        record = next((item for item in worktree_records(repo) if item['worktree'] == path), None)
+        if record is None:
+            raise BranchError('migration worktree is not registered with Git')
+        if 'locked' in record and record['locked'] != 'branch management dependency':
+            raise BranchError('migration does not own this worktree lock: ' + record['locked'])
+        # Persist the audited inputs before changing the native lock. A crash
+        # keeps the task and repeats the same checks on the next invocation.
+        task['retirement_migration'] = {'worktree': path, 'tip': task['tip'],
+            'base': task['base'], 'integration': candidate, 'consumers': consumers,
+            'result_ref': args.result_ref}
         save(directory, state)
-        name, path = task['branch'], task['worktree']
-        output = {'task': args.task, 'branch': name, 'worktree': path, 'tip': task['tip'],
-                  'destination': task['integrated']['destination'],
-                  'retired': True, 'branch_retained': True}
-        # Worktree removal does not update refs or invoke reference hooks.
-        # Keep registration changes excluded until removal and bookkeeping end.
-        if Path(path).exists():
-            git(repo, 'worktree', 'remove', path)  # never --force; honors Git locks
-            if Path(path).exists():
-                raise BranchError('worktree removal left the checkout in place')
-        listed = [str(Path(line[len('worktree '):]).resolve())
-                  for line in git(repo, 'worktree', 'list', '--porcelain').splitlines()
-                  if line.startswith('worktree ')]
-        if path in listed:
-            git(repo, 'worktree', 'prune')  # metadata only, never files
-            remaining = [str(Path(line[len('worktree '):]).resolve())
-                         for line in git(repo, 'worktree', 'list', '--porcelain').splitlines()
-                         if line.startswith('worktree ')]
-            if path in remaining:
-                raise BranchError('worktree metadata remains; preserve registration and inspect its lock')
-        state['tasks'].pop(args.task)
+        if 'locked' in record:
+            git(repo, 'worktree', 'unlock', path)
+        task['retirement_guarded'] = True
+        task['integrated'] = candidate
         save(directory, state)
-    return output
+        return {'task': args.task, 'migrated': True, 'consumers': consumers}
 
 
 def merge_valid(repo, state, name, ticket):
@@ -1565,7 +1956,7 @@ def main(argv=None):
             return hook(argv[1], argv[2:])
         parser = argparse.ArgumentParser(description=__doc__)
         sub = parser.add_subparsers(dest='command', required=True)
-        for name in ('install', 'begin', 'check', 'retire', 'prepare-merge', 'allow-cherry-pick', 'allow-tag-push'):
+        for name in ('install', 'begin', 'check', 'retire', 'migrate-retirement', 'prepare-merge', 'allow-cherry-pick', 'allow-tag-push'):
             p = sub.add_parser(name)
             p.add_argument('--repo', default='.')
             p.add_argument('--json', action='store_true')
@@ -1578,7 +1969,21 @@ def main(argv=None):
                     p.add_argument('--' + flag)
                 p.add_argument('--sync', action='store_true')
                 p.add_argument('--from-remote', action='store_true')
-            elif name in ('retire', 'prepare-merge'):
+            elif name == 'retire':
+                p.add_argument('--task')
+                p.add_argument('--request', action='store_true', help='record a retirement request without removing the checkout')
+                p.add_argument('--pending', action='store_true', help='retry only existing retirement requests')
+                p.add_argument('--release-lease', help='recover one dead supervisor lease after external release confirmation')
+                p.add_argument('--workspace', help='limit pending requests to this workspace')
+                p.add_argument('--result-ref', help='durable result saved outside the checkout')
+                p.add_argument('--users-released', action='store_true', help='external users and evidence have been released; managed leases remain enforced')
+            elif name == 'migrate-retirement':
+                for flag in ('task', 'expect-worktree', 'expect-tip', 'base', 'integration-commit', 'result-ref'):
+                    p.add_argument('--' + flag, required=True)
+                p.add_argument('--consumer', action='append', required=True, help='complete reviewed consumer set; repeat for every repository')
+                p.add_argument('--maintenance', action='store_true', help='consumer installs and external users are excluded during migration')
+                p.add_argument('--users-released', action='store_true')
+            elif name == 'prepare-merge':
                 p.add_argument('--task', required=True)
             elif name == 'allow-cherry-pick':
                 for flag in ('commit', 'approval', 'reason'):
@@ -1588,12 +1993,15 @@ def main(argv=None):
                     p.add_argument('--' + flag, required=True)
         args = parser.parse_args(argv)
         value = {'install': install, 'begin': begin, 'check': check, 'retire': retire,
+                 'migrate-retirement': migrate_retirement,
                  'prepare-merge': prepare_merge, 'allow-cherry-pick': allow_pick,
                  'allow-tag-push': allow_tag_push}[args.command](args)
         if args.command == 'check' and not args.json:
             print('OK: registered worktrees and hooks agree' if value['ok'] else 'FAIL: ' + '; '.join(value['errors']))
         else:
             print(json.dumps(value, ensure_ascii=True, sort_keys=True))
+        if args.command == 'retire' and value.get('ok') is False:
+            print(json.dumps(value, ensure_ascii=True, sort_keys=True), file=sys.stderr)
         return 1 if value.get('ok') is False else 0
     except (BranchError, OSError, ValueError, KeyError) as exc:
         print(json.dumps({'ok': False, 'errors': [str(exc)]}), file=sys.stderr)

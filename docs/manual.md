@@ -352,11 +352,59 @@ Only genuine conflict paths permit resolution edits; unrelated edits in an incom
 file cannot borrow the merge's authorization. Unsupported filters, submodules,
 merge drivers and worktree conversions need separate handling.
 
-Retire only through `branch retire`; ignored files also prevent removal because
-they may contain another working tree. Legacy/adopted registrations and native
-locks protecting source/runtime dependencies can require separate maintenance.
-Do not unlock dependencies or alter registry files to force retirement. Branches
-and commits remain; retirement is not branch deletion or abandonment.
+### Finish work and retire its checkout
+
+After saving results outside the checkout, completing integration, and releasing
+reviewers, editors and other users, the lead records the request through the
+existing branch entry. Use the actual registered task and saved result reference:
+
+```console
+python bin/place.py branch retire --repo REPO --task TASK --request --users-released --result-ref RESULT
+```
+
+`--request` durably records the current path, tip, integration and filesystem
+identity. It does not claim deletion. Without `--request`, the same command also
+attempts synchronous retirement from an outside checkout. A saved request can be
+retried with `branch retire --repo REPO --task TASK`; new requests require both
+the result reference and the explicit user-release assertion. HTTP(S) references
+must already be saved and checked by the lead; the command does not fetch them.
+Local result files must remain outside the target and exist at deletion time.
+
+Normal `start` and `standard-start` retry requested retirements before launching
+the vendor, using only registered Git repositories in declared local workspaces.
+They lease the actual checkout until the owned child and its descendants exit,
+then retry from the primary checkout. CLI exit alone never requests retirement.
+A pending request refuses a new session in the same checkout. Linux process
+groups and Windows named jobs protect managed children; arbitrary external
+editors still require the lead's release confirmation. A vendor that deliberately
+detaches from its managed process group requires separate release confirmation.
+
+The result distinguishes retired and pending tasks and gives the reason and any
+lease tokens. Cleanup failure makes an otherwise successful managed run fail.
+The maintenance equivalent is `branch retire --repo REPO --pending`; it processes
+only existing requests. `--workspace PATH` narrows that retry to one workspace.
+After a confirmed crash with unknown child state, the exact token can be released
+with `branch retire --repo REPO --task TASK --release-lease TOKEN --users-released
+--result-ref RESULT`; live recorded processes/jobs still refuse release.
+
+Retirement verifies directory and Git-registration absence and unchanged retained
+branch/ref before removing the task. A crash between deletion and registry save
+resumes the recorded removal. Unknown tasks and directories that disappeared
+without a recorded removal intent are not assumed successful. There is no broad
+prune, force removal, branch deletion, or automatic ignored-file cleanup.
+
+For a historical adopted checkout, first rebind every source/runtime consumer
+through `branch install` using reviewed permanent sources. During a maintenance
+interval excluding concurrent installs, `branch migrate-retirement` takes one
+task, `--expect-worktree`, `--expect-tip`, its historical `--base`, and the exact
+`--integration-commit`. Repeat `--consumer REPO` for the complete checked consumer
+set, including the primary repository; also pass `--maintenance`,
+`--users-released` and `--result-ref`. The command verifies the exact two-parent
+integration and consumer bindings before admitting retirement and unlocking only
+its own dependency lock. Unknown consumers and user locks remain protected.
+Then use the same retire request/retry path. Never edit the registry or unlock a
+dependency by hand. Ignored files, nested repositories, links and unfinished Git
+operations must be resolved separately while preserving user data and evidence.
 
 ### Pushes and explicitly approved exceptions
 

@@ -17,6 +17,195 @@ spec.loader.exec_module(management)
 
 
 class RecoveryTests(BranchManagementTests):
+    def retirement_args(self, task, **extra):
+        return type('Args', (), dict(repo=str(self.repo), task=task,
+            users_released=True, result_ref='https://example.invalid/saved-result', **extra))()
+
+    def test_retirement_leases_release_last_user_and_keep_branch(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        path = self.integrate('leased')
+        tip = self.git('rev-parse', 'leased').stdout.strip()
+        first = management.acquire_worktree_lease(self.repo, path)
+        second = management.acquire_worktree_lease(self.repo, path)
+        management.retire(self.retirement_args('leased', request=True))
+        self.assertFalse(management.finish_worktree_lease(first)['ok'])
+        self.assertTrue(path.exists())
+        final = management.finish_worktree_lease(second)
+        self.assertTrue(final['ok'], final)
+        self.assertFalse(path.exists())
+        self.assertEqual(self.git('rev-parse', 'leased').stdout.strip(), tip)
+        self.assertEqual(management.retry_pending(self.repo)['retired'], [])
+
+    def test_retirement_retries_failed_remove_and_failed_final_save(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        path = self.integrate('retry')
+        management.retire(self.retirement_args('retry', request=True))
+        real_git = management.git
+        def fail_remove(repo, *argv, **kwargs):
+            if argv[:2] == ('worktree', 'remove'):
+                raise management.BranchError('open Windows handle')
+            return real_git(repo, *argv, **kwargs)
+        with patch.object(management, 'git', side_effect=fail_remove):
+            result = management.retry_pending(self.repo)
+        self.assertFalse(result['ok'])
+        self.assertTrue(path.is_dir())
+        self.assertIn('open Windows handle', self.read_state()['tasks']['retry']['retirement']['reason'])
+        real_save = management.save
+        def fail_final(directory, state):
+            if 'retry' not in state['tasks']:
+                raise OSError('final registry write failed')
+            real_save(directory, state)
+        with patch.object(management, 'save', side_effect=fail_final):
+            result = management.retry_pending(self.repo)
+        self.assertFalse(result['ok'])
+        self.assertFalse(path.exists())
+        self.assertIn('retry', self.read_state()['tasks'])
+        self.assertTrue(management.retry_pending(self.repo)['ok'])
+        self.assertNotIn('retry', self.read_state()['tasks'])
+
+    def test_retirement_rejects_changed_tip_and_empty_nested_repository(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        path = self.integrate('changed')
+        management.retire(self.retirement_args('changed', request=True))
+        nested = path / 'empty' / '.git'
+        nested.mkdir(parents=True)
+        result = management.retry_pending(self.repo)
+        self.assertFalse(result['ok'])
+        self.assertTrue(nested.is_dir())
+        nested.rmdir()
+        nested.parent.rmdir()
+        (path / 'later').write_text('must retain')
+        self.git_at(path, 'add', 'later')
+        self.git_at(path, 'commit', '-m', 'later change')
+        result = management.retry_pending(self.repo)
+        self.assertFalse(result['ok'])
+        self.assertIn('changed', result['pending'][0]['reason'])
+        self.assertTrue(path.exists())
+
+    def test_legacy_retirement_migration_validates_exact_merge_and_removes(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        path = self.integrate('legacy')
+        state = self.read_state()
+        task = state['tasks']['legacy']
+        task.pop('retirement_guarded')
+        done = task.pop('integrated')
+        self.write_state(state)
+        self.git('worktree', 'lock', '--reason', 'branch management dependency', str(path))
+        args = self.retirement_args('legacy', maintenance=True, consumer=[str(self.repo)],
+            expect_worktree=str(path), expect_tip=task['tip'], base=task['base'],
+            integration_commit=done['commit'])
+        wrong = self.retirement_args('legacy', maintenance=True, consumer=[str(self.repo)],
+            expect_worktree=str(path), expect_tip=task['base'], base=task['base'],
+            integration_commit=done['commit'])
+        with self.assertRaisesRegex(management.BranchError, 'path/tip/base'):
+            management.migrate_retirement(wrong)
+        self.assertTrue(management.migrate_retirement(args)['migrated'])
+        self.assertTrue(management.retire(self.retirement_args('legacy'))['retired'])
+        self.assertFalse(path.exists())
+
+    def test_retirement_unknown_crashed_launch_remains_pending(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        path = self.integrate('crashed')
+        management.acquire_worktree_lease(self.repo, path)
+        management.retire(self.retirement_args('crashed', request=True))
+        with patch.object(management, 'process_identity', return_value=None):
+            result = management.retry_pending(self.repo)
+        self.assertFalse(result['ok'])
+        self.assertTrue(path.is_dir())
+        self.assertTrue(self.read_state()['tasks']['crashed']['leases'])
+
+    def test_retirement_preserves_a_replaced_directory(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        path = self.integrate('replaced')
+        management.retire(self.retirement_args('replaced', request=True))
+        original = path.with_name('original preserved')
+        path.rename(original)
+        path.mkdir()
+        (path / 'personal-data').write_text('retain me')
+        result = management.retry_pending(self.repo)
+        self.assertFalse(result['ok'])
+        self.assertEqual((path / 'personal-data').read_text(), 'retain me')
+        self.assertTrue((original / 'replaced-change').is_file())
+        self.assertIn('replaced', self.read_state()['tasks'])
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows native job lifetime')
+    def test_windows_missing_job_requires_confirmed_external_release(self):
+        import ctypes
+        from ctypes import wintypes
+        self.begin('integration', 'adopt', branch='main', into='main')
+        path = self.integrate('windows-job')
+        lease = management.acquire_worktree_lease(self.repo, path)
+        name = 'Local\\agent-rules-retirement-' + lease['token']
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+        kernel.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+        kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        handle = kernel.CreateJobObjectW(None, name)
+        self.assertTrue(handle)
+        child = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE)
+        try:
+            self.assertTrue(kernel.AssignProcessToJobObject(handle, int(child._handle)), ctypes.get_last_error())
+            management.attach_worktree_child(lease, child.pid, windows_job=name)
+            management.retire(self.retirement_args('windows-job', request=True))
+            # A crashed supervisor loses its last handle. The name can vanish
+            # while a descendant is alive: absence is not proof of death.
+            kernel.CloseHandle(handle)
+            handle = None
+            stored = self.read_state()['tasks']['windows-job']['leases'][lease['token']]
+            self.assertIsNone(child.poll())
+            self.assertIsNone(management.windows_job_active(stored, lease['token']))
+            with patch.object(management, 'process_identity', return_value=None):
+                result = management.retry_pending(self.repo)
+            self.assertFalse(result['ok'])
+            self.assertEqual(result['pending'][0]['leases'], [lease['token']])
+            self.assertTrue(path.exists())
+            child.communicate(b'finished', timeout=10)
+            stored = self.read_state()['tasks']['windows-job']['leases'][lease['token']]
+            self.assertIsNone(management.windows_job_active(stored, lease['token']))
+            with patch.object(management, 'process_identity', return_value=None):
+                self.assertFalse(management.retry_pending(self.repo)['ok'])
+                self.assertTrue(management.retire(self.retirement_args(
+                    'windows-job', release_lease=lease['token']))['ok'])
+            self.assertFalse(path.exists())
+        finally:
+            if child.poll() is None:
+                child.communicate(b'finished', timeout=10)
+            if handle:
+                kernel.CloseHandle(handle)
+
+    def test_migration_rechecks_multiple_consumers_before_dependency_unlock(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        path = Path(self.begin('supplier', branch='supplier')['worktree'])
+        for relative in ('bin/branch_management.py', 'bin/push_preflight.py', 'hooks/branch-hook'):
+            target = path / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / relative, target)
+        self.git_at(path, 'add', 'bin', 'hooks')
+        self.git_at(path, 'commit', '-m', 'source supplier')
+        self.branch('prepare-merge', '--task', 'supplier')
+        self.git('merge', '--no-ff', '--no-commit', 'supplier')
+        self.git('commit', '-m', 'integrate supplier')
+        consumers = [self.root / 'consumer one', self.root / 'consumer two']
+        for consumer in consumers:
+            self.command('git', 'clone', self.remote, consumer)
+            self.command(sys.executable, str(path / 'bin/branch_management.py'), 'install',
+                         '--repo', str(consumer), '--remote', 'origin')
+        task = self.read_state()['tasks']['supplier']
+        args = self.retirement_args('supplier', maintenance=True,
+            consumer=[str(self.repo), *(str(value) for value in consumers)],
+            expect_worktree=str(path), expect_tip=task['tip'], base=task['base'],
+            integration_commit=task['integrated']['commit'])
+        self.branch('install', repo=consumers[0])
+        with self.assertRaisesRegex(management.BranchError, 'still references'):
+            management.migrate_retirement(args)
+        self.assertIn('locked', next(row for row in management.worktree_records(self.repo)
+                                    if row['worktree'] == str(path)))
+        self.branch('install', repo=consumers[1])
+        self.assertTrue(management.migrate_retirement(args)['migrated'])
+        self.assertTrue(management.retire(self.retirement_args('supplier'))['retired'])
+        self.assertFalse(path.exists())
+
     def test_remote_adopt_interruption_keeps_q_and_rejects_content_conflicts(self):
         seed, base, tip = self.remote_topic()
         path = self.root / 'received'
@@ -262,16 +451,13 @@ class RecoveryTests(BranchManagementTests):
                     '--branch', 'main', '--worktree', str(clone), '--base', 'HEAD', ok=False)
         self.assertNotIn('wrong', self.read_state()['tasks'])
 
-    def test_retire_completes_when_the_worktree_directory_is_already_gone(self):
+    def test_retire_preserves_a_worktree_missing_without_a_removal_record(self):
         self.begin('integration', 'adopt', branch='main', into='main')
         worktree = self.integrate('source')
         tip = self.git('rev-parse', 'refs/heads/source').stdout.strip()
         shutil.rmtree(worktree)  # Crash or manual deletion before the ledger was closed.
-        self.branch('retire', '--task', 'source')
-        checked = json.loads(self.branch('check', '--json').stdout)
-        self.assertTrue(checked['ok'], checked)
-        self.assertNotIn('source', checked['tasks'])
-        self.assertNotIn(str(worktree), self.git('worktree', 'list').stdout)
+        self.branch('retire', '--task', 'source', ok=False)
+        self.assertIn('source', self.read_state()['tasks'])
         self.assertEqual(self.git('rev-parse', 'refs/heads/source').stdout.strip(), tip)
 
     def test_retire_refuses_a_checkout_holding_the_registered_hook_source(self):
@@ -333,7 +519,8 @@ class RecoveryTests(BranchManagementTests):
     def test_retire_serializes_a_new_dependency_until_removal_finishes(self):
         self.begin('integration', 'adopt', branch='main', into='main')
         worktree = self.integrate('source')
-        args = type('Args', (), {'repo': str(self.repo), 'task': 'source'})()
+        args = type('Args', (), {'repo': str(self.repo), 'task': 'source',
+            'users_released': True, 'result_ref': 'https://example.invalid/saved-result'})()
         real_git = management.git
         children = []
         def interleave(repo, *argv, **kwargs):
@@ -376,8 +563,9 @@ class RecoveryTests(BranchManagementTests):
         self.begin('integration', 'adopt', branch='main', into='main')
         worktree = self.integrate('locked')
         self.git('worktree', 'lock', '--reason', 'dependency', str(worktree))
+        self.branch('retire', '--request', '--task', 'locked')
         shutil.rmtree(worktree)
-        self.assertIn('metadata remains', self.branch('retire', '--task', 'locked', ok=False).stderr)
+        self.assertIn('disappeared', self.branch('retire', '--task', 'locked', ok=False).stderr)
         self.assertIn('locked', self.read_state()['tasks'])
         self.assertIn(str(worktree).replace(chr(92), '/'),
                       self.git('worktree', 'list', '--porcelain').stdout.replace(chr(92), '/'))
