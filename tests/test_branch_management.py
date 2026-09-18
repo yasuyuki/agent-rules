@@ -64,6 +64,8 @@ class BranchManagementTests(unittest.TestCase):
     def branch(self, *argv, repo=None, ok=True):
         repo = self.repo if repo is None else Path(repo)
         remote = ("--remote", "origin") if argv[0] == "install" else ()
+        if argv[0] == 'retire' and '--pending' not in argv:
+            argv = (*argv, '--users-released', '--result-ref', 'https://example.invalid/saved-fixture-result')
         return self.command(sys.executable, str(PLACE), "branch", *argv,
                             "--repo", str(repo), *remote, ok=ok)
 

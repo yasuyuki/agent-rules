@@ -23,6 +23,7 @@ import importlib.util
 import json
 import os
 import re
+import signal
 import shutil
 import stat
 import subprocess
@@ -1697,6 +1698,183 @@ def exec_native(argv, *, cwd=None, env=None):
         raise PlacementError("could not execute vendor: %s" % exc) from None
 
 
+def retirement_context(workspaces, site_id, cwd):
+    """Resolve only declared repositories; never search a drive for cleanup."""
+    candidates = [Path(w['path']).resolve() for w in workspaces.values()
+                  if w['site'] == site_id and w.get('kind') == 'direct']
+    cwd = Path(cwd).resolve()
+    parents = [p for p in candidates if p == cwd or p in cwd.parents]
+    if not parents:
+        return None, [], None
+    scope = min(parents, key=lambda p: len(p.parts))
+    candidates = [p for p in candidates if p == scope or scope in p.parents]
+    candidates += [p for p in (cwd, *cwd.parents) if p == scope or scope in p.parents]
+    module_spec = importlib.util.spec_from_file_location('retirement_branches', HERE / 'branch_management.py')
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    repositories, seen = [], set()
+    for path in dict.fromkeys(candidates):
+        if not (path / '.git').exists():
+            continue
+        directory = module.common(path).resolve()
+        if directory in seen or not (directory / 'agent-branches/state.json').is_file():
+            continue
+        seen.add(directory)
+        repositories.append(path)
+    return module, repositories, scope
+
+
+def retirement_notice(result):
+    if result.get('retired') or result.get('pending') or result.get('ok') is False:
+        print('worktree retirement: ' + json.dumps(result, ensure_ascii=True), file=sys.stderr)
+
+
+def wait_registered_child(argv, kwargs, branches, lease):
+    """Own the vendor until exit, preserving its terminal and signal delivery."""
+    previous = {}
+    terminal = None
+    foreground = None
+    child = None
+    windows_job = None
+    windows_job_name = None
+    lease['_children_released'] = False
+    try:
+        options = dict(kwargs)
+        if os.name == 'posix':
+            options['preexec_fn'] = os.setpgrp
+            try:
+                terminal = os.open('/dev/tty', os.O_RDWR)
+                foreground = os.tcgetpgrp(terminal)
+            except OSError:
+                if terminal is not None:
+                    os.close(terminal)
+                terminal = None
+            forwarded = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
+            def forward(number, _frame):
+                if child is not None:
+                    try:
+                        os.killpg(child.pid, number)
+                    except ProcessLookupError:
+                        pass
+            for number in (*forwarded, signal.SIGTTOU):
+                previous[number] = signal.signal(number, signal.SIG_IGN if number == signal.SIGTTOU else forward)
+        else:
+            # A non-killing job tracks the vendor's whole process tree. Merely
+            # seeing the leader exit is not evidence that Windows handles closed.
+            import ctypes
+            from ctypes import wintypes
+            kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+            kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+            kernel.CreateJobObjectW.restype = wintypes.HANDLE
+            kernel.GetCurrentProcess.restype = wintypes.HANDLE
+            kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+            kernel.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                       ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p]
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            windows_job_name = 'Local\\agent-rules-retirement-' + lease['token']
+            windows_job = kernel.CreateJobObjectW(None, windows_job_name)
+            if (not windows_job or ctypes.get_last_error() == 183 or
+                    not kernel.AssignProcessToJobObject(windows_job, kernel.GetCurrentProcess())):
+                raise PlacementError('cannot track managed Windows child processes: ' + str(ctypes.get_last_error()))
+            options['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
+        child = subprocess.Popen(argv, **options)
+        branches.attach_worktree_child(lease, child.pid,
+                                      process_group=child.pid if os.name == 'posix' else None,
+                                      windows_job=windows_job_name)
+        if os.name != 'posix':
+            while True:
+                try:
+                    code = child.wait()
+                    class Accounting(ctypes.Structure):
+                        _fields_ = [('user', ctypes.c_longlong), ('kernel', ctypes.c_longlong),
+                                    ('period_user', ctypes.c_longlong), ('period_kernel', ctypes.c_longlong),
+                                    ('faults', wintypes.DWORD), ('total', wintypes.DWORD),
+                                    ('active', wintypes.DWORD), ('terminated', wintypes.DWORD)]
+                    accounting = Accounting()
+                    while True:
+                        if not kernel.QueryInformationJobObject(windows_job, 1, ctypes.byref(accounting),
+                                                               ctypes.sizeof(accounting), None):
+                            raise PlacementError('cannot verify managed Windows descendants: ' + str(ctypes.get_last_error()))
+                        if accounting.active == 1:
+                            lease['_children_released'] = True
+                            return code
+                        # Retain the last named-job handle until every descendant
+                        # exits. Closing it early makes future liveness unknown.
+                        time.sleep(0.1)
+                except KeyboardInterrupt:
+                    child.send_signal(signal.CTRL_BREAK_EVENT)
+        if terminal is not None:
+            os.tcsetpgrp(terminal, child.pid)
+            os.killpg(child.pid, signal.SIGCONT)
+        while True:
+            _pid, status = os.waitpid(child.pid, os.WUNTRACED | os.WCONTINUED)
+            if os.WIFCONTINUED(status):
+                continue
+            if os.WIFSTOPPED(status):
+                if terminal is not None:
+                    os.tcsetpgrp(terminal, foreground)
+                os.kill(os.getpid(), signal.SIGSTOP)
+                if terminal is not None:
+                    os.tcsetpgrp(terminal, child.pid)
+                os.killpg(child.pid, signal.SIGCONT)
+                continue
+            child.returncode = os.waitstatus_to_exitcode(status)
+            lease['_children_released'] = True  # Engine also checks the process group.
+            return child.returncode
+    finally:
+        if child is None:
+            lease['_children_released'] = True
+        if windows_job is not None:
+            kernel.CloseHandle(windows_job)
+        if terminal is not None:
+            try:
+                os.tcsetpgrp(terminal, foreground)
+            finally:
+                os.close(terminal)
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
+def run_registered(argv, kwargs, runner, workspaces, site_id, cwd):
+    branches, repositories, scope = retirement_context(workspaces, site_id, cwd)
+    if branches is None or not repositories:
+        return runner(argv, **kwargs).returncode
+    try:
+        for repo in repositories:
+            retirement_notice(branches.retry_pending(repo, workspace=scope))
+        # A linked checkout may share a common dir with an earlier declaration.
+        # Resolve the actual cwd again instead of choosing its enclosing repo.
+        root = branches.git(cwd, 'rev-parse', '--show-toplevel', optional=True)
+        selected = Path(root) if root else None
+        if selected is not None and not (branches.common(selected) / 'agent-branches/state.json').is_file():
+            selected = None
+        lease = branches.acquire_worktree_lease(selected, cwd) if selected else None
+        if lease is None:
+            return runner(argv, **kwargs).returncode
+        code = None
+        result = None
+        try:
+            if runner in (subprocess.run, exec_native):
+                code = wait_registered_child(argv, kwargs, branches, lease)
+            else:
+                code = runner(argv, **kwargs).returncode
+                lease['_children_released'] = True
+        finally:
+            # The launcher itself must release its directory handle before retire.
+            os.chdir(branches.main_worktree(selected))
+            result = branches.finish_worktree_lease(lease, child_exited=lease.get('_children_released', False),
+                                                     workspace=scope)
+            retirement_notice(result)
+        if code == 0 and (result.get('ok') is False or result.get('pending')):
+            return 1
+        if code is not None and code < 0 and runner is exec_native and os.name == 'posix':
+            signal.signal(-code, signal.SIG_DFL)
+            os.kill(os.getpid(), -code)
+        return code
+    except branches.BranchError as exc:
+        raise PlacementError('worktree retirement: ' + str(exc)) from None
+
+
 def _start(args, runner=subprocess.run, resolver=shutil.which, configured_host=None):
     context = load_context(args)
     placement, rules, sites, workspaces, locations, exceptions, _selected, skills = context
@@ -1755,7 +1933,8 @@ def _start(args, runner=subprocess.run, resolver=shutil.which, configured_host=N
         kwargs["env"] = os.environ.copy()
     tool_args = (anchored_native_args(args.tool, args.tool_args, actual_cwd, has_override)
                  if actual_cwd is not None else args.tool_args)
-    return runner([entrypoint, *tool_args], **kwargs).returncode
+    return run_registered([entrypoint, *tool_args], kwargs, runner, workspaces, site_id,
+                          actual_cwd if actual_cwd is not None else workspace['path'])
 
 
 def receive_handoff(workspace, *, independent=False):
