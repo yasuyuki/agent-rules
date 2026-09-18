@@ -103,6 +103,71 @@ class RecoveryTests(BranchManagementTests):
         self.assertTrue(management.retire(self.retirement_args('legacy'))['retired'])
         self.assertFalse(path.exists())
 
+    def test_migration_preserves_old_sync_evidence_and_verifies_only_retirement(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        path = self.integrate('old-sync')
+        state = self.read_state()
+        task = state['tasks']['old-sync']
+        operation = {'id': 'old-hook-sync', 'kind': 'sync', 'task': 'old-sync',
+                     'source': task['tip'], 'before': {'head': task['base'], 'branch': task['branch']},
+                     'git_exit': None}
+        state.setdefault('operations', {})[task['branch']] = operation
+        self.write_state(state)
+        args = self.retirement_args('old-sync', maintenance=True, consumer=[str(self.repo)],
+            expect_worktree=str(path), expect_tip=task['tip'], base=task['base'],
+            integration_commit=task['integrated']['commit'])
+        with self.assertRaisesRegex(management.BranchError, 'unfinished Git operation'):
+            management.retirement_checks(self.repo, state, 'old-sync')
+        blocker = path / 'personal-data'
+        blocker.write_text('preserve')
+        with self.assertRaises(management.BranchError):
+            management.migrate_retirement(args)
+        self.assertEqual(blocker.read_text(), 'preserve')
+        blocker.unlink()
+        marker = Path(self.git_at(path, 'rev-parse', '--path-format=absolute', '--git-path', 'MERGE_HEAD').stdout.strip())
+        marker.write_text(task['base'] + '\n')
+        with self.assertRaisesRegex(management.BranchError, 'markers'):
+            management.migrate_retirement(args)
+        marker.unlink()
+        lease = management.acquire_worktree_lease(self.repo, path)
+        with self.assertRaisesRegex(management.BranchError, 'session'):
+            management.migrate_retirement(args)
+        management.finish_worktree_lease(lease)
+        state = self.read_state()
+        state['permits'][task['branch']] = {'kind': 'import', 'old': task['base'], 'new': task['tip']}
+        self.write_state(state)
+        with self.assertRaisesRegex(management.BranchError, 'in-flight'):
+            management.migrate_retirement(args)
+        state['permits'].pop(task['branch'])
+        state['operations'][task['branch']]['source'] = task['base']
+        self.write_state(state)
+        with self.assertRaisesRegex(management.BranchError, 'unfinished operation'):
+            management.migrate_retirement(args)
+        state['operations'][task['branch']]['source'] = task['tip']
+        self.write_state(state)
+        self.assertTrue(management.migrate_retirement(args)['migrated'])
+        state = self.read_state()
+        receipt = state['operations'][task['branch']]
+        self.assertNotIn('completed', receipt)
+        self.assertNotIn('attempt', receipt)
+        self.assertIsNone(receipt['git_exit'])
+        receipt['task'] = 'different-work'
+        self.write_state(state)
+        self.assertFalse(management.retire(self.retirement_args('old-sync'))['ok'])
+        self.assertTrue(path.exists())
+        state = self.read_state()
+        receipt = state['operations'][task['branch']]
+        receipt['task'] = 'old-sync'
+        receipt['source'] = task['base']
+        self.write_state(state)
+        self.assertFalse(management.retire(self.retirement_args('old-sync'))['ok'])
+        self.assertTrue(path.exists())
+        state = self.read_state()
+        state['operations'][task['branch']]['source'] = task['tip']
+        self.write_state(state)
+        self.assertTrue(management.retire(self.retirement_args('old-sync'))['retired'])
+        self.assertFalse(path.exists())
+
     def test_retirement_unknown_crashed_launch_remains_pending(self):
         self.begin('integration', 'adopt', branch='main', into='main')
         path = self.integrate('crashed')

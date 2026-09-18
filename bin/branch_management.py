@@ -678,6 +678,15 @@ def begin(args):
     return output
 
 
+def retirement_operation_identity(task, key, operation):
+    return {'task': key, 'branch': task['branch'], 'tip': task['tip'],
+            'operation_task': operation.get('task'),
+            'id': operation.get('id'), 'kind': operation.get('kind'),
+            'source': operation.get('source'),
+            'before_branch': operation.get('before', {}).get('branch'),
+            'before_head': operation.get('before', {}).get('head')}
+
+
 def retirement_checks(repo, state, key, *, requesting=False):
     """Everything that must hold before a finished registration is closed.
 
@@ -719,12 +728,16 @@ def retirement_checks(repo, state, key, *, requesting=False):
             or any(pick.startswith(name + ':') for pick in state['picks'])):
         raise BranchError('in-flight permit or prepared integration; finish or retry it first')
     operation = state.get('operations', {}).get(name)
-    if operation and not operation.get('completed') and not operation.get('preflight_rejected'):
+    if (operation and not operation.get('completed') and not operation.get('preflight_rejected')
+            and (operation.get('separate_changes')
+                 or operation.get('retirement_verified') != retirement_operation_identity(task, key, operation))):
         raise BranchError('unfinished Git operation evidence remains; resolve it before retirement')
     if os.path.lexists(path):
         retirement_identity(path)
         if not same_checkout(repo, path, name):
             raise BranchError('registered worktree has changed')
+        if work_snapshot(path)['markers']:
+            raise BranchError('active Git operation markers remain; preserve and finish the operation')
         if git(path, 'status', '--porcelain', '--untracked-files=all', '--ignored'):
             raise BranchError('checkout has uncommitted, untracked or ignored files; preserve and inspect')
     return task
@@ -1121,6 +1134,29 @@ def migrate_retirement(args):
         if active_leases(task):
             raise BranchError('managed session still holds migration checkout')
         retirement_contents(path)
+        if work_snapshot(path)['markers']:
+            raise BranchError('active Git operation markers prevent retirement migration')
+        name = task['branch']
+        if (state['permits'].get(name) or state['merges'].get(name)
+                or any(ticket['task'] == args.task for ticket in state['merges'].values())
+                or any(pick.startswith(name + ':') for pick in state['picks'])):
+            raise BranchError('in-flight permission prevents retirement migration')
+        operation = state.get('operations', {}).get(name)
+        if operation and not operation.get('completed') and not operation.get('preflight_rejected'):
+            # Older hook clients could consume a sync permit and update the
+            # registered tip without recording the newer operation receipt.
+            # Attest only retirement of this exact, clean, integrated checkout;
+            # retain the original operation evidence and unknown Git exit.
+            if (not isinstance(operation.get('id'), str) or not operation['id']
+                    or operation.get('kind') != 'sync' or operation.get('source') != task['tip']
+                    or operation.get('task') != args.task or operation.get('separate_changes')
+                    or operation.get('before', {}).get('branch') != name
+                    or not ancestor(repo, operation.get('before', {}).get('head', ''), task['tip'])):
+                raise BranchError('unfinished operation cannot be verified for retirement')
+            receipt = retirement_operation_identity(task, args.task, operation)
+            if operation.get('retirement_verified') not in (None, receipt):
+                raise BranchError('retirement operation receipt changed; preserve evidence')
+            operation['retirement_verified'] = receipt
         record = next((item for item in worktree_records(repo) if item['worktree'] == path), None)
         if record is None:
             raise BranchError('migration worktree is not registered with Git')
