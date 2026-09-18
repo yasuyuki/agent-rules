@@ -402,6 +402,10 @@ set, including the primary repository; also pass `--maintenance`,
 `--users-released` and `--result-ref`. The command verifies the exact two-parent
 integration and consumer bindings before admitting retirement and unlocking only
 its own dependency lock. Unknown consumers and user locks remain protected.
+An older hook's consumed sync without a completion receipt can be admitted only
+when the exact source is integrated, the checkout is clean and no Git operation
+or session remains. Migration records a separate retirement attestation; it does
+not rewrite the old operation's completion or unknown Git exit.
 Then use the same retire request/retry path. Never edit the registry or unlock a
 dependency by hand. Ignored files, nested repositories, links and unfinished Git
 operations must be resolved separately while preserving user data and evidence.
