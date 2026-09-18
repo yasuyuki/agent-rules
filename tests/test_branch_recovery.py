@@ -17,6 +17,69 @@ spec.loader.exec_module(management)
 
 
 class RecoveryTests(BranchManagementTests):
+    def test_next_sync_preserves_old_hook_observation_without_inventing_completion(self):
+        self.begin('integration', 'adopt', branch='main', into='main')
+        topic = Path(self.begin('topic', branch='topic')['worktree'])
+        self.publish_topic_update(topic)
+        self.branch('begin', '--mode', 'continue', '--task', 'topic', '--sync', repo=topic)
+        self.git_at(topic, 'merge', '--ff-only', 'origin/topic')
+        state = self.read_state()
+        old = state['operations']['topic']
+        old.pop('completed')
+        old.pop('attempt')
+        state['operations']['topic'] = old
+        self.write_state(state)
+        saved = json.loads(json.dumps(old))
+        publisher = self.root / 'publisher remote'
+        (publisher / 'next').write_text('next remote revision')
+        self.git_at(publisher, 'add', 'next')
+        self.git_at(publisher, 'commit', '-m', 'next remote revision')
+        self.git_at(publisher, 'push', 'origin', 'topic')
+        self.git_at(topic, 'fetch', 'origin')
+        for field, value in [('task', 'different-task'), ('attempt', {'status': 'rejected'}),
+                             ('retirement_verified', {'task': 'topic'}),
+                             ('separate_changes', ['personal-data'])]:
+            with self.subTest(field=field):
+                state['operations']['topic'] = dict(saved, **{field: value})
+                self.write_state(state)
+                self.branch('begin', '--mode', 'continue', '--task', 'topic', '--sync', repo=topic, ok=False)
+                self.assertEqual(self.read_state()['operations']['topic'], state['operations']['topic'])
+        state['operations']['topic'] = saved
+        self.write_state(state)
+        state['tasks']['topic']['retirement'] = {'tip': saved['source']}
+        self.write_state(state)
+        self.branch('begin', '--mode', 'continue', '--task', 'topic', '--sync', repo=topic, ok=False)
+        self.assertEqual(self.read_state()['operations']['topic'], saved)
+        state['tasks']['topic'].pop('retirement')
+        self.write_state(state)
+        (topic / 'personal-data').write_text('preserve')
+        self.branch('begin', '--mode', 'continue', '--task', 'topic', '--sync', repo=topic, ok=False)
+        self.assertEqual((topic / 'personal-data').read_text(), 'preserve')
+        self.assertEqual(self.read_state()['operations']['topic'], saved)
+        (topic / 'personal-data').unlink()
+        state['permits']['topic'] = {'kind': 'import', 'old': old['before']['head'], 'new': old['source']}
+        self.write_state(state)
+        self.branch('begin', '--mode', 'continue', '--task', 'topic', '--sync', repo=topic, ok=False)
+        state['permits'].pop('topic')
+        self.write_state(state)
+        for mapping, key, value in [('picks', 'topic:' + old['source'], {'commit': old['source']}),
+                                    ('merges', 'main', {'task': 'topic'})]:
+            with self.subTest(mapping=mapping):
+                state[mapping][key] = value
+                self.write_state(state)
+                self.branch('begin', '--mode', 'continue', '--task', 'topic', '--sync', repo=topic, ok=False)
+                self.assertEqual(self.read_state()['operations']['topic'], saved)
+                state[mapping].pop(key)
+        self.write_state(state)
+        self.branch('begin', '--mode', 'continue', '--task', 'topic', '--sync', repo=topic)
+        self.assertEqual(self.read_state()['operations']['topic']['prior_sync_observation'], saved)
+        self.git_at(topic, 'merge', '--ff-only', 'origin/topic')
+        current = self.read_state()['operations']['topic']
+        self.assertEqual(current['prior_sync_observation'], saved)
+        self.assertEqual(current['completed'], self.git_at(topic, 'rev-parse', 'HEAD').stdout.strip())
+        self.assertNotIn('completed', current['prior_sync_observation'])
+        self.assertIsNone(current['prior_sync_observation']['git_exit'])
+
     def retirement_args(self, task, **extra):
         return type('Args', (), dict(repo=str(self.repo), task=task,
             users_released=True, result_ref='https://example.invalid/saved-result', **extra))()
