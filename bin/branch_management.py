@@ -1550,6 +1550,25 @@ def prepare_operation(repo, directory, state, task, kind, source, inputs, *, res
         raise BranchError('operation source/checkout changed during preparation')
     previous = state.get('operations', {}).get(task['branch'])
     dirty = {name: before[name] for name in ('staged', 'unstaged', 'untracked') if before[name]}
+    # Older hooks advanced the registered tip without a completion receipt.
+    # A fresh same-branch sync may start from that exact clean source commit;
+    # retain the old observation verbatim, including its unknown Git exit.
+    prior_sync = None
+    if (kind == 'sync' and previous and previous.get('kind') == 'sync'
+            and not previous.get('completed') and not previous.get('preflight_rejected')
+            and not previous.get('retirement_verified') and not task.get('retirement')
+            and previous.get('id') and previous.get('task') == task_for(state, task['branch'])[0]
+            and previous.get('source') == before['head'] and source != before['head']
+            and previous.get('before', {}).get('branch') == task['branch']
+            and previous.get('before', {}).get('head')
+            and ancestor(repo, previous['before']['head'], before['head'])
+            and not previous.get('attempt') and not previous.get('separate_changes')
+            and not dirty and not before['markers']
+            and not state['permits'].get(task['branch']) and not state['merges'].get(task['branch'])
+            and not any(ticket['task'] == task_for(state, task['branch'])[0]
+                        for ticket in state['merges'].values())
+            and not any(key.startswith(task['branch'] + ':') for key in state['picks'])):
+        prior_sync, previous = previous, None
     if (previous and not previous.get('completed') and not previous.get('preflight_rejected')
             and not (not before['markers'] and before['head'] == previous['before']['head']
                      and before['index'] == previous['before']['index']
@@ -1569,6 +1588,8 @@ def prepare_operation(repo, directory, state, task, kind, source, inputs, *, res
               'expected': inputs['expected'], 'conflicts': inputs['conflicts'],
               'prepared_at': datetime.now(timezone.utc).isoformat(), 'git_exit': None,
               'snapshot_scope': 'active-operation-authorization' if resume else 'before-git-operation'}
+    if prior_sync is not None:
+        record['prior_sync_observation'] = prior_sync
     if resume:
         allowed = {'MERGE_HEAD'} if kind == 'merge' else {'CHERRY_PICK_HEAD', 'sequencer'}
         if operation_changes(record, before, final=True) or set(before['markers']) - allowed:
