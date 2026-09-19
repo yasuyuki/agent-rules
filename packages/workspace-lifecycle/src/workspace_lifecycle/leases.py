@@ -28,7 +28,7 @@ def _paths(repo, task):
 
 
 @contextmanager
-def _lock(path):
+def _lock(path, blocking=False):
     with path.open('a+b') as stream:
         if os.name == 'nt':
             import msvcrt
@@ -37,13 +37,13 @@ def _lock(path):
                 stream.flush()
             stream.seek(0)
             try:
-                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK, 1)
             except OSError as exc:
                 raise ValueError('task is in use by another lifecycle operation') from exc
         else:
             import fcntl
             try:
-                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(stream, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
             except BlockingIOError as exc:
                 raise ValueError('task is in use by another lifecycle operation') from exc
         try:
@@ -57,16 +57,33 @@ def _lock(path):
 
 
 def _save(path, value):
-    fd, temporary = tempfile.mkstemp(dir=path.parent)
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
-            json.dump(value, stream, sort_keys=True)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+    # Windows readers otherwise deny the atomic destination replacement. Keep
+    # receipt I/O separate from the use lease held for the entire process tree.
+    with _lock(path.with_suffix('.io.lock'), blocking=True):
+        fd, temporary = tempfile.mkstemp(dir=path.parent)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+                json.dump(value, stream, sort_keys=True)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+
+def _read(path):
+    with _lock(path.with_suffix('.io.lock'), blocking=True):
+        try:
+            with path.open(encoding='utf-8') as stream:
+                return json.load(stream)
+        except FileNotFoundError:
+            return None
+
+
+def _remove(path):
+    with _lock(path.with_suffix('.io.lock'), blocking=True):
+        path.unlink()
 
 
 @contextmanager
@@ -74,7 +91,7 @@ def guard(repo, task, allow_use=False):
     """Serialize mutations, admitting only the owning supervised session when allowed."""
     lock, receipt = _paths(repo, task)
     with _lock(lock.with_suffix('.mutation.lock')):
-        record = json.loads(receipt.read_text(encoding='utf-8')) if receipt.exists() else None
+        record = _read(receipt)
         own_use = (allow_use and record is not None
                    and os.environ.get('WORKSPACE_LIFECYCLE_USE') == record['token']
                    and _identity(record['owner_pid']) == record['owner_identity'])
@@ -89,7 +106,7 @@ def guard(repo, task, allow_use=False):
 
 def status(repo, task):
     lock, receipt = _paths(repo, task)
-    record = json.loads(receipt.read_text(encoding='utf-8')) if receipt.exists() else None
+    record = _read(receipt)
     try:
         with _lock(lock):
             busy = False
@@ -329,7 +346,7 @@ def run(repo, task, argv, cwd, before_spawn=None):
             for number, handler in previous.items():
                 signal.signal(number, handler)
             if complete:
-                receipt.unlink()
+                _remove(receipt)
             if close_job is not None:
                 close_job()
 
@@ -340,7 +357,9 @@ def release(repo, task, token, evidence):
     if not isinstance(evidence, str) or not evidence.strip():
         raise ValueError('external user release evidence is required')
     with _lock(lock):
-        record = json.loads(receipt.read_text(encoding='utf-8'))
+        record = _read(receipt)
+        if record is None:
+            raise ValueError('lease receipt no longer exists')
         if record['token'] != token:
             raise ValueError('lease identity changed')
         if _identity(record['owner_pid']) == record['owner_identity']:
@@ -355,4 +374,4 @@ def release(repo, task, token, evidence):
         # explicit evidence. Never infer release from inability to open a job.
         record['release_evidence'] = evidence
         _save(receipt.with_suffix('.released.json'), record)
-        receipt.unlink()
+        _remove(receipt)

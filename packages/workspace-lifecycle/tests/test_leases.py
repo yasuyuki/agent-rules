@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from workspace_lifecycle import leases
 
@@ -64,6 +65,27 @@ class LeaseTests(unittest.TestCase):
         with leases.guard(self.repo, 'task'):
             pass
 
+    def test_receipt_reader_serializes_atomic_replacement(self):
+        receipt = self.repo / 'receipt.json'
+        leases._save(receipt, {'generation': 'old'})
+        load = json.load
+        writers = []
+        def start_writer_while_reading(stream):
+            code = ('from workspace_lifecycle.leases import _save; from pathlib import Path; import sys; '
+                    'print("ready",flush=True); _save(Path(sys.argv[1]), {"generation":"new"})')
+            writer = subprocess.Popen([sys.executable, '-c', code, str(receipt)],
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            writers.append(writer)
+            self.addCleanup(self.stop, writer)
+            self.assertEqual(writer.stdout.readline(), b'ready\n')
+            self.assertIsNone(writer.poll())
+            return load(stream)
+        with patch.object(leases.json, 'load', side_effect=start_writer_while_reading):
+            self.assertEqual(leases._read(receipt), {'generation': 'old'})
+        _, stderr = writers[0].communicate(timeout=15)
+        self.assertEqual(writers[0].returncode, 0, stderr.decode())
+        self.assertEqual(leases._read(receipt), {'generation': 'new'})
+
     def test_grandchild_outlives_leader_and_keeps_retirement_blocked(self):
         gate = self.repo / 'descendant'
         grandchild = 'import pathlib,time; p=pathlib.Path("descendant"); p.write_text("ready");\nwhile p.exists(): time.sleep(.02)'
@@ -97,6 +119,7 @@ class LeaseTests(unittest.TestCase):
         script = 'import pathlib,time; p=pathlib.Path("gate"); p.write_text("ready");\nwhile p.exists(): time.sleep(.02)'
         child = self.supervisor(script)
         self.until(gate.exists)
+        self.until(lambda: 'child_pid' in (leases.status(self.repo, 'task')['receipt'] or {}))
         token = leases.status(self.repo, 'task')['receipt']['token']
         child.kill()
         child.wait(timeout=10)
@@ -122,6 +145,8 @@ class LeaseTests(unittest.TestCase):
         self.until(gate.exists)
         try:
             receipt = leases.status(self.repo, 'task')['receipt']
+            if child.poll() is not None:
+                self.fail('supervisor exited with live child: ' + child.stderr.read().decode())
             with self.assertRaises(ValueError):
                 leases.release(self.repo, 'task', receipt['token'], 'claimed release')
             self.assertIsNone(child.poll())
