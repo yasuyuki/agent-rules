@@ -42,6 +42,7 @@ alone does not update a running environment.
 
 - [User manual](docs/manual.md): source selection, ownership and migration boundaries.
 - [Development and CI](docs/ci.md): build and verification.
+- [Workspace lifecycle guide](packages/workspace-lifecycle/README.md): independent task, finish, integration and retirement contract.
 - [Optional necessity hooks](docs/necessity-hooks.md): separate checkout-only tooling.
 
 MIT. See [LICENSE](LICENSE).

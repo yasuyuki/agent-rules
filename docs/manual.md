@@ -337,151 +337,19 @@ adapter's dependencies, authentication and restrictions. Malformed adapters fail
 before collection; response errors remain isolated to their platform.
 [CI evidence](ci.md#agent-report-observation) records the limited live validation.
 
-## Registered Git work
+## Workspace lifecycle
 
-Branch management links a work request to a topic and worktree, enforces normal
-integration and retains evidence of refused or interrupted operations. It requires
-Python 3.10+, Git 2.31+ for hook installation, and Git for Windows' shell on
-Windows. Merge-result preparation additionally needs the Git `merge-tree`
-capabilities checked by the command. Keep its reviewed source and Python runtime
-available for installed hooks.
+The independent [workspace lifecycle guide](../packages/workspace-lifecycle/README.md)
+documents the current task and worktree contract. It owns only state Git cannot
+recover: task identity, dependencies, acceptance, holds, retirement requests and
+process-use leases. Git remains the source of truth for worktree, branch, HEAD,
+upstream, lock, merge and removal operations.
 
-Use `python bin/place.py branch --help` for the operation index and each operation's
-help for arguments. Install with `branch install --repo REPO --remote REMOTE`;
-it preserves compatible existing hooks and refuses unknown collisions. Reinstall
-from a reviewed checkout to rebind source/runtime or repair packing settings.
-Before updating the source that supplies its own hooks, rebind from a separate
-reviewed source. A changed dispatcher needs reviewed migration, not overwriting.
-
-Choose work by its request, not branch age or name:
-
-| Need | Existing operation |
-| --- | --- |
-| Start independent work from the fetched remote default | `branch begin --mode new` |
-| Start work depending on an unfinished task | Add `--depends-on` to new work |
-| Register existing integration/topic history | `branch begin --mode adopt`, with its reviewed historical `--base` and integration destination |
-| Adopt a fetched remote-only branch into an absent path | Add `--from-remote` to adopt; continuation keeps the original registered tip |
-| Resume the same unfinished task | `branch begin --mode continue` |
-| Import an update of that same remote branch | Continue with `--sync`, then `git merge --ff-only REMOTE/BRANCH` |
-| Diagnose a refusal or interruption without changing state | `branch check --repo REPO --json` |
-| Remove an integrated worktree/registration, retaining history | `branch retire --repo REPO --task TASK` |
-
-Each worktree has one lead for Git updates. Fetch before starting independent
-work; new worktrees use absolute paths. The default branch is an integration
-destination, not a direct-development branch. Register it with itself as its
-destination when adopting an existing checkout. Another clone must register the
-same request against its own remote history; operation permissions are not portable.
-
-To integrate, run `branch prepare-merge --repo DESTINATION --task SOURCE_TASK`,
-then in that destination run `git merge --no-ff --no-commit SOURCE_BRANCH`.
-Verify the combined tree before committing. Parent work must be integrated first,
-unless the child integrates directly into that parent. Changed tips require fresh
-preparation; an outstanding operation must be resolved before replacing its baseline.
-
-Fresh operations require clean staged/unstaged/untracked state and refuse ignored
-collisions. After failure, inspect the existing operation with `branch check`;
-its outcome and next action preserve what is known, not an invented Git exit
-status. Retry through the same entry after resolving the reported cause. No
-automatic reset, stash, clean, abort or source replacement repairs the operation.
-Only genuine conflict paths permit resolution edits; unrelated edits in an incoming
-file cannot borrow the merge's authorization. Unsupported filters, submodules,
-merge drivers and worktree conversions need separate handling.
-
-### Finish work and retire its checkout
-
-After saving results outside the checkout, completing integration, and releasing
-reviewers, editors and other users, the lead records the request through the
-existing branch entry. Use the actual registered task and saved result reference:
-
-```console
-python bin/place.py branch retire --repo REPO --task TASK --request --users-released --result-ref RESULT
-```
-
-`--request` durably records the current path, tip, integration and filesystem
-identity. It does not claim deletion. Without `--request`, the same command also
-attempts synchronous retirement from an outside checkout. A saved request can be
-retried with `branch retire --repo REPO --task TASK`; new requests require both
-the result reference and the explicit user-release assertion. HTTP(S) references
-must already be saved and checked by the lead; the command does not fetch them.
-Local result files must remain outside the target and exist at deletion time.
-
-Normal `start` and `standard-start` retry requested retirements before launching
-the vendor, using only registered Git repositories in declared local workspaces.
-They lease the actual checkout until the owned child and its descendants exit,
-then retry from the primary checkout. CLI exit alone never requests retirement.
-A pending request refuses a new session in the same checkout. Linux process
-groups and Windows named jobs protect managed children; arbitrary external
-editors still require the lead's release confirmation. A vendor that deliberately
-detaches from its managed process group requires separate release confirmation.
-
-The result distinguishes retired and pending tasks and gives the reason and any
-lease tokens. Cleanup failure makes an otherwise successful managed run fail.
-The maintenance equivalent is `branch retire --repo REPO --pending`; it processes
-only existing requests. `--workspace PATH` narrows that retry to one workspace.
-After a confirmed crash with unknown child state, the exact token can be released
-with `branch retire --repo REPO --task TASK --release-lease TOKEN --users-released
---result-ref RESULT`; live recorded processes/jobs still refuse release.
-
-Retirement verifies directory and Git-registration absence and unchanged retained
-branch/ref before removing the task. A crash between deletion and registry save
-resumes the recorded removal. Unknown tasks and directories that disappeared
-without a recorded removal intent are not assumed successful. There is no broad
-prune, force removal, branch deletion, or automatic ignored-file cleanup.
-
-For a historical adopted checkout, first rebind every source/runtime consumer
-through `branch install` using reviewed permanent sources. During a maintenance
-interval excluding concurrent installs, `branch migrate-retirement` takes one
-task, `--expect-worktree`, `--expect-tip`, its historical `--base`, and the exact
-`--integration-commit`. Repeat `--consumer REPO` for the complete checked consumer
-set, including the primary repository; also pass `--maintenance`,
-`--users-released` and `--result-ref`. The command verifies the exact two-parent
-integration and consumer bindings before admitting retirement and unlocking only
-its own dependency lock. Unknown consumers and user locks remain protected.
-An older hook's consumed sync without a completion receipt can be admitted only
-when the exact source is integrated, the checkout is clean and no Git operation
-or session remains. Migration records a separate retirement attestation; it does
-not rewrite the old operation's completion or unknown Git exit.
-For a subsequent same-branch `begin --mode continue --sync`, an old hook's
-observation may likewise be retained verbatim as `prior_sync_observation` when
-the registered clean HEAD is its exact source, with no reference attempt or
-remaining permission. This permits the new sync without declaring the old Git
-command successful; changed task identity or separate work is still refused.
-Then use the same retire request/retry path. Never edit the registry or unlock a
-dependency by hand. Ignored files, nested repositories, links and unfinished Git
-operations must be resolved separately while preserving user data and evidence.
-
-### Pushes and explicitly approved exceptions
-
-After committing, use the environment's canonical
-`python bin/push_preflight.py REPO`, passing its configured private `--policy`.
-The read-only command returns a decision, not a push side effect. Inspect
-`decision`, not exit zero; execute returned `push_argv` only for `push`. Resolve
-missing facts for `ask`, and retain the reason for `hold`. `--help` describes
-intent/temporary/OSS inputs; [push_preflight.py](../bin/push_preflight.py) owns
-policy ordering and destination selection.
-
-Default-branch automatic push grants belong in the owner's policy, using
-repository URLs or explicitly authorized private/OSS categories. Exclusions
-outweigh those grants. A public repository is not automatically OSS, and a WIP
-subject is not a temporary-save instruction. Never omit an unreadable policy or
-change remote, force-push or remove hooks to evade refusal.
-
-For a user-approved cherry-pick, register the exact source, destination and
-approval through `branch allow-cherry-pick`. Each source in a sequence needs its
-own permission; prior successful picks survive a later rejection. For explicitly
-requested tags, create the tag, register `branch allow-tag-push` with its full
-commit and approval reference, then push that exact tag to the registered remote.
-Permission is consumed before transport; failed transport or dry-run needs fresh
-registration under still-valid approval. Neither operation authorizes rewriting
-history, replacing/deleting remote tags, or publishing a release without approval.
-
-The guards prevent accidental misuse, not deliberate configuration tampering.
-Missing hooks are detected by the remaining checks, not magically executed.
-Git cannot distinguish pruning packed loose refs from deleting a branch, so the
-installation disables automatic reference packing. `git pack-refs --all --no-prune`
-is supported; repair changed packing settings by reinstalling the reviewed source.
-Existing native dependency locks are preserved across source rebinds. See
-[CI coverage](ci.md) for behavioral proof and its limits.
+The package is version `0.1.0` and is not published to PyPI. Installing it from
+its subdirectory does not adopt existing consumers, migrate a registry, rebind
+hooks, or deploy a live environment. Pinned legacy consumers remain on their
+existing interface until an explicit migration proves the boundary. A legacy
+registry is rejected rather than auto-migrated.
 
 ## Share current state across environments
 
