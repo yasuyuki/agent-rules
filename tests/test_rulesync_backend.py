@@ -59,7 +59,8 @@ class RulesyncBackendTest(unittest.TestCase):
         self.assertTrue((out / ".claude/rules/a.md").is_file())
         self.assertTrue((out / ".grok/skills/demo/SKILL.md").is_file())
         self.assertTrue((out / ".agents/skills/demo/reference.md").is_file())
-        self.assertTrue((out / ".agents/skills/demo/tool.sh").stat().st_mode & 0o111)
+        self.assertEqual((out / ".agents/skills/demo/tool.sh").stat().st_mode & 0o777,
+                         (self.src / "skills/demo/tool.sh").stat().st_mode & 0o777)
         self.assertTrue(backend.check(self.config, str(RULESYNC)))
         old_mtime = (out / "AGENTS.md").stat().st_mtime_ns
         self.assertFalse(self.apply())
