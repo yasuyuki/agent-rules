@@ -117,11 +117,16 @@ class LeaseTests(unittest.TestCase):
         self.assertFalse(leases.is_in_use(self.repo, 'task'))
 
     def test_release_requires_exact_receipt_and_cannot_release_live_owner(self):
-        child = self.supervisor('import time; time.sleep(2)')
-        self.until(lambda: leases.status(self.repo, 'task')['receipt'] is not None)
-        receipt = leases.status(self.repo, 'task')['receipt']
-        with self.assertRaises(ValueError):
-            leases.release(self.repo, 'task', receipt['token'], 'claimed release')
+        gate = self.repo / 'release-gate'
+        child = self.supervisor('import pathlib,time; p=pathlib.Path("release-gate"); p.write_text("ready");\nwhile p.exists(): time.sleep(.02)')
+        self.until(gate.exists)
+        try:
+            receipt = leases.status(self.repo, 'task')['receipt']
+            with self.assertRaises(ValueError):
+                leases.release(self.repo, 'task', receipt['token'], 'claimed release')
+            self.assertIsNone(child.poll())
+        finally:
+            gate.unlink(missing_ok=True)
         child.communicate(timeout=10)
         self.assertEqual(child.returncode, 0)
 
