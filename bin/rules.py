@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
-"""Render the canonical agent rules into each tool's effective path, and check
-that what is on disk is what the canonical source produces.
+"""Legacy declaration input and section helpers for pinned runtime consumers.
 
-    rules.py render <workspace>    write every rule to every tool path
-    rules.py verify <workspace>    compare disk against the canonical source
-
-One rule body is written once. Per-tool differences live in `<!-- binding: X -->`
-sections of the same file, so a diff between tools is visible in one place
-instead of being spread over several near-identical files.
+New project placement uses rulesync_backend; this module is not packaged.
 """
 
 import json
@@ -54,20 +48,6 @@ def selected_tools(meta, placement):
     if not names:
         return list(placement["tools"])
     return names
-
-
-def convention_ids_for(meta, placement):
-    seen = []
-    for tool in selected_tools(meta, placement):
-        spec = placement["tools"].get(tool)
-        if spec is None:
-            raise SystemExit("placement.json has no entry for tool '%s'" % tool)
-        for conv_id in spec["reads"]["rules"]:
-            if conv_id not in placement["conventions"]:
-                raise SystemExit("placement.json has no convention '%s'" % conv_id)
-            if conv_id not in seen:
-                seen.append(conv_id)
-    return seen
 
 
 def body_for_convention(meta, common, bindings, conv_id, placement):
@@ -183,30 +163,6 @@ def load_skill_dirs(skills_dirs):
     return skills
 
 
-def vendored_ids(skills_dirs):
-    """Skill ids recorded in a UPSTREAM.tsv as coming from someone else's repository.
-
-    A manifest that cannot be read says nothing about authorship, which is not
-    the same as saying nothing is vendored. Reading it as the latter republishes
-    someone else's skill under this maintainer's name, so a missing file or an
-    unexpected header stops the caller instead."""
-    ids = set()
-    for skills_dir in skills_dirs or []:
-        manifest = os.path.join(skills_dir, SKILL_MANIFEST)
-        if not os.path.isfile(manifest):
-            raise SystemExit("%s: %s is missing; authorship is unknown" % (skills_dir, SKILL_MANIFEST))
-        with open(manifest, encoding="utf-8") as handle:
-            lines = [line.rstrip("\r\n") for line in handle if line.strip()]
-        if not lines or tuple(lines[0].split("\t")) != SKILL_MANIFEST_HEADER:
-            raise SystemExit(
-                "%s: first line must be the header %s"
-                % (manifest, "\t".join(SKILL_MANIFEST_HEADER))
-            )
-        for line in lines[1:]:
-            ids.add(line.split("\t")[0].strip())
-    return ids
-
-
 def load_rule_dirs(placement, rules_dirs, *, allow_empty=False):
     rules, seen = [], set()
     for rules_dir in rules_dirs:
@@ -219,39 +175,6 @@ def load_rule_dirs(placement, rules_dirs, *, allow_empty=False):
     if not rules and not allow_empty:
         raise SystemExit("no rules found in %s" % rules_dirs)
     return rules
-
-
-def expected_files(rules, placement):
-    """(path, content) for every convention that writes one file per rule."""
-    out = {}
-    for meta, common, bindings in rules:
-        for conv_id in convention_ids_for(meta, placement):
-            spec = placement["conventions"][conv_id]
-            if spec.get("mode") == "section":
-                continue
-            body = body_for_convention(meta, common, bindings, conv_id, placement)
-            if spec.get("frontmatter"):
-                header = "".join(
-                    "%s: %s\n" % (key, meta["summary"] if value == "@summary" else value)
-                    for key, value in spec["frontmatter"].items()
-                )
-                body = "---\n%s---\n\n%s" % (header, body)
-            out[spec["path"].format(id=meta["id"])] = body
-    return out
-
-
-def expected_sections(rules, placement):
-    """(file, {id: content}) for conventions that splice sections into one shared file."""
-    out = {}
-    for meta, common, bindings in rules:
-        for conv_id in convention_ids_for(meta, placement):
-            spec = placement["conventions"][conv_id]
-            if spec.get("mode") != "section":
-                continue
-            out.setdefault(spec["path"], {})[meta["id"]] = body_for_convention(
-                meta, common, bindings, conv_id, placement
-            )
-    return out
 
 
 def splice(text, rule_id, body):
@@ -303,115 +226,91 @@ def managed_names(template):
     return directory, prefix, suffix
 
 
-def read(path):
-    if not os.path.exists(path):
-        return None
-    with open(path, encoding="utf-8") as handle:
-        return handle.read()
+def export_sources(sources, destination, targets, exclude_ids=(), global_mode=False, skills_sources=()):
+    """Convert selected legacy policy inputs once into native Rulesync sources.
 
-
-def write(path, content):
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w", encoding="utf-8", newline="\n") as handle:
-        handle.write(content)
-
-
-def convention_specs(placement):
-    """Rule conventions only. A `unit: dir` convention carries a skill tree, whose
-    managed names are directories; the prefix/suffix scan here would match every
-    entry in the tool's skills directory and delete unmanaged skills."""
-    return [spec for spec in placement["conventions"].values() if spec.get("unit") != "dir"]
-
-
-def main(argv):
-    if len(argv) != 3 or argv[1] not in ("render", "verify"):
-        raise SystemExit(__doc__)
-    command, workspace = argv[1], os.path.abspath(argv[2])
+    The destination must be new. Exported files are disposable build inputs,
+    never a second editable source or a generated consumer location.
+    """
+    from pathlib import Path
+    import shutil
+    import tempfile
+    target_tools = {"codexcli": "codex", "claudecode": "claude", "grokcli": "grok"}
+    if not targets or set(targets) - set(target_tools):
+        raise ValueError("select codexcli, claudecode and/or grokcli")
+    destination = Path(destination).absolute()
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("export destination must not exist")
     with open(PLACEMENT, encoding="utf-8") as handle:
         placement = json.load(handle)
-    rules = load_rules(placement)
-    files = expected_files(rules, placement)
-    sections = expected_sections(rules, placement)
-
-    if command == "render":
-        expected_paths = set(files)
-        for spec in convention_specs(placement):
-            template = spec.get("path", "")
-            if spec.get("mode") == "section" or "{id}" not in template:
+    rules = load_rule_dirs(placement, sources, allow_empty=True)
+    excluded = set(exclude_ids)
+    unknown = excluded - {meta["id"] for meta, _, _ in rules}
+    if unknown:
+        raise ValueError("unknown excluded rule ids: " + ", ".join(sorted(unknown)))
+    rules = [rule for rule in rules if rule[0]["id"] not in excluded]
+    skills = load_skill_dirs(skills_sources)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=destination.parent) as temporary:
+        root = Path(temporary) / "source"
+        (root / "rules").mkdir(parents=True)
+        for skill_id, tree in skills.items():
+            for relative, content in tree.items():
+                path = root / "skills" / skill_id / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+                if os.name != "nt":
+                    path.chmod(0o644 | getattr(content, "executable", 0))
+        for meta, common, bindings in rules:
+            allowed = selected_tools(meta, placement)
+            shared = [tool for tool in allowed if
+                      "agents-md-section" in placement["tools"][tool]["reads"]["rules"]]
+            active = [target for target in targets if
+                      target_tools[target] in allowed or
+                      (target in ("codexcli", "grokcli") and shared)]
+            if not active:
                 continue
-            relative_dir, prefix, suffix = managed_names(template)
-            directory = os.path.join(workspace, relative_dir)
-            if not os.path.isdir(directory):
-                continue
-            for name in os.listdir(directory):
-                relative = os.path.join(relative_dir, name).replace(os.sep, "/")
-                if name.startswith(prefix) and name.endswith(suffix) and relative not in expected_paths:
-                    os.remove(os.path.join(directory, name))
-        for relative, content in sorted(files.items()):
-            write(os.path.join(workspace, relative), content)
-        for relative, blocks in sorted(sections.items()):
-            path = os.path.join(workspace, relative)
-            text = read(path) or ""
-            require_balanced_markers(text, path)
-            text = remove_stale_sections(text, set(blocks))
-            for rule_id in sorted(blocks):
-                text = splice(text, rule_id, blocks[rule_id])
-            write(path, text)
-        print("rendered %d rules" % len(rules))
-        return 0
-
-    drift = []
-    for relative, content in sorted(files.items()):
-        actual = read(os.path.join(workspace, relative))
-        if actual is None:
-            drift.append("missing: %s" % relative)
-        elif actual != content:
-            drift.append("differs from canonical: %s" % relative)
-    expected_paths = set(files)
-    for spec in convention_specs(placement):
-        template = spec.get("path", "")
-        if spec.get("mode") == "section" or "{id}" not in template:
-            continue
-        relative_dir, prefix, suffix = managed_names(template)
-        directory = os.path.join(workspace, relative_dir)
-        if not os.path.isdir(directory):
-            continue
-        for name in sorted(os.listdir(directory)):
-            relative = os.path.join(relative_dir, name).replace(os.sep, "/")
-            if (
-                os.path.isfile(os.path.join(directory, name))
-                and name.startswith(prefix)
-                and name.endswith(suffix)
-                and relative not in expected_paths
-            ):
-                drift.append("unexpected managed rule: %s" % relative)
-    for relative, blocks in sorted(sections.items()):
-        text = read(os.path.join(workspace, relative))
-        if text is None:
-            drift.append("missing: %s" % relative)
-            continue
-        markers = list(MARKER.findall(text))
-        begins = [rule_id for kind, rule_id in markers if kind == "begin"]
-        ends = [rule_id for kind, rule_id in markers if kind == "end"]
-        for rule_id in sorted((set(begins) | set(ends)) - set(blocks)):
-            drift.append("unexpected section '%s' in %s" % (rule_id, relative))
-        for rule_id in sorted(set(begins) | set(ends)):
-            if begins.count(rule_id) != ends.count(rule_id):
-                drift.append("unpaired section marker '%s' in %s" % (rule_id, relative))
-        for rule_id in sorted(blocks):
-            actual = extract_all(text, rule_id)
-            if not actual:
-                drift.append("missing section '%s' in %s" % (rule_id, relative))
-            elif len(actual) > 1:
-                drift.append("duplicate section '%s' in %s" % (rule_id, relative))
-            elif actual[0] != blocks[rule_id]:
-                drift.append("section '%s' differs from canonical in %s" % (rule_id, relative))
-
-    for line in drift:
-        print(line)
-    print("separated" if not drift else "contaminated (%d)" % len(drift))
-    return 0 if not drift else 1
+            def emit(suffix, selected, body, root_rule=False):
+                header = "---\nroot: %s\ntargets: %s\n---\n" % (
+                    "true" if root_rule else "false", json.dumps(selected))
+                (root / "rules" / (meta["id"] + suffix + ".md")).write_text(
+                    header + body.strip() + "\n", encoding="utf-8", newline="\n")
+            # Grok reads CLAUDE.md as well as AGENTS.md. Keep Claude in its
+            # native rules directory; one target owns the shared AGENTS.md.
+            shared_targets = [target for target in active if target in ("codexcli", "grokcli")]
+            writer = "codexcli" if "codexcli" in shared_targets else "grokcli" if shared_targets else None
+            common_targets = [target for target in active if target in ("codexcli", "claudecode")]
+            body = "# " + meta["title"] + "\n\n" + common.strip()
+            if common_targets:
+                emit("-00", common_targets, body)
+            if "grokcli" in shared_targets and (global_mode or writer == "grokcli"):
+                emit("-00-grok", ["grokcli"], body, root_rule=True)
+            shared_body = "\n\n".join(bindings[tool].strip() for tool in shared if tool in bindings)
+            if writer and shared_body:
+                emit("-01-shared", [writer], shared_body, root_rule=writer == "grokcli")
+                if global_mode and writer == "codexcli" and "grokcli" in shared_targets:
+                    emit("-01-grok", ["grokcli"], shared_body, root_rule=True)
+            if "claudecode" in active and "claude" in bindings:
+                emit("-01-claude", ["claudecode"], bindings["claude"])
+        shutil.move(str(root), str(destination))
+    return len(rules)
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    import argparse
+    parser = argparse.ArgumentParser(description="Export explicit policy inputs to disposable native Rulesync source")
+    parser.add_argument("source", nargs="+", help="explicit directories containing canonical .rule.md files")
+    parser.add_argument("--dest", required=True, help="new disposable source directory")
+    parser.add_argument("--targets", nargs="+", required=True,
+                        choices=["codexcli", "claudecode", "grokcli"])
+    parser.add_argument("--exclude-id", action="append", default=[],
+                        help="explicit scope exclusion from the selected sources (repeatable)")
+    parser.add_argument("--global", dest="global_mode", action="store_true",
+                        help="export separate native user-scope roots rather than shared project AGENTS.md")
+    parser.add_argument("--skills", action="append", default=[],
+                        help="explicit native skill source directory for this disposable input tree")
+    args = parser.parse_args()
+    try:
+        print("Exported %d rules" % export_sources(args.source, args.dest, args.targets, args.exclude_id, args.global_mode, args.skills))
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))

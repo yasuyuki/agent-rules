@@ -9,14 +9,19 @@ python -m build
 python -m twine check --strict dist/*
 ```
 
-The build makes the wheel from the sdist. Distributions include the shared
-engine and tool conventions, not the maintainer's rule/skill catalog.
+The build makes the wheel from the sdist. Distributions include only the project entry, Rulesync staging adapter and
+pinned dependency lock, not runtime/branch tooling or any rule/skill catalog.
 Install the built wheel into a separate clean environment, then use that
 interpreter for `tests/test_project.py`. Run installed `agent-rules --version`
 and `--help` outside the source tree as CI does. This distinguishes packaged
 code/data from imports accidentally satisfied by the checkout.
 
-For placement/composition/mirror behavior, use the existing
+Run `npm ci --ignore-scripts`, then `python tests/test_rulesync_backend.py` and
+`python tests/test_rulesync_export.py` for real pinned-backend generation,
+ownership, conflict, deletion, check and rollback coverage. The tests use only
+disposable HOME/project roots.
+
+For legacy declaration placement/composition behavior, use the existing
 [verification skill](../skills/verify-agent-rules/SKILL.md). It drives disposable
 public inputs and keeps evidence; it does not deploy to real environments.
 Use `python tests/test_rules.py` for loader/projection regressions and
@@ -52,7 +57,7 @@ skip. Failures, cancellation and unexpected skips cannot satisfy them.
 | Boundary | Evidence |
 | --- | --- |
 | Source behavior | Full branch/recovery/operation/remote-adoption suites and the source, placement, handoff, inventory and optional-hook contracts |
-| Installed distribution | Build/metadata, project CLI end-to-end checks, packaged hook/data and representative real-Git cases; imports must resolve outside the checkout |
+| Installed distribution | Build/metadata, project CLI end-to-end checks and exclusion of runtime/branch modules; imports must resolve outside the checkout |
 | Selection and documentation | Whole-range classification, intentional/abnormal skips, and maintained local reference tests |
 | Real environment behavior | Separate authorized host acceptance; fixture/byte checks do not establish native agent loading or UI delivery |
 

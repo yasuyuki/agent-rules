@@ -2,7 +2,7 @@
 
 Use [verify-agent-rules](../skills/verify-agent-rules/SKILL.md) for a new
 placement/composition/mirror run and its result interpretation. Use
-[create-verification-skill](../skills/create-verification-skill/SKILL.md) only
+[create-verification-skill](https://github.com/cursor/plugins/blob/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/create-verification-skill/SKILL.md) only
 when creating or revising a verifier. The canonical sources are this checkout's
 skills; distributed copies need no vendor API or private environment binding.
 
@@ -85,4 +85,4 @@ execution environments. No installer, adapter suite, MCP server, generation
 service, evidence service or persistent multi-agent arrangement was added.
 
 Pinned references and pstack's retained MIT terms are documented in
-[generator sources](../skills/create-verification-skill/references/sources.md).
+[generator sources](https://github.com/cursor/plugins/blob/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/create-verification-skill/references/sources.md).

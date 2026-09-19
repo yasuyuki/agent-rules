@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "description": "Pinned rule and skill generation backend",
+  "dependencies": {
+    "rulesync": "16.39.1"
+  }
+}

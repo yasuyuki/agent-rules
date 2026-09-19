@@ -25,7 +25,7 @@ def prompt_hash(prompt):
 def delivered_prompt(fixture, role, sender_payload=""):
     """The runner supplies this whole prompt; agents never calculate its hash."""
     policy = "\n\n".join((ROOT / path).read_text(encoding="utf-8") for path in (
-        "rules/handoff.rule.md", "skills/human-handoff/SKILL.md"))
+        "rules/handoff.rule.md",))
     prompt = policy + "\n\nScenario:\n" + fixture[f"{role}_prompt"] + "\n\nOutput contract (return only agent_response JSON):\n" + OUTPUT_CONTRACT
     if role == "receiver" and fixture.get("receiver_uses_sender_payload"):
         prompt += "\n\nLiteral sender relay payload follows:\n" + sender_payload

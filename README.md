@@ -1,62 +1,47 @@
 # Agent Rules
 
-Manage your own rules and skills across Claude Code, Codex, Cursor Agent,
-Antigravity, OpenCode and Grok. One editable source is copied into each tool's
-file layout; checks detect drift while preserving unrelated instructions.
-The project CLI does not install the maintainer's policies or require an agent
-CLI, credentials, or private repository.
+Place explicitly selected rules and skills with **Rulesync 16.39.1**. Rulesync
+owns format generation; a small staging adapter protects unowned files, rejects
+conflicts, removes only owned stale output, and restores failed writes.
+No agent CLI, credentials, private repository or maintainer policies are required.
 
 ## Start from source
 
-Use Python 3.10+ and Git on Windows or Linux. There is no confirmed PyPI release
-of this project; the following installs this repository, not a same-named package.
-In a terminal (`cmd.exe` on Windows), with `python` naming your Python 3.10+
-interpreter (use `python3` on Linux if needed):
+Use Python 3.10+ and Node.js 22+ on Linux or Windows. From this checkout:
 
 ```console
-git clone https://github.com/yasuyuki/agent-rules.git
-cd agent-rules
-python -m venv .venv
-```
-
-Activate the environment: `.venv\Scripts\activate.bat` on Windows, or
-`source .venv/bin/activate` in Bash on Linux. Then install:
-
-```console
+npm ci --ignore-scripts
 python -m pip install .
-agent-rules --version
 ```
 
-In the same activated terminal, change to the project you want to manage and run:
+Create native Rulesync sources and an explicit placement configuration using the
+[project guide](docs/manual.md#project-rules-and-skills), then run:
 
 ```console
-agent-rules init
+agent-rules apply --config rulesync-placement.json
+agent-rules check --config rulesync-placement.json
 ```
 
-Choose tools and your source folders at the prompts. The initializer creates
-`.agent-rules/config.json` and empty sources; it never overwrites an existing
-configuration. Add a rule or skill using the
-[project guide](https://github.com/yasuyuki/agent-rules/blob/main/docs/manual.md#project-rules-and-skills),
-then run:
+Select the installed Rulesync executable with
+`--rulesync` when it is not on PATH. There is no implicit download or initial
+sample policy. Check compares generated output without writing the destination.
+The prepared Python package has not been published to PyPI.
 
-```console
-agent-rules apply
-agent-rules check
-```
+## Sources and migration
 
-A successful check reports matching managed output. Edit the sources and apply
-again for updates; an empty source is explicitly reported, not installed policy.
+Common policies in `rules/` remain one editable source; export explicitly chosen
+inputs as described in the [manual](docs/manual.md#declared-placement-and-source-authoring).
+Generic skills are edited in [agent-skills](https://github.com/yasuyuki/agent-skills).
+Project-specific skills remain here. There is no reverse mirror command.
 
-## Guides
+The checkout's declaration/runtime commands are a temporary compatibility surface
+for consumers pinned before the source transition. They are not bundled with the
+project CLI. Live adoption and removal are tracked by
+[#15](https://github.com/yasuyuki/agent-rules/issues/15); installing this source
+alone does not update a running environment.
 
-- [User manual](https://github.com/yasuyuki/agent-rules/blob/main/docs/manual.md):
-  project configuration, source authoring, advanced placement and launch,
-  environment catalogs, reports, branch management, and shared handoffs.
-- [Optional necessity hooks](https://github.com/yasuyuki/agent-rules/blob/main/docs/necessity-hooks.md):
-  explicitly enabled candidate review; normal installation does not call a model.
-- [Development and CI](https://github.com/yasuyuki/agent-rules/blob/main/docs/ci.md):
-  build, verification, coverage and retained evidence.
-- [Verification skill acceptance](https://github.com/yasuyuki/agent-rules/blob/main/docs/verification-skill.md):
-  demonstrated scope and historical evidence, not a substitute for a fresh run.
+- [User manual](docs/manual.md): source selection, ownership and migration boundaries.
+- [Development and CI](docs/ci.md): build and verification.
+- [Optional necessity hooks](docs/necessity-hooks.md): separate checkout-only tooling.
 
-MIT. See [LICENSE](https://github.com/yasuyuki/agent-rules/blob/main/LICENSE).
+MIT. See [LICENSE](LICENSE).

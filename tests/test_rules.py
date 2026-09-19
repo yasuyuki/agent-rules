@@ -55,101 +55,6 @@ place = importlib.util.module_from_spec(place_spec)
 place_spec.loader.exec_module(place)
 
 
-def run(workspace: Path, command: str, expected: int = 0) -> None:
-    result = subprocess.run(
-        [sys.executable, str(RULES), command, str(workspace)],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-    )
-    if result.returncode != expected:
-        raise AssertionError(
-            f"{command} returned {result.returncode}, expected {expected}\n"
-            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-        )
-
-
-with tempfile.TemporaryDirectory() as directory:
-    workspace = Path(directory)
-    run(workspace, "render")
-    run(workspace, "verify")
-
-    overlay = workspace / ".cursor" / "rules" / "local-overlay.mdc"
-    overlay.write_text("local\n", encoding="utf-8")
-    (workspace / "CLAUDE.md").write_text("local Claude instructions\n", encoding="utf-8")
-    (workspace / ".cursorrules").write_text("local Cursor instructions\n", encoding="utf-8")
-    run(workspace, "verify")
-
-    legacy = workspace / ".cursor" / "rules" / "agent-rules--legacy.mdc"
-    legacy.write_text("legacy\n", encoding="utf-8")
-    run(workspace, "verify", expected=1)
-    run(workspace, "render")
-    assert not legacy.exists()
-    assert overlay.read_text(encoding="utf-8") == "local\n"
-    run(workspace, "verify")
-
-    generated = workspace / ".cursor" / "rules" / "agent-rules--agent-delegation.mdc"
-    generated.write_text(generated.read_text(encoding="utf-8") + "\nchanged\n", encoding="utf-8")
-    run(workspace, "verify", expected=1)
-
-    run(workspace, "render")
-    run(workspace, "verify")
-
-body = "# Demo\n"
-block = agent_rules.splice("", "demo", body)
-duplicate = block + "\n" + block
-assert len(agent_rules.extract_all(duplicate, "demo")) == 2
-normalized = agent_rules.splice(duplicate, "demo", body)
-assert agent_rules.extract_all(normalized, "demo") == [body]
-
-with tempfile.TemporaryDirectory() as directory:
-    workspace = Path(directory)
-    run(workspace, "render")
-    agents = workspace / "AGENTS.md"
-    text = agents.read_text(encoding="utf-8")
-    block = agent_rules.splice("", "unknown", "# Unknown\n")
-    agents.write_text(text + "\n" + block, encoding="utf-8")
-    run(workspace, "verify", expected=1)
-    run(workspace, "render")
-    run(workspace, "verify")
-
-    text = agents.read_text(encoding="utf-8")
-    agents.write_text(text + "\n<!-- agent-rules:begin orphan -->\n", encoding="utf-8")
-    run(workspace, "verify", expected=1)
-    run(workspace, "render", expected=1)
-
-
-# A sixth tool that only reads existing conventions does not require a rules.py change.
-with tempfile.TemporaryDirectory() as directory:
-    dest = Path(directory) / "src"
-    (dest / "bin").mkdir(parents=True)
-    shutil.copy(RULES, dest / "bin" / "rules.py")
-    shutil.copytree(ROOT / "rules", dest / "rules")
-    placement = json.loads((ROOT / "placement.json").read_text(encoding="utf-8"))
-    placement["tools"]["extra"] = {
-        "entrypoint": "extra",
-        "credential": "$HOME/.extra/auth.json",
-        "configHome": {"default": "$HOME/.extra"},
-        "reads": {"rules": ["agents-md-section"], "skills": []},
-        "hooks": {"kind": "unverified"},
-    }
-    (dest / "placement.json").write_text(json.dumps(placement), encoding="utf-8")
-    extra_rules = dest / "bin" / "rules.py"
-    workspace = Path(directory) / "ws"
-    for command in ("render", "verify"):
-        result = subprocess.run(
-            [sys.executable, str(extra_rules), command, str(workspace)],
-            cwd=dest,
-            text=True,
-            capture_output=True,
-        )
-        if result.returncode != 0:
-            raise AssertionError(
-                f"sixth-tool {command} returned {result.returncode}\n"
-                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-            )
-
-
 # cli-status.sh (entrypoint, credential) pairs must match placement.json when the
 # sibling checkout is present. Public CI of this repo alone skips the file.
 cli_status = ROOT.parent / "wsl-agent-lifecycle" / "cli-status.sh"
@@ -180,21 +85,6 @@ if cli_status.is_file():
         )
 
 
-# rules.py renders rules only. A skills convention names directories, so its
-# `{id}` sits in a path component rather than in a file name and the managed
-# prefix/suffix would be empty -- matching, and deleting, every hand-placed
-# skill in the tool's skills directory.
-with tempfile.TemporaryDirectory() as directory:
-    workspace = Path(directory)
-    hand_placed = workspace / ".claude" / "skills" / "hand-placed"
-    hand_placed.mkdir(parents=True)
-    (hand_placed / "SKILL.md").write_text("---\nname: hand-placed\n---\n", encoding="utf-8")
-    run(workspace, "render")
-    if not (hand_placed / "SKILL.md").is_file():
-        raise AssertionError("render removed a skill from a skills directory")
-    run(workspace, "verify")
-
-
 # Windows checkouts may use CRLF. Parse metadata without changing copied bytes.
 with tempfile.TemporaryDirectory() as directory:
     skill_dir = Path(directory) / "example"
@@ -205,35 +95,6 @@ with tempfile.TemporaryDirectory() as directory:
         ])
         (skill_dir / "SKILL.md").write_bytes(payload)
         assert agent_rules.load_skills(directory)["example"]["SKILL.md"] == payload
-
-
-# A UPSTREAM.tsv that cannot be read says nothing about authorship. Reading it as
-# "nothing is vendored" would publish someone else's skill through place.py mirror,
-# so a missing file or a lost header stops the caller.
-header = "\t".join(agent_rules.SKILL_MANIFEST_HEADER)
-row = "grilling\tsomeone/skills\trefs/heads/main\tskills/grilling\tdeadbeef\tMIT"
-with tempfile.TemporaryDirectory() as directory:
-    skills_dir = Path(directory)
-    manifest = skills_dir / agent_rules.SKILL_MANIFEST
-
-    try:
-        agent_rules.vendored_ids([str(skills_dir)])
-    except SystemExit:
-        pass
-    else:
-        raise AssertionError("a missing manifest passed for an empty one")
-
-    manifest.write_text(f"{header}\n{row}\n", encoding="utf-8", newline="\n")
-    if agent_rules.vendored_ids([str(skills_dir)]) != {"grilling"}:
-        raise AssertionError("a well-formed manifest did not yield its ids")
-
-    manifest.write_text(f"{row}\n", encoding="utf-8", newline="\n")
-    try:
-        agent_rules.vendored_ids([str(skills_dir)])
-    except SystemExit:
-        pass
-    else:
-        raise AssertionError("a manifest without its header passed")
 
 
 # A portable checkout can validate policy and launch a declared local CLI
