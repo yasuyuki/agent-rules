@@ -56,11 +56,6 @@ class SetupError(unittest.TestCase):
                               env=environment, text=True, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, timeout=15)
 
-    def test_collect_uses_recovery_load_tests_without_running_it(self):
-        ids = runner.collect(['test_branch_recovery'])
-        self.assertTrue(any('.RecoveryTests.' in test_id for test_id in ids))
-        self.assertFalse(any('.BranchManagementTests.' in test_id for test_id in ids))
-
     def test_shards_are_deterministic_and_persist_pass_fail_skip(self):
         with tempfile.TemporaryDirectory() as directory:
             self.module(directory)
@@ -120,7 +115,7 @@ class SetupError(unittest.TestCase):
             self.assertEqual(selected[0] | selected[1], set(collected))
 
     def test_real_checkout_and_recovery_ids_are_assigned_once_at_all_bucket_counts(self):
-        ids = runner.collect(['test_branch_management', 'test_branch_recovery'])
+        ids = runner.collect(['test_workspace_entry', 'test_push_preflight'])
         for bucket_count in (1, 3, 6, len(ids) + 1):
             assigned = [test_id for bucket in runner.assign_buckets(ids, bucket_count)
                         for test_id in bucket]
@@ -156,7 +151,7 @@ class SetupError(unittest.TestCase):
             output = Path(directory) / 'metrics.json'
             result = subprocess.run([sys.executable, str(SOURCE), '--output', str(output),
                                      '--timeout', '3', '--shard-count', '2', '--shard-index', '2',
-                                     'test_branch_management'], text=True, stdout=subprocess.PIPE,
+                                     'test_workspace_entry'], text=True, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE)
             self.assertEqual(result.returncode, 2)
             self.assertIn('--shard-index must select a shard', result.stderr)

@@ -9,8 +9,10 @@ python -m build
 python -m twine check --strict dist/*
 ```
 
-The build makes the wheel from the sdist. Distributions include only the project entry, Rulesync staging adapter and
-pinned dependency lock, not runtime/branch tooling or any rule/skill catalog.
+The build makes the wheel from the sdist. The main distribution includes only
+the project entry, Rulesync staging adapter and pinned dependency lock. The
+separate workspace-lifecycle wheel is built from its subdirectory and has no
+dependency on this checkout's runtime, rules or private configuration.
 Install the built wheel into a separate clean environment, then use that
 interpreter for `tests/test_project.py`. Run installed `agent-rules --version`
 and `--help` outside the source tree as CI does. This distinguishes packaged
@@ -49,23 +51,22 @@ runs are distinct evidence.
 
 [The workflow](../.github/workflows/ci.yml) owns exact commands, versions,
 partitions and installed-wheel selections. Full CI covers Windows/Linux and
-Python 3.10/3.12, with two checkout shards per configuration and a separate
-package job. The four existing `test` gates require successful documentation
+Python 3.10/3.12, with one checkout job and a separate package job per configuration. The four existing `test` gates require successful documentation
 checks and either successful heavy matrices or their classification-authorized
 skip. Failures, cancellation and unexpected skips cannot satisfy them.
 
 | Boundary | Evidence |
 | --- | --- |
-| Source behavior | Full branch/recovery/operation/remote-adoption suites and the source, placement, handoff, inventory and optional-hook contracts |
-| Installed distribution | Build/metadata, project CLI end-to-end checks and exclusion of runtime/branch modules; imports must resolve outside the checkout |
+| Source behavior | Current source, placement, handoff, inventory, optional-hook and workspace-entry contracts |
+| Installed distribution | Build/metadata, project CLI end-to-end checks, plus the independently installed workspace-lifecycle wheel and its lifecycle/lease/push tests; imports must resolve outside the checkout |
 | Selection and documentation | Whole-range classification, intentional/abnormal skips, and maintained local reference tests |
 | Real environment behavior | Separate authorized host acceptance; fixture/byte checks do not establish native agent loading or UI delivery |
 
 The existing `tests/ci_runner.py` retains each case's outcome and elapsed time,
 plus available fixture/cleanup and outer Git/CLI measurements. Its `--help`
 describes local invocation. Timeouts preserve partial outcomes and terminate
-only owned test processes. Tests keep independent mutable Git fixtures; weights
-in `tests/ci_checkout_weights.json` affect scheduling, never eligibility.
+only owned test processes. Lifecycle tests use disposable Git repositories and
+independent package environments.
 
 Read failing case output in the normal log and retained `ci-results-*` artifacts.
 Artifacts include runtime/dependency identity and source/workflow/run metadata.
