@@ -141,40 +141,14 @@ class VerificationSkillTests(unittest.TestCase):
             self.assertIn("Linked public input", result["error"])
         self.assert_evidence_survives_cleanup(result, evidence)
 
-    def test_dependency_profile_composes_and_mirrors(self):
+    def test_dependency_profile_composes(self):
         result, evidence = self.run_helper(environment_repo=self.environment_fixture(), agent="test-agent")
 
         self.assertEqual(result["status"], "pass")
         self.assertEqual(result["agent"], "test-agent")
-        self.assertEqual(result["feature_states"], {"placement": "pass", "composition": "pass", "mirror": "pass"})
+        self.assertEqual(result["feature_states"], {"placement": "pass", "composition": "pass"})
         self.assertIn("environment_dependency", result["target"])
         self.assertTrue(all(item["ok"] for item in result["assertions"]))
-        self.assert_evidence_survives_cleanup(result, evidence)
-
-    def test_dependency_mirror_zero_exit_with_wrong_bytes_fails(self):
-        original_command = verify.command
-        changed = False
-
-        def corrupt_mirror(argv, cwd):
-            nonlocal changed
-            result = original_command(argv, cwd)
-            if not changed and len(argv) > 2 and argv[2] == "mirror" and "--check" not in argv:
-                path = Path(cwd) / "mirror/skills/verify-agent-rules/SKILL.md"
-                path.write_text("wrong mirror bytes\n", encoding="utf-8")
-                changed = True
-            return result
-
-        with mock.patch.object(verify, "command", side_effect=corrupt_mirror):
-            result, evidence = self.run_helper(environment_repo=self.environment_fixture())
-
-        self.assertTrue(changed)
-        self.assertEqual(result["status"], "fail")
-        self.assertEqual(result["feature_states"]["placement"], "pass")
-        self.assertEqual(result["feature_states"]["composition"], "pass")
-        self.assertEqual(result["feature_states"]["mirror"], "fail")
-        self.assertIn("mirror initial non-vendored bytes and execute bits", result["error"])
-        self.assertIn("mirror-initial", result["artifacts"])
-        self.assertTrue((evidence / "mirror-initial/skills/verify-agent-rules/SKILL.md").is_file())
         self.assert_evidence_survives_cleanup(result, evidence)
 
     def test_missing_dependency_is_blocked_before_drive(self):

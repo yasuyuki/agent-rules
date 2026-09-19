@@ -7,61 +7,89 @@ not enroll an ordinary project in that environment policy.
 
 ## Project rules and skills
 
-Run `agent-rules init` in the target project, select tool IDs from its prompt,
-and choose source folders. Accepting the defaults creates empty
-`.agent-rules/rules/` and `.agent-rules/skills/`. Enter `-` to leave a kind
-unmanaged. No agent is launched, authenticated, or given sample policies.
+Use Python 3.10+ and the pinned Rulesync 16.39.1 executable installed by
+`npm ci --ignore-scripts` from this checkout. The Python wheel only includes the
+project entry and staging adapter; runtime, Git hooks, catalogs and optional
+review tooling are checkout-only until their separate extraction is complete.
 
-For a first rule, save `.agent-rules/rules/project-style.rule.md`:
+Create a project-local `sources/rules/policy.md` with native Rulesync frontmatter:
 
 ```markdown
 ---
-id: project-style
-title: Project style
-summary: Follow this project's documented conventions
+root: false
+targets: [codexcli, claudecode]
 ---
-Follow the conventions in this project's README.
+Follow this project's documented conventions.
 ```
 
-Run `agent-rules apply`, then `agent-rules check`. Apply verifies its output and
-restores affected content on failure; check is read-only and fails on drift.
-Edit the source to update policy. Delete an item and apply to remove its managed
-output. Unrelated instructions and unmarked skills are preserved; a colliding
-hand-written skill or a link in an affected path is refused.
-
-A skill is an on-demand directory, unlike an always-on rule. Save
-`.agent-rules/skills/project-review/SKILL.md` with `name: project-review` and a
-`description` in frontmatter. Its name must match the directory; supporting
-files are copied with it. Rules and skills share a unique ID namespace.
-Use relative references within the skill so a distributed copy works alone.
-
-### Configuration and removing managed content
-
-The initializer's `.agent-rules/config.json` can combine multiple source folders:
+Create `rulesync-placement.json` alongside `sources/`:
 
 ```json
 {
   "version": 1,
-  "tools": ["claude", "codex"],
-  "rules": [".agent-rules/rules"],
-  "skills": [".agent-rules/skills"]
+  "input_roots": ["sources"],
+  "targets": ["codexcli", "claudecode", "grokcli"],
+  "features": ["rules", "skills"],
+  "output_root": ".",
+  "global": false
 }
 ```
 
-Relative paths start at the project root, not the command's working directory.
-Keep sources distinct from generated destinations. Absolute paths work but are
-not portable. From another directory select the config with `--config`; parent
-projects are not searched. For automation, use `agent-rules init --help` for
-noninteractive tool/source selection. Configuration and source text use UTF-8.
+Paths are relative to that configuration. A source root directly contains
+`rules/` and/or `skills/`. Select every source explicitly; no parent lookup or
+maintainer catalog is injected. Generic skills can be selected by pointing an
+input root at a separately obtained agent-skills checkout. A skill directory
+contains native `SKILL.md` plus its relative supporting files.
 
-An **empty source directory** remains managed and removes stale output on
-apply. An **empty source list** leaves that kind untouched. Removing a tool
-from the config likewise stops managing it; it does not uninstall its output.
-To remove managed content, apply an empty directory while the tool and kind are
-still selected, then deselect them. Tools sharing `AGENTS.md` share that managed
-namespace. Unsupported artifact kinds are reported rather than silently placed.
+```console
+agent-rules apply --config rulesync-placement.json
+agent-rules check --config rulesync-placement.json
+```
+
+Pass `--rulesync` to select an installed executable outside PATH. It must report
+16.39.1; applying never downloads software. For user scope, use a separate config
+with `global: true` and an explicit disposable HOME as `output_root` during
+verification. Do not repeat the same policy in both user and project inputs.
+Only rules and skills are managed; permissions, hooks, MCP and ignores are not.
+
+Rulesync generates each target in an isolated staging directory. Shared output
+paths must have identical contents across targets; conflicting `AGENTS.md`
+content is rejected rather than resolved by target order. Use identical shared
+policy for Codex and Grok, with Claude-specific fragments separately targeted.
+For the three-target example, only Codex generates shared `AGENTS.md`; Grok
+reads it and generates its own skills. Claude uses `.claude/rules/`. A root
+`CLAUDE.md` would also be read by Grok and duplicate common policy, so do not
+select that shape for this collocated consumer set. Grok also discovers
+`.claude/rules/` by default. Its machine configuration owner must explicitly
+set native `compat.claude.rules = false` for this arrangement; the adapter does
+not manage that settings file. Native `inspect` lists disabled entries too, so
+check enabled instruction paths and the compatibility cell. Filename order controls composition. Duplicate relative rules and same-name
+skills across roots are rejected, rather than silently overlaying one owner.
+
+The adapter owns only paths recorded by its successful apply. Unknown files,
+unknown same-name skill directories and symlinks/junctions are conflicts.
+Changes made directly to owned outputs are preserved by refusing replacement;
+move an intentional handwritten edit into its source before applying again.
+Delete a source and apply to remove its previously owned output. Empty sources
+remove owned output; unrelated files remain. A repeated apply preserves unchanged
+files. Check stages expected output outside the destination and reports drift. A check
+racing an apply may report an in-progress transaction; it never repairs or writes.
+Apply serializes writers and recovers an interrupted transaction only if files
+still match its recorded before/after bytes, preserving later user edits.
+
+Existing handwritten instructions must be explicitly preserved as source before
+ownership transfer. Neither matching filenames nor matching bytes authorize
+adoption. Do not run old and new installers on the same output root. The live
+migration owner must retain the old revision, source inputs and outputs for
+recovery; reverting must stop at any subsequent user edit, rather than overwrite
+it. Synthetic generation proves files and safety behavior, not model loading.
 
 ## Declared placement and source authoring
+
+The following declaration commands are a temporary compatibility surface for
+pre-transition runtime consumers; they are excluded from the Python package.
+Their removal depends on those consumers adopting the Rulesync source contract.
+Do not use them as a second writer of Rulesync-managed outputs.
 
 Run checkout commands from the source root with its Python environment active.
 `python bin/place.py --help` is the command index; subcommand help gives arguments.
@@ -93,32 +121,39 @@ tool IDs, file layouts and supported artifact kinds. The
 Edit these sources, never managed sections or distributed copies. Malformed
 managed markers must be repaired before projection can proceed.
 
-For rule-only workspaces without a site declaration, the existing
-`python bin/rules.py render WORKSPACE` and `verify WORKSPACE` operate on the same
-catalog and namespaced outputs. Unrelated local overlays stay outside ownership.
-POSIX skill copies retain execute bits; Windows checks contents without claiming
-POSIX mode management. Placement proves matching files, not native agent loading.
+To consume selected canonical `.rule.md` policies with the new backend, export
+explicit inputs to a new disposable source tree:
+
+```console
+python bin/rules.py rules --dest exported --targets codexcli claudecode grokcli
+```
+
+Point `input_roots` at the exported tree. Export is an input conversion, not an
+installer: it neither writes consumer paths nor replaces Rulesync formatting.
+Edit only the original policies, regenerate a fresh export, and never maintain
+an exported copy as a second source. Tool bindings sharing `AGENTS.md` are
+combined to preserve the existing shared-file policy. Use `--exclude-id` for
+explicit location exclusions before generating a separate scope. Add `--global`
+when exporting user-scope inputs, where Codex and Grok use separate native roots.
+Use `--skills skills` to include this checkout's project skills in the same
+disposable source tree; do not select this repository root as native input,
+because its canonical rules use the legacy authoring format. Native private/project
+rules need no conversion. Old standalone `render`/`verify` have been removed.
 
 ### Original and third-party skills
 
-A projected skill's `.agent-skills` marker establishes ownership. Unmarked
-same-name directories are hand-written and cannot be overwritten. For vendored
-skills, retain licenses and record provenance in `skills/UPSTREAM.tsv`; placement
-copies their complete trees without modifying the upstream content.
+[agent-skills](https://github.com/yasuyuki/agent-skills) owns the generic
+human-handoff, optimize-human-docs and optimize-agent-docs sources. This checkout
+owns only its project-specific inventory/classification/verifier skills.
+No mirror or inverse synchronization exists. Old pinned consumers retain their
+old bytes until separately adopted; that is not a second editing workflow.
 
-To generate an original-work-only mirror, use `python bin/place.py mirror --help`.
-`mirror --skills skills --dest DESTINATION` writes a separate checkout, and
-`--check` compares it with source. The required upstream manifest excludes
-third-party skills. The mirror owns its `skills/` subtree, not unrelated root
-files; use a dedicated destination. Generation does not commit, publish or deploy.
-
-The original skills cover work classification, environment inventory, human
-handoff, document optimization and project verification. The vendored
-[generator](../skills/create-verification-skill/SKILL.md) is for creating or
-revising a verification skill; use the existing
-[verifier](../skills/verify-agent-rules/SKILL.md) for an ordinary run.
-[Acceptance evidence](verification-skill.md) distinguishes those operations and
-historical demonstrations from current success.
+Third-party grilling and create-verification-skill copies were removed. Their
+recorded upstream references and license provenance remain in
+[UPSTREAM.tsv](../skills/UPSTREAM.tsv); consumers select upstream sources explicitly.
+The [project verifier](../skills/verify-agent-rules/SKILL.md) retains the legacy
+placement/composition proof until those runtime consumers migrate; it is not
+proof of the new backend. Use the backend tests in the CI guide for that scope.
 
 ## Launch and environment maintenance
 
@@ -452,7 +487,7 @@ Existing native dependency locks are preserved across source rebinds. See
 
 The maintainer's [handoff rule](../rules/handoff.rule.md) keeps local resumption
 in the nearest HANDOFF.md and cross-environment work in an explicitly selected,
-accessible shared task. [human-handoff](../skills/human-handoff/SKILL.md) governs
+accessible shared task. [human-handoff](https://github.com/yasuyuki/agent-skills/blob/main/skills/human-handoff/SKILL.md) governs
 human relays; classification does not authorize execution. Saving a task is not
 recipient receipt or acceptance. The [handoff fixtures](../tests/fixtures/handoff/README.md)
 test this distinction; real host delivery and UI copying need separate evidence.

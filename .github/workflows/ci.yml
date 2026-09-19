@@ -65,6 +65,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm ci --ignore-scripts
+      - name: Rulesync safety contract
+        if: matrix.shard == 0
+        run: python tests/ci_runner.py --output ci-results/rulesync.json --timeout 300 test_rulesync_backend test_rulesync_export
       - name: Optional necessity parser dependencies
         run: python -m pip install bashlex==0.18 tomli
       - name: Opt-in necessity hooks contract
@@ -112,6 +119,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm ci --ignore-scripts
       - run: python -m pip install build twine
       - run: python -m build
       - name: Validate distribution metadata
@@ -127,25 +138,11 @@ jobs:
             runtime="$RUNNER_TEMP/agent-rules-runtime/bin"
           fi
           "$runtime/python" -m pip install --no-index dist/*.whl
-          "$runtime/python" -m pip install bashlex==0.18 tomli
+          export RULESYNC_EXECUTABLE="$GITHUB_WORKSPACE/node_modules/.bin/rulesync"
+          if [ "$RUNNER_OS" = Windows ]; then
+            export RULESYNC_EXECUTABLE="$GITHUB_WORKSPACE/node_modules/.bin/rulesync.cmd"
+          fi
           "$runtime/python" tests/ci_runner.py --output ci-results/project.json --timeout 300 test_project
-          installed_place=$("$runtime/python" -c 'import agent_rules_manager.bin.place as p; print(p.__file__)')
-          "$runtime/python" -c 'import pathlib, agent_rules_manager.bin.place as p, agent_rules_manager.bin.branch_management as b; root=pathlib.Path.cwd().resolve(); paths=[pathlib.Path(m.__file__).resolve() for m in (p,b)]; assert all(root not in path.parents for path in paths); print(*paths, sep="\n")' > ci-results/installed-paths.txt
-          # Checkout jobs cover full behavior. Retain the distinct installed boundary:
-          # packaged hook/data, legacy hook, source-only catalog, and real ref guards.
-          AGENT_RULES_PLACE="$installed_place" "$runtime/python" tests/ci_runner.py --output ci-results/wheel.json --timeout 600 --workers 3 \
-            test_branch_management.BranchManagementTests.test_install_preserves_an_existing_hook_and_detects_tampering \
-            test_branch_management.BranchManagementTests.test_packing_settings_check_and_explicit_repair \
-            test_branch_management.BranchManagementTests.test_packing_repair_keeps_other_install_guards \
-            test_branch_management.BranchManagementTests.test_packing_gc_failure_and_repair \
-            test_branch_management.BranchManagementTests.test_packing_worktree_and_command_scope_repair \
-            test_branch_management.BranchManagementTests.test_declare_agent_updates_only_a_registered_source_catalog \
-            test_branch_management.BranchManagementTests.test_unregistered_refs_no_verify_and_alternate_index_are_rejected \
-            test_branch_remote_adoption \
-            test_branch_operations.OperationTests.test_merge_rejects_same_source_path_contamination_before_commit \
-            test_branch_operations.OperationTests.test_merge_records_a_real_combined_tree \
-            test_branch_operations.OperationTests.test_sync_combines_real_remote_result_and_diagnostic_is_nonwriting \
-            test_branch_operations.OperationTests.test_sync_partial_index_update_keeps_the_original_receipt_for_resume
           cd "$RUNNER_TEMP"
           "$runtime/agent-rules" --version
           "$runtime/agent-rules" --help

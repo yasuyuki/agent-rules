@@ -5,7 +5,6 @@
     place.py apply  --declaration <path> [--rules <dir>] [--skills <dir>]
     place.py list   --declaration <path>
     place.py start  [--config <path> | --declaration <path> [--rules <dir>] [--skills <dir>]] <workspace> <tool> [-- <tool-argv>...]
-    place.py mirror --skills <dir> --dest <dir> [--check]
     place.py selfcheck
 
 Rules and skills are the two managed kinds; a LOCATIONS row says which one it
@@ -658,65 +657,6 @@ def apply_projection(rules, placement, locations, exceptions, sites, workspaces,
             atomic_write(dest, render_sections(dest, blocks))
 
 
-def mirror(args):
-    """Publish the maintainer's own skills to a public checkout.
-
-    A skill listed in UPSTREAM.tsv belongs to someone else's repository. It is
-    managed here so every tool gets the same bytes, but republishing it under a
-    repository that names itself the maintainer's own would misstate authorship,
-    so the mirror carries only what is written here. A manifest that cannot be
-    read, or that names a skill this repository does not hold, stops the publish
-    rather than passing for an empty list of other people's work."""
-    if not args.skills:
-        raise PlacementError("--skills is required")
-    skills = agent_rules.load_skill_dirs(args.skills)
-    vendored = agent_rules.vendored_ids(args.skills)
-    stale = sorted(vendored - set(skills))
-    if stale:
-        raise PlacementError(
-            "%s names skills that are not here: %s" % (agent_rules.SKILL_MANIFEST, ", ".join(stale))
-        )
-    own = {skill_id: tree for skill_id, tree in skills.items() if skill_id not in vendored}
-    dest = Path(args.dest) / "skills"
-    preflight_targets([dest])
-    expected = {}
-    for skill_id, tree in own.items():
-        for relative, content in tree.items():
-            expected[dest / skill_id / Path(*relative.split("/"))] = content
-    errors = []
-    for path, content in sorted(expected.items(), key=lambda item: str(item[0])):
-        actual = path.read_bytes() if path.is_file() else None
-        if actual is None:
-            errors.append("missing: %s" % path)
-        elif actual != content:
-            errors.append("differs from canonical: %s" % path)
-        elif executable_differs(path, content):
-            errors.append("executable bits differ from canonical: %s" % path)
-    if dest.is_dir():
-        for path in sorted(dest.iterdir()):
-            if path.is_dir() and path.name not in own:
-                errors.append("unexpected skill in mirror: %s" % path)
-        for path in sorted(dest.rglob("*")):
-            if path.is_file() and path not in expected:
-                errors.append("unexpected file in mirror: %s" % path)
-    if args.check:
-        for error in errors:
-            print("FAIL: " + error, file=sys.stderr)
-        print("mirror: %s" % ("OK" if not errors else "FAILED (%d)" % len(errors)))
-        return 0 if not errors else 1
-    if dest.is_dir():
-        for path in sorted(dest.iterdir()):
-            if path.is_dir() and path.name not in own:
-                shutil.rmtree(path)
-        for path in sorted(dest.rglob("*")):
-            if path.is_file() and path not in expected:
-                path.unlink()
-    for path, content in sorted(expected.items(), key=lambda item: str(item[0])):
-        atomic_write(path, content)
-    print("mirror: %d skills" % len(own))
-    return 0
-
-
 def source_dirs(primary, additional):
     out = []
     seen = set()
@@ -778,6 +718,9 @@ def apply(args, *, context=None, announce=True):
     files, sections = expected_writes(rules, placement, selected, exceptions, sites, workspaces, skills)
     targets = affected_targets(files, sections, selected, placement, sites, workspaces)
     preflight_targets(targets)
+    for target in targets:
+        if any((parent / ".rulesync-ownership.json").exists() for parent in target.parents):
+            raise PlacementError("Rulesync owns this output root; legacy projection is disabled: %s" % target)
     for dest in files:
         if dest.name == agent_rules.SKILL_MARKER and dest.parent.exists():
             if not dest.is_file() or dest.read_bytes() != marker_bytes(dest.parent.name):
@@ -2196,82 +2139,6 @@ def selfcheck(_args):
         if check(ns):
             raise PlacementError("selfcheck still failing after interrupt restore")
 
-        # The mirror names itself the maintainer's own skills, so it publishes
-        # only what the vendored manifest accounts for. A manifest that is absent
-        # or out of date stops the publish instead of passing for an empty one.
-        manifest = Path(skills_dir) / agent_rules.SKILL_MANIFEST
-        mirror_ns = argparse.Namespace(skills=[str(skills_dir)], dest=str(root / "mirror"), check=False)
-        try:
-            mirror(mirror_ns)
-        except SystemExit:
-            pass
-        else:
-            raise PlacementError("selfcheck published without a vendored manifest")
-        header = "\t".join(agent_rules.SKILL_MANIFEST_HEADER)
-        manifest.write_text(
-            "%s\nepsilon\tsomeone/skills\trefs/heads/main\tskills/epsilon\tdeadbeef\tMIT\n" % header,
-            encoding="utf-8",
-            newline="\n",
-        )
-        if mirror(mirror_ns):
-            raise PlacementError("selfcheck mirror failed")
-        published = sorted(path.name for path in (root / "mirror" / "skills").iterdir())
-        if published != ["delta"]:
-            raise PlacementError("selfcheck mirror published a vendored skill: %s" % published)
-        if os.name == "posix":
-            script = Path(skills_dir) / "delta" / "check.sh"
-            script.write_bytes(b"#!/bin/sh\nexit 0\n")
-            script.chmod(0o4755)
-            published_script = root / "mirror" / "skills" / "delta" / "check.sh"
-            mirror(mirror_ns)
-            if published_script.stat().st_mode & 0o7111 != 0o111:
-                raise PlacementError("selfcheck mirror lost execute bits or copied special bits")
-            subprocess.run([str(published_script)], check=True)
-            published_script.chmod(0o644)
-            mirror_ns.check = True
-            if mirror(mirror_ns) == 0:
-                raise PlacementError("selfcheck mirror missed executable drift")
-            mirror_ns.check = False
-            mirror(mirror_ns)
-            subprocess.run([str(published_script)], check=True)
-            script.chmod(0o644)
-            mirror_ns.check = True
-            if mirror(mirror_ns) == 0:
-                raise PlacementError("selfcheck mirror missed source executable change")
-            mirror_ns.check = False
-            mirror(mirror_ns)
-            if published_script.stat().st_mode & 0o111:
-                raise PlacementError("selfcheck mirror retained removed execute bits")
-        published_skill = root / "mirror" / "skills" / "delta"
-        shutil.rmtree(published_skill)
-        make_link(published_skill, payload)
-        try:
-            try:
-                mirror(mirror_ns)
-            except PlacementError:
-                pass
-            else:
-                raise PlacementError("selfcheck mirror accepted a linked skill")
-            if sorted(path.name for path in payload.iterdir()) != ["keep.md"]:
-                raise PlacementError("selfcheck mirror wrote through a link")
-            if (payload / "keep.md").read_bytes() != b"keep\n":
-                raise PlacementError("selfcheck mirror changed the link payload")
-        finally:
-            if published_skill.is_symlink():
-                published_skill.unlink()
-            else:
-                published_skill.rmdir()
-        manifest.write_text(
-            "%s\nzeta\tsomeone/skills\trefs/heads/main\tskills/zeta\tdeadbeef\tMIT\n" % header,
-            encoding="utf-8",
-            newline="\n",
-        )
-        try:
-            mirror(mirror_ns)
-        except PlacementError:
-            pass
-        else:
-            raise PlacementError("selfcheck published with a manifest naming an absent skill")
     print("place: selfcheck OK")
     return 0
 
@@ -2370,10 +2237,7 @@ def main(argv, *, runner=subprocess.run, resolver=None):
     entry_remove.add_argument("--directory", required=True)
     handoff_p = sub.add_parser("handoff-receive", help="receive the locally bound HANDOFF before an existing GUI entry opens it")
     handoff_p.add_argument("--workspace", required=True)
-    mirror_p = sub.add_parser("mirror")
-    mirror_p.add_argument("--skills", action="append")
-    mirror_p.add_argument("--dest", required=True)
-    mirror_p.add_argument("--check", action="store_true")
+
     sub.add_parser("branch", help="register work and enforce Git branch operations")
     sub.add_parser("necessity", help="opt-in Codex necessity hook install/check/remove")
     sub.add_parser("selfcheck")
@@ -2430,8 +2294,6 @@ def main(argv, *, runner=subprocess.run, resolver=None):
         if args.command == "handoff-receive":
             receive_handoff(args.workspace)
             return 0
-        if args.command == "mirror":
-            return mirror(args)
         return selfcheck(args)
     except (PlacementError, managed_entry.EntryError) as exc:
         print("FAIL: %s" % exc, file=sys.stderr)

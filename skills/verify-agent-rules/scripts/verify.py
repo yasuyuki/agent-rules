@@ -4,11 +4,9 @@
 from __future__ import annotations
 
 import argparse
-import csv
 from datetime import datetime, timezone
 import hashlib
 import json
-import os
 from pathlib import Path
 import platform
 import shutil
@@ -47,10 +45,6 @@ def write(path, text):
 def tree(root):
     return {p.relative_to(root).as_posix(): sha(p.read_bytes())
             for p in sorted(root.rglob("*")) if p.is_file()}
-
-
-def execute_bits(path):
-    return None if os.name == "nt" else path.stat().st_mode & 0o111
 
 
 def reject_links(path, label):
@@ -161,15 +155,14 @@ def run(repo, evidence_root=None, doctor_only=False, environment_repo=None, agen
     result = {
         "run_id": evidence.name, "started_at": datetime.now(timezone.utc).isoformat(),
         "status": "blocked", "feature": "placement", "feature_status": "not-run",
-        "agent": agent, "feature_states": {"placement": "not-run", "composition": "not-run", "mirror": "not-run"},
+        "agent": agent, "feature_states": {"placement": "not-run", "composition": "not-run"},
         "expectations": EXPECTATIONS, "commands": [], "assertions": [], "artifacts": [],
         "not_run": ["package CLI", "other file conventions", "native agent loading", "remote placement"],
         "cleanup": {"ok": True, "scratch": None},
     }
     if environment_repo is not None:
         result["expectations"] = {**EXPECTATIONS,
-            "composition": "Selected dependency rule composes with the public catalog in initial and updated AGENTS.md.",
-            "mirror": "Non-vendored skills mirror byte-for-byte with execute bits; check detects drift and repair restores it."}
+            "composition": "Selected dependency rule composes with the public catalog in initial and updated AGENTS.md."}
     scratch = None
 
     def record():
@@ -197,12 +190,6 @@ def run(repo, evidence_root=None, doctor_only=False, environment_repo=None, agen
     def snapshot(label):
         dest = evidence / label
         shutil.copytree(project, dest)
-        result["artifacts"].append(label)
-        return tree(dest)
-
-    def mirror_snapshot(label):
-        dest = evidence / label
-        shutil.copytree(mirror, dest)
         result["artifacts"].append(label)
         return tree(dest)
 
@@ -234,38 +221,6 @@ def run(repo, evidence_root=None, doctor_only=False, environment_repo=None, agen
         assertion(label + " dependency section", True, expected in text)
         assertion(label + " dependency section count", 1, text.count("<!-- agent-rules:begin example-private -->"))
         assertion(label + " public handoff section", 1, text.count("<!-- agent-rules:begin handoff -->"))
-
-    def mirror_drive(check=False):
-        argv = [sys.executable, str(repo / "bin/place.py"), "mirror", "--skills", str(repo / "skills"), "--dest", str(mirror)]
-        if check:
-            argv.append("--check")
-        proc = command(argv, scratch)
-        result["commands"].append({"argv": argv, "cwd": str(scratch), "exit_code": proc.returncode,
-                                   "stdout": proc.stdout, "stderr": proc.stderr})
-        record()
-        return proc
-
-    def source_mirror_tree():
-        manifest = repo / "skills" / "UPSTREAM.tsv"
-        with manifest.open(encoding="utf-8", newline="") as handle:
-            vendored = {row["id"] for row in csv.DictReader(handle, delimiter="\t")}
-        output = {}
-        for skill in sorted((repo / "skills").iterdir()):
-            if skill.is_dir() and skill.name not in vendored:
-                for path in sorted(skill.rglob("*")):
-                    if path.is_file():
-                        output[path.relative_to(repo / "skills").as_posix()] = [sha(path.read_bytes()), execute_bits(path)]
-        return output
-
-    def assert_mirror(label):
-        actual = {}
-        root = mirror / "skills"
-        if root.is_dir():
-            for path in sorted(root.rglob("*")):
-                if path.is_file():
-                    actual[path.relative_to(root).as_posix()] = [sha(path.read_bytes()), execute_bits(path)]
-        assertion(label + " non-vendored bytes and execute bits", source_mirror_tree(), actual)
-        assertion(label + " root notes retained", "seeded mirror notes\n", (mirror / "notes.txt").read_text(encoding="utf-8"))
 
     record()  # Expectations exist before the first operation.
     try:
@@ -321,28 +276,6 @@ def run(repo, evidence_root=None, doctor_only=False, environment_repo=None, agen
                 assertion("dependency source hash unchanged after composition", before_hash, sha(selected.read_bytes()))
                 result["feature_states"]["composition"] = "pass"
 
-                mirror = scratch / "mirror"
-                write(mirror / "notes.txt", "seeded mirror notes\n")
-                result["feature_states"]["mirror"] = "fail"
-                assertion("mirror initial apply exit", 0, mirror_drive().returncode)
-                mirror_snapshot("mirror-initial")
-                assert_mirror("mirror initial")
-                assertion("mirror initial check exit", 0, mirror_drive(True).returncode)
-                assertion("mirror repeated apply exit", 0, mirror_drive().returncode)
-                assert_mirror("mirror repeated")
-                corrupted = mirror / "skills/verify-agent-rules/SKILL.md"
-                write(corrupted, "corrupt mirrored verifier\n")
-                before = tree(mirror)
-                mirror_snapshot("mirror-corrupt")
-                assertion("mirror corruption check rejected", True, mirror_drive(True).returncode != 0)
-                assertion("mirror check does not mutate", before, tree(mirror))
-                assertion("mirror repair exit", 0, mirror_drive().returncode)
-                mirror_snapshot("mirror-repaired")
-                assertion("mirror repaired check exit", 0, mirror_drive(True).returncode)
-                assert_mirror("mirror repaired")
-                assertion("dependency source hash unchanged after mirror", before_hash, sha(selected.read_bytes()))
-                assertion("public source hashes unchanged", result["target"]["inputs_sha256"], doctor(repo)["inputs_sha256"])
-                result["feature_states"]["mirror"] = "pass"
             result["status"] = "pass"
     except (OSError, ValueError, AssertionError, KeyboardInterrupt) as exc:
         result["error"] = type(exc).__name__ + ": " + str(exc)

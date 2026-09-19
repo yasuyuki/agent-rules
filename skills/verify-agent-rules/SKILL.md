@@ -1,6 +1,6 @@
 ---
 name: verify-agent-rules
-description: Verify agent-rules CLI placement and safe updates, optionally including agent-environment source composition and agent-skills mirror output, with disposable data and retained evidence.
+description: Verify agent-rules CLI placement and safe updates, optionally including agent-environment source composition, with disposable data and retained evidence.
 license: MIT
 ---
 
@@ -8,7 +8,7 @@ license: MIT
 
 Verify the public placement CLI with new disposable inputs. Use the default
 profile for placement; add `--environment-repo` only to exercise dependent
-source composition and the generated-skill mirror. The recipe is verified on
+source composition. The recipe is verified on
 Linux with Python 3.10+ and Git, but that past result is not evidence for a
 future run.
 
@@ -34,7 +34,7 @@ The helper's `--help` is the authority for options.
 The helper uses the public `bin/place.py` subprocess interface, standard
 library, Git, synthetic source inputs, a new private scratch directory, and a
 separate new evidence directory. It neither reads live/private declarations nor
-modifies installed skills, a real mirror, source inputs, agents, credentials, or
+modifies installed skills, source inputs, agents, credentials, or
 network services. Do not use it with secret-bearing catalogs.
 
 Read [the feature map](features/README.md) to select a profile. The helper fixes
@@ -47,8 +47,8 @@ Report the result only after reading its feature states, assertions, retained
 artifacts, and `cleanup.ok`. `pass` means every selected feature and cleanup
 passed; `fail` is a mismatch or execution/cleanup failure; `blocked` is an
 unmet safe prerequisite; `not-run` is Doctor-only. Exit codes are respectively
-0, 1, 2, and 3. A default run deliberately leaves composition and mirror
-`not-run`; a successful synthetic projection does not prove native agent loading
+0, 1, 2, and 3. A default run deliberately leaves composition `not-run`; a
+successful synthetic projection does not prove native agent loading
 or obedience, package CLI, other layouts/OSes, remote placement, or deployment.
 Each session needing proof must produce fresh evidence rather than inherit a
 saved pass.

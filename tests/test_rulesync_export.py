@@ -1,0 +1,44 @@
+"""One canonical policy source; export only native input, never consumer files."""
+from pathlib import Path
+import importlib.util
+import tempfile
+import unittest
+
+ROOT=Path(__file__).resolve().parents[1]
+spec=importlib.util.spec_from_file_location('legacy_rules', ROOT/'bin/rules.py')
+rules=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(rules)
+
+
+class ExportTests(unittest.TestCase):
+    def test_explicit_policy_binding_order_and_single_authority(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); source=root/'input'; source.mkdir()
+            payload='---\nid: example\ntitle: Example\nsummary: Example\n---\nCOMMON\n<!-- binding: codex -->\nCODEX\n<!-- binding: claude -->\nCLAUDE\n'
+            (source/'example.rule.md').write_text(payload,encoding='utf-8')
+            dest=root/'export'
+            self.assertEqual(rules.export_sources([source],dest,['codexcli','claudecode','grokcli']),1)
+            files=sorted(p.name for p in (dest/'rules').iterdir())
+            self.assertEqual(files,['example-00.md','example-01-claude.md','example-01-shared.md'])
+            self.assertIn('["codexcli"]',(dest/'rules/example-01-shared.md').read_text())
+            self.assertEqual((source/'example.rule.md').read_text(),payload)
+            self.assertFalse((dest/'AGENTS.md').exists())
+            with self.assertRaises(ValueError):
+                rules.export_sources([source],dest,['codexcli'])
+            empty = root/'excluded'
+            self.assertEqual(rules.export_sources([source],empty,['codexcli'],['example']),0)
+            self.assertFalse(list((empty/'rules').iterdir()))
+            with self.assertRaisesRegex(ValueError, 'unknown excluded'):
+                rules.export_sources([source],root/'typo',['codexcli'],['typo'])
+
+    def test_all_current_sources_export_without_extra_policy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            dest=Path(temporary)/'native'
+            count=rules.export_sources([ROOT/'rules'],dest,['codexcli','claudecode','grokcli'])
+            self.assertEqual(count,len(list((ROOT/'rules').glob('*.rule.md'))))
+            self.assertTrue(list((dest/'rules').glob('*.md')))
+            self.assertFalse((dest/'skills').exists())
+
+
+if __name__=='__main__':
+    unittest.main()
