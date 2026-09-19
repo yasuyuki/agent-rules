@@ -45,7 +45,11 @@ source, runs the configured push preflight, and verifies the remote tip. It then
 follows the declared parent or remote-default integration edge using the normal
 Git `merge --no-ff --no-commit` contract, revalidates, pushes and records the
 result. A hold, dependency failure, changed accepted HEAD, dirty target, conflict,
-or failed validation remains a refusal to resolve in the existing task.
+or failed validation remains a refusal to resolve in the existing task. Retry the
+same plan after repairing the operation. If the ownership review or required
+cleanup changes, `--revise-plan-evidence` explicitly records that decision and
+retains completed effects; it cannot replace an unresolved archive/restore or a
+changed commit identity. No state editing or discard is needed.
 
 Retirement requires the exact accepted result, completed integration, explicit
 external-user release, unchanged worktree identity and accepted HEAD, and an

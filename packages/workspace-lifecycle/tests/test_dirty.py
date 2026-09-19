@@ -177,3 +177,16 @@ class DirtyLifecycleTest(unittest.TestCase):
         result = self.start("begin-retry")
         self.assertEqual(result, "begin-retry")
         self.assertEqual(git(self.topic, "branch", "--show-current"), "topic/begin-retry")
+
+    def test_unknown_dirty_can_be_resolved_by_explicit_reviewed_plan_revision(self):
+        task = self.start()
+        (self.topic / 'owned.txt').write_text('owned\n')
+        plan = self.plan("revision.json", {})
+        with self.assertRaises(LifecycleError):
+            finish(self.topic, task=task, plan_path=str(plan), result_ref='issue/dirty')
+        plan.write_text(json.dumps({'commit': [self.entry(task, 'owned.txt')]}))
+        with self.assertRaises(LifecycleError):
+            finish(self.topic, task=task, plan_path=str(plan), result_ref='issue/dirty')
+        result = finish(self.topic, task=task, plan_path=str(plan), result_ref='issue/dirty',
+                        revision_evidence='ownership investigation confirms task-authored source')
+        self.assertTrue(result['accepted'])

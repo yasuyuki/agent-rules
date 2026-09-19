@@ -218,3 +218,55 @@ class RecoveryBoundaryTests(unittest.TestCase):
         self.assertFalse(f.topic.exists())
         self.assertTrue(retire(f.root, task='boundary', result_ref='issue/boundary')['retired'])
         self.assertEqual(status(f.root)['tasks'], [])
+
+    def test_hidden_untracked_data_is_retained(self):
+        f = self.fixture
+        run(f.root, 'config', 'status.showUntrackedFiles', 'no')
+        private = f.topic / 'private.data'; private.write_text('must survive')
+        with self.assertRaises(LifecycleError):
+            retire(f.root, task='boundary', result_ref='issue/boundary', users_released=True)
+        self.assertEqual(private.read_text(), 'must survive')
+
+    def test_hidden_tracked_modification_is_retained(self):
+        f = self.fixture
+        run(f.topic, 'update-index', '--assume-unchanged', 'feature')
+        changed = f.topic / 'feature'; changed.write_text('unsaved user data')
+        with self.assertRaisesRegex(LifecycleError, 'assume-unchanged'):
+            retire(f.root, task='boundary', result_ref='issue/boundary', users_released=True)
+        self.assertEqual(changed.read_text(), 'unsaved user data')
+
+    def test_new_head_is_not_the_accepted_retirement_identity(self):
+        f = self.fixture
+        (f.topic / 'feature').write_text('later work')
+        run(f.topic, 'add', 'feature'); run(f.topic, 'commit', '-m', 'later task work')
+        with self.assertRaisesRegex(LifecycleError, 'branch changed'):
+            retire(f.root, task='boundary', result_ref='issue/boundary', users_released=True)
+        self.assertTrue(f.topic.exists())
+
+    def test_task_hold_preserves_work_until_explicit_resolution(self):
+        from workspace_lifecycle import service
+        f = self.fixture
+        service.hold(f.topic, 'boundary', 'user hold', 'await explicit release')
+        with self.assertRaisesRegex(LifecycleError, 'held'):
+            finish(f.topic, task='boundary', plan_path=str(self.plan), result_ref='issue/boundary')
+        service.release_hold(f.topic, 'boundary', 'fixture explicit user release')
+        self.assertTrue(finish(f.topic, task='boundary', plan_path=str(self.plan), result_ref='issue/boundary')['accepted'])
+
+    def test_other_user_lease_blocks_retirement(self):
+        from workspace_lifecycle import leases
+        f = self.fixture
+        with leases.guard(f.topic, 'boundary'):
+            with self.assertRaises(LifecycleError):
+                retire(f.root, task='boundary', result_ref='issue/boundary', users_released=True)
+        self.assertTrue(f.topic.exists())
+
+    def test_own_session_can_record_hold_and_next_start_refuses(self):
+        f = self.fixture
+        command = [sys.executable, '-m', 'workspace_lifecycle', '--repo', str(f.topic),
+                   'run', '--task', 'boundary', '--cwd', str(f.topic), '--', sys.executable, '-c']
+        held = subprocess.run([*command, "from workspace_lifecycle.service import hold; hold('.', 'boundary', 'user hold', 'wait for user')"],
+                              capture_output=True, text=True)
+        self.assertEqual(held.returncode, 0, held.stderr)
+        refused = subprocess.run([*command, "raise SystemExit(99)"], capture_output=True, text=True)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('held', refused.stderr)

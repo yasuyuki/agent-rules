@@ -169,7 +169,7 @@ def status(repo, task: str | None = None) -> dict:
 
 def hold(repo, task: str, reason: str, next_action: str) -> dict:
     if not reason or not next_action: raise LifecycleError("hold requires reason and next action")
-    with _lease(repo, task):
+    with _lease(repo, task, allow_use=True):
         with locked_state(repo) as (directory, state):
             _task(state, task)["hold"] = {"reason": reason, "next_action": next_action, "at": _now()}
             save_state(directory, state)
@@ -254,10 +254,10 @@ def _checked_paths(repo, entries, *, need, owner, completed=None):
             paths.append(name)
             continue
         if need == 'source' and item.get('deleted') is True:
-            previous = subprocess.run(['git', '-C', str(repo), 'show', 'HEAD:' + name], capture_output=True)
+            previous = subprocess.run(['git', '-C', str(repo), 'cat-file', '--filters', 'HEAD:' + name], capture_output=True)
             # After a recorded commit, the exact before-image remains in its parent.
             if previous.returncode:
-                previous = subprocess.run(['git', '-C', str(repo), 'show', 'HEAD^:' + name], capture_output=True)
+                previous = subprocess.run(['git', '-C', str(repo), 'cat-file', '--filters', 'HEAD^:' + name], capture_output=True)
             if (candidate.exists() or candidate.is_symlink() or previous.returncode
                     or hashlib.sha256(previous.stdout).hexdigest() != item.get('before_sha256')):
                 raise LifecycleError('deleted source does not match its reviewed before-image')
@@ -299,7 +299,7 @@ def _index_protection(repo):
 
 
 def _sync_file(path):
-    with path.open('rb') as stream:
+    with path.open('r+b') as stream:
         os.fsync(stream.fileno())
     if os.name != 'nt':
         descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
@@ -348,14 +348,14 @@ def _resolve_files(repo, plan, intent, directory, state):
                     incoming.seek(len(partial)); shutil.copyfileobj(incoming, output)
                     output.flush(); os.fsync(output.fileno())
             else:
-                fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, source.stat().st_mode & 0o777)
+                fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 with os.fdopen(fd, 'wb') as output, source.open('rb') as incoming:
                     shutil.copyfileobj(incoming, output)
                     output.flush(); os.fsync(output.fileno())
-            shutil.copystat(source, destination)
         elif not destination.is_file() or _sha(destination) != entry['sha256']:
             raise LifecycleError('preserved archive changed; keep remaining workspace data')
-        _sync_file(destination)
+        if action['phase'] == 'copying':
+            _sync_file(destination)
         if _sha(destination) != entry['sha256']:
             raise LifecycleError('archive readback differs')
         action = intent['actions'][name]
@@ -363,6 +363,7 @@ def _resolve_files(repo, plan, intent, directory, state):
         if source.exists():
             if source.is_symlink() or _sha(source) != entry['sha256']:
                 raise LifecycleError('private source changed after archive; preserve both')
+            shutil.copystat(source, destination)
             source.unlink()
         action['phase'] = 'resolved'; save_state(directory, state)
     for entry in plan.get('restore', []):
@@ -377,7 +378,7 @@ def _resolve_files(repo, plan, intent, directory, state):
         if action and not path.exists() and not tracked:
             action['phase'] = 'resolved'; save_state(directory, state)
             continue
-        original = subprocess.run(['git', '-C', str(repo), 'show', 'HEAD:' + name], capture_output=True)
+        original = subprocess.run(['git', '-C', str(repo), 'cat-file', '--filters', 'HEAD:' + name], capture_output=True)
         restored = tracked and original.returncode == 0 and path.is_file() and path.read_bytes() == original.stdout
         if not restored and (not path.is_file() or _sha(path) != entry['sha256']):
             raise LifecycleError('generated output changed before restore')
@@ -391,7 +392,7 @@ def _resolve_files(repo, plan, intent, directory, state):
 
 
 
-def finish(repo, *, task: str, plan_path: str, result_ref: str, message: str = 'workspace lifecycle completion', users_released: bool = False) -> dict:
+def finish(repo, *, task: str, plan_path: str, result_ref: str, message: str = 'workspace lifecycle completion', users_released: bool = False, revision_evidence: str | None = None) -> dict:
     repo = Path(repo).resolve(); plan = _plan(Path(plan_path)); task_id = task
     if not isinstance(result_ref, str) or not result_ref.strip():
         raise LifecycleError('durable result reference is required')
@@ -416,7 +417,19 @@ def finish(repo, *, task: str, plan_path: str, result_ref: str, message: str = '
                 commit = accepted['commit']
             else:
                 if intent and (intent['plan_digest'] != plan_digest or intent['result_ref'] != result_ref):
-                    raise LifecycleError('unfinished finish requires the same reviewed plan and result')
+                    if not revision_evidence or intent['result_ref'] != result_ref:
+                        raise LifecycleError('unfinished finish requires the same reviewed plan and result, or explicit plan revision evidence')
+                    if head(repo) not in (intent['initial_head'], intent.get('committed')):
+                        raise LifecycleError('resolve interrupted commit identity before revising its plan')
+                    if any(action['phase'] != 'resolved' for action in intent['actions'].values()):
+                        raise LifecycleError('finish pending preservation actions before revising the plan')
+                    for action in intent['actions'].values():
+                        if action['kind'] == 'archive':
+                            saved = Path(action['destination'])
+                            if not saved.is_file() or saved.is_symlink() or _sha(saved) != action['sha256']:
+                                raise LifecycleError('previous preservation evidence changed')
+                    task.setdefault('finish_receipts', []).append({**intent, 'revision_evidence': revision_evidence})
+                    intent = None
                 if not intent:
                     intent = {'kind': 'finish', 'initial_head': head(repo), 'plan_digest': plan_digest,
                               'result_ref': result_ref, 'actions': {}, 'at': _now()}
@@ -706,6 +719,8 @@ def retire_pending(repo) -> dict:
 def before_run(repo, task: str) -> None:
     with locked_state(repo) as (_, state):
         item = _task(state, task)
+        if item.get('hold'):
+            raise LifecycleError('task is held; explicit hold resolution is required')
         if item.get('retire'):
             raise LifecycleError('task has a retirement request; replay it before starting new use')
         if bound_task(repo) != task or task_worktree(repo, branch_for_task(repo, task)) != top(repo):

@@ -35,7 +35,7 @@ def parser():
     resume = commands.add_parser('release-hold', help='resolve an explicit hold using a decision reference')
     resume.add_argument('--task', required=True); resume.add_argument('--evidence', required=True)
     finish = commands.add_parser("finish", description="Resolve owned dirty, validate, save, push and normally integrate one task.",
-        epilog='Plan: commit/restore/archive arrays of path, owner, evidence, classification and sha256; source requires safe_to_commit=true. Restore requires regeneration.evidence; private archive requires store and approval_evidence. Exception requires reviewed_all_alternatives=true and commit/restore/archive/owner-resolution evidence, irreversible_harm, remaining_owner and next_action.'); finish.add_argument("--task", required=True); finish.add_argument("--plan", required=True); finish.add_argument("--result-ref", required=True); finish.add_argument("--message", default="workspace lifecycle completion"); finish.add_argument("--users-released", action="store_true")
+        epilog='Plan: commit/restore/archive arrays of path, owner, evidence, classification and sha256; source requires safe_to_commit=true. Restore requires regeneration.evidence; private archive requires store and approval_evidence. Exception requires reviewed_all_alternatives=true and commit/restore/archive/owner-resolution evidence, irreversible_harm, remaining_owner and next_action.'); finish.add_argument("--task", required=True); finish.add_argument("--plan", required=True); finish.add_argument("--result-ref", required=True); finish.add_argument("--message", default="workspace lifecycle completion"); finish.add_argument("--users-released", action="store_true"); finish.add_argument("--revise-plan-evidence", help="explicit review of a revised finish plan after all pending preservation actions complete")
     retire = commands.add_parser("retire"); retire.add_argument("--task"); retire.add_argument("--result-ref"); retire.add_argument("--pending", action="store_true"); retire.add_argument("--users-released", action="store_true"); retire.add_argument("--request", action="store_true")
     run = commands.add_parser("run"); run.add_argument("--task", required=True); run.add_argument("--cwd", default="."); run.add_argument("argv", nargs=argparse.REMAINDER)
     lease_status = commands.add_parser("lease-status"); lease_status.add_argument("--task", required=True)
@@ -50,7 +50,7 @@ def main(argv=None):
         elif args.command == "status": result = service.status(args.repo, args.task)
         elif args.command == "hold": result = service.hold(args.repo, args.task, args.reason, args.next_action)
         elif args.command == "release-hold": result = service.release_hold(args.repo, args.task, args.evidence)
-        elif args.command == "finish": result = service.finish(args.repo, task=args.task, plan_path=args.plan, result_ref=args.result_ref, message=args.message, users_released=args.users_released)
+        elif args.command == "finish": result = service.finish(args.repo, task=args.task, plan_path=args.plan, result_ref=args.result_ref, message=args.message, users_released=args.users_released, revision_evidence=args.revise_plan_evidence)
         elif args.command == "retire":
             if args.pending:
                 if args.task or args.result_ref: raise LifecycleError("retire --pending takes no task or result reference")
