@@ -77,7 +77,7 @@ class LeaseTests(unittest.TestCase):
                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             writers.append(writer)
             self.addCleanup(self.stop, writer)
-            self.assertEqual(writer.stdout.readline(), b'ready\n')
+            self.assertEqual(writer.stdout.readline().rstrip(b'\r\n'), b'ready')
             self.assertIsNone(writer.poll())
             return load(stream)
         with patch.object(leases.json, 'load', side_effect=start_writer_while_reading):
