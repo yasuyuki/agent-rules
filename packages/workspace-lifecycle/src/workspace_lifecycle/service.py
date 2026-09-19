@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import uuid
 
@@ -52,6 +53,20 @@ def _task(state, task):
     return value
 
 
+def _no_links(path, stop=None):
+    # Windows canonicalization expands 8.3 paths and normalizes casing. That is
+    # not a link. Check the actual filesystem attributes on every existing part.
+    for component in (path, *path.parents):
+        try:
+            info = component.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400):
+            raise LifecycleError('workspace path cannot traverse a link or reparse point')
+        if component == stop:
+            break
+
+
 def begin(repo, *, task: str, request: str, remote: str, branch: str, worktree: str,
           parent: str | None = None, dependencies: list[str] | None = None,
           validation: list[str] | None = None, preflight: list[str] | None = None) -> dict:
@@ -65,8 +80,8 @@ def begin(repo, *, task: str, request: str, remote: str, branch: str, worktree: 
         raise LifecycleError('preflight must explicitly select {repo}')
     git(repo, 'check-ref-format', '--branch', branch)
     target = Path(worktree).absolute()
-    if target.resolve() != target:
-        raise LifecycleError('new worktree cannot traverse symlinks')
+    _no_links(target)
+    target = target.resolve()
     if target == top(repo) or top(repo) in target.parents:
         raise LifecycleError('new worktree must be outside the integration checkout')
     desired = {'branch': branch, 'worktree': str(target), 'request': request, 'remote': remote,
@@ -220,11 +235,7 @@ def _file_path(repo, name):
     if relative.is_absolute() or not relative.parts or any(part.casefold() in ("..", ".git") for part in relative.parts):
         raise LifecycleError("path must name a workspace file outside Git metadata")
     candidate = repo / relative
-    for parent in (candidate, *candidate.parents):
-        if parent == repo:
-            break
-        if parent.is_symlink() or getattr(parent, 'is_junction', lambda: False)():
-            raise LifecycleError("plan paths cannot traverse links")
+    _no_links(candidate, repo)
     if repo not in candidate.resolve().parents:
         raise LifecycleError("plan path escapes workspace")
     return candidate
@@ -303,8 +314,10 @@ def _resolve_files(repo, plan, intent, directory, state):
         name = entry['path']; source = _file_path(repo, name)
         approval = entry.get('approval_evidence')
         store = Path(entry.get('store', ''))
-        if not approval or not store.is_absolute() or not store.is_dir() or store.resolve() != store:
+        if not approval or not store.is_absolute() or not store.is_dir():
             raise LifecycleError('archive needs an explicit existing authorized absolute store and approval evidence')
+        _no_links(store)
+        store = store.resolve()
         if store == repo or repo in store.parents or git(store, 'rev-parse', '--show-toplevel', optional=True):
             raise LifecycleError('private archive store cannot be inside a Git worktree')
         filename = entry.get('name', source.name)
@@ -599,7 +612,8 @@ def _retirement_contents(workspace):
                 if not path.is_file() or path.is_symlink():
                     raise LifecycleError('only linked worktrees can retire')
                 continue
-            if path.is_symlink() or getattr(path, 'is_junction', lambda: False)() or os.path.ismount(path):
+            _no_links(path, workspace)
+            if os.path.ismount(path):
                 raise LifecycleError('retire refuses linked or mounted filesystem content')
             if path.is_dir():
                 if logical not in directories:

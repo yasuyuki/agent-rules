@@ -102,7 +102,13 @@ class LeaseTests(unittest.TestCase):
         child.wait(timeout=10)
         self.assertTrue(leases.is_in_use(self.repo, 'task'))
         with self.assertRaises(ValueError):
-            leases.release(self.repo, 'task', token, 'external inspection')
+            leases.release(self.repo, 'task', token, '')
+        receipt = leases.status(self.repo, 'task')['receipt']
+        # Windows can terminate the launcher and its child together. Assert
+        # live-user refusal only when the native child identity is still live.
+        if receipt.get('child_identity') is not None and leases._identity(receipt['child_pid']) == receipt['child_identity']:
+            with self.assertRaises(ValueError):
+                leases.release(self.repo, 'task', token, 'external inspection')
         gate.unlink()
         child.communicate(timeout=15)
         receipt = leases.status(self.repo, 'task')['receipt']
