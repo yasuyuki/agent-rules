@@ -210,5 +210,139 @@ m.apply(sys.argv[2], sys.argv[3])
         self.assertTrue((self.root / "out/.agents/skills/new/SKILL.md").is_file())
 
 
+    def handover_plan(self, files, backup=None, output=None, desired=None):
+        output = output or (self.root / "out")
+        backup = backup or (self.root / "handover-backup")
+        if desired is None:
+            desired = backend._generate(backend._load_config(self.config), str(RULESYNC))
+        entries = []
+        for path in files:
+            entries.append({"path": path.relative_to(output).as_posix(),
+                            "sha256": backend._digest(path.read_bytes()),
+                            "mode": path.stat().st_mode & 0o777})
+        plan = self.root / "handover-plan.json"
+        plan.write_text(json.dumps({"version": 1, "output_root": str(output),
+                                    "files": entries,
+                                    "evidence": "old writer stopped; handwritten source preserved",
+                                    "backup_root": str(backup),
+                                    "desired_sha256": backend._digest(backend._manifest_bytes(desired))}))
+        return plan, backup
+
+    def test_handover_real_generation_preserves_before_state_and_then_checks(self):
+        config = backend._load_config(self.config)
+        desired = backend._generate(config, str(RULESYNC))
+        out = self.root / "out"
+        legacy = []
+        for rel, (data, mode) in desired.items():
+            path = out / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"legacy " + data)
+            path.chmod(0o644)
+            legacy.append(path)
+        plan, backup = self.handover_plan(legacy)
+        self.assertTrue(backend.handover(self.config, plan, str(RULESYNC)))
+        self.assertTrue((backup / "before/AGENTS.md").read_bytes().startswith(b"legacy "))
+        self.assertEqual((backup / "before/AGENTS.md").stat().st_mode & 0o777, 0o644)
+        self.assertEqual((backup / "plan.json").read_bytes(), plan.read_bytes())
+        self.assertTrue((backup / "config.json").is_file())
+        self.assertTrue((backup / "desired-ownership.json").is_file())
+        self.assertTrue(backend.check(self.config, str(RULESYNC)))
+        self.assertFalse(backend.apply(self.config, str(RULESYNC)))
+        with self.assertRaisesRegex(backend.BackendError, "existing ownership manifest"):
+            backend.handover(self.config, plan, str(RULESYNC))
+
+    def test_handover_allows_reviewed_stale_claude_and_rejects_bad_or_unreviewed_state(self):
+        out = self.root / "out"
+        out.mkdir()
+        agents, claude = out / "AGENTS.md", out / "CLAUDE.md"
+        agents.write_text("old agents")
+        agents.chmod(0o644)
+        claude.write_text("old claude")
+        claude.chmod(0o600)
+        plan, backup = self.handover_plan([agents, claude], desired={"AGENTS.md": (b"new agents", 0o755)})
+        original = backend._generate
+        backend._generate = lambda config, executable: {"AGENTS.md": (b"new agents", 0o755)}
+        try:
+            self.assertTrue(backend.handover(self.config, plan, str(RULESYNC)))
+        finally:
+            backend._generate = original
+        self.assertEqual(agents.read_bytes(), b"new agents")
+        self.assertEqual(agents.stat().st_mode & 0o777, 0o755)
+        self.assertFalse(claude.exists())
+        self.assertEqual((backup / "before/CLAUDE.md").read_text(), "old claude")
+
+        second = self.root / "second-out"
+        second.mkdir()
+        foreign = second / "AGENTS.md"
+        foreign.write_text("foreign")
+        bad_plan, _ = self.handover_plan([], self.root / "other-backup", second, {"AGENTS.md": (b"new", 0o600)})
+        data = json.loads(self.config.read_text()); data["output_root"] = "second-out"; self.config.write_text(json.dumps(data))
+        backend._generate = lambda config, executable: {"AGENTS.md": (b"new", 0o600)}
+        try:
+            with self.assertRaisesRegex(backend.BackendError, "unowned file"):
+                backend.handover(self.config, bad_plan, str(RULESYNC))
+        finally:
+            backend._generate = original
+
+    def test_handover_preserves_an_edit_that_races_backup_completion(self):
+        out = self.root / "out"
+        out.mkdir()
+        agents = out / "AGENTS.md"
+        agents.write_text("old")
+        plan, backup = self.handover_plan([agents], desired={"AGENTS.md": (b"new", 0o600)})
+        original_generate, original_backup = backend._generate, backend._write_handover_backup
+        backend._generate = lambda config, executable: {"AGENTS.md": (b"new", 0o600)}
+        def edit_after_backup(*args):
+            original_backup(*args)
+            agents.write_text("racing user edit")
+        backend._write_handover_backup = edit_after_backup
+        try:
+            with self.assertRaisesRegex(backend.BackendError, "externally modified"):
+                backend.handover(self.config, plan, str(RULESYNC))
+        finally:
+            backend._generate, backend._write_handover_backup = original_generate, original_backup
+        self.assertEqual(agents.read_text(), "racing user edit")
+        self.assertTrue((backup / "before/AGENTS.md").is_file())
+
+    def test_handover_rejects_wrong_root_metadata_symlink_and_backup_collision(self):
+        out = self.root / "out"
+        out.mkdir()
+        agents = out / "AGENTS.md"
+        agents.write_text("old")
+        plan, backup = self.handover_plan([agents])
+        data = json.loads(plan.read_text())
+        data["output_root"] = str(self.root / "wrong")
+        plan.write_text(json.dumps(data))
+        with self.assertRaisesRegex(backend.BackendError, "output_root"):
+            backend.handover(self.config, plan, str(RULESYNC))
+        data["output_root"] = str(out)
+        data["files"][0]["path"] = backend.MANIFEST
+        plan.write_text(json.dumps(data))
+        with self.assertRaisesRegex(backend.BackendError, "invalid handover plan"):
+            backend.handover(self.config, plan, str(RULESYNC))
+        data["files"][0]["path"] = "AGENTS.md"
+        data["files"][0]["sha256"] = backend._digest(agents.read_bytes())
+        data["files"][0]["mode"] = agents.stat().st_mode & 0o777
+        plan.write_text(json.dumps(data))
+        if os.name != "nt":
+            linked = self.root / "linked-backup"
+            linked.symlink_to(self.root, target_is_directory=True)
+            data["backup_root"] = str(linked)
+            plan.write_text(json.dumps(data))
+            with self.assertRaisesRegex(backend.BackendError, "symlink"):
+                backend.handover(self.config, plan, str(RULESYNC))
+        data["backup_root"] = str(backup)
+        plan.write_text(json.dumps(data))
+        if os.name != "nt":
+            metadata = out / backend.MANIFEST
+            metadata.symlink_to(self.root / "missing-manifest")
+            with self.assertRaisesRegex(backend.BackendError, "symlink"):
+                backend.handover(self.config, plan, str(RULESYNC))
+            metadata.unlink()
+        backup.mkdir()
+        with self.assertRaisesRegex(backend.BackendError, "backup already exists"):
+            backend.handover(self.config, plan, str(RULESYNC))
+
+
 if __name__ == "__main__":
     unittest.main()

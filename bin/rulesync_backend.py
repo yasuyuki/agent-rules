@@ -316,11 +316,12 @@ def _skill_roots(files: dict[str, tuple[bytes, int]]) -> set[str]:
     return roots
 
 
-def _validate_reconcile(output: Path, desired: dict[str, tuple[bytes, int]], owned: dict[str, dict] | None, config: dict) -> dict[str, dict]:
+def _validate_reconcile(output: Path, desired: dict[str, tuple[bytes, int]], owned: dict[str, dict] | None, config: dict, allow_grok_stale_claude: bool = False) -> dict[str, dict]:
     _assert_plain_output(output)
     owned = owned or {}
     if "grokcli" in config["targets"] and not config["global"] and "AGENTS.md" in desired and (output / "CLAUDE.md").exists():
-        raise BackendError("Grok discovers existing CLAUDE.md; refusing to change AGENTS.md")
+        if not (allow_grok_stale_claude and "CLAUDE.md" in owned and "CLAUDE.md" not in desired):
+            raise BackendError("Grok discovers existing CLAUDE.md; refusing to change AGENTS.md")
     # Before any mutation, prove every previously-owned file was not edited.
     for rel, meta in owned.items():
         path = output / rel
@@ -512,6 +513,125 @@ def _apply_reconcile(output: Path, desired: dict[str, tuple[bytes, int]], owned:
         raise exc
     return True
 
+
+def _plain_relative(rel: object, config: dict) -> str:
+    if not isinstance(rel, str) or not rel:
+        raise ValueError("invalid file entry")
+    pure = Path(rel)
+    if (rel != pure.as_posix() or ":" in rel or "\\" in rel or pure.is_absolute() or pure.drive
+            or any(part in ("", ".", "..") for part in pure.parts) or rel in (MANIFEST, JOURNAL, LOCK)
+            or not any(_allowed(target, rel, config["global"]) for target in config["targets"])):
+        raise ValueError("invalid file entry")
+    return rel
+
+
+def _load_handover_plan(plan_path: str | Path, config: dict, desired: dict[str, tuple[bytes, int]]) -> tuple[dict[str, dict], Path, bytes]:
+    plan_file = Path(plan_path).absolute()
+    try:
+        raw_bytes = plan_file.read_bytes()
+        value = json.loads(raw_bytes)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise BackendError(f"cannot read handover plan {plan_file}: {exc}") from exc
+    required = {"version", "output_root", "files", "evidence", "backup_root", "desired_sha256"}
+    if not isinstance(value, dict) or set(value) != required or type(value.get("version")) is not int or value["version"] != 1:
+        raise BackendError("handover plan must contain exactly version 1 and the required fields")
+    output_value = value["output_root"]
+    if not isinstance(output_value, str):
+        raise BackendError("handover plan output_root must be a path")
+    plan_output = Path(os.path.normcase(os.path.abspath(_abs(output_value, plan_file.parent))))
+    if plan_output != config["_output"]:
+        raise BackendError("handover plan output_root does not match config")
+    if not isinstance(value["evidence"], str) or not value["evidence"].strip():
+        raise BackendError("handover plan evidence must be non-empty")
+    if not isinstance(value["desired_sha256"], str) or value["desired_sha256"] != _digest(_manifest_bytes(desired)):
+        raise BackendError("handover plan desired_sha256 does not match generated output")
+    backup_value = value["backup_root"]
+    if not isinstance(backup_value, str) or not Path(backup_value).is_absolute():
+        raise BackendError("handover plan backup_root must be absolute")
+    backup = Path(os.path.normcase(os.path.abspath(backup_value)))
+    for protected in [config["_output"], *config["_roots"]]:
+        try:
+            backup.relative_to(protected)
+        except ValueError:
+            try:
+                protected.relative_to(backup)
+            except ValueError:
+                pass
+            else:
+                raise BackendError("handover backup_root cannot contain output or source roots")
+        else:
+            raise BackendError("handover backup_root cannot be inside output or source roots")
+    if not isinstance(value["files"], list):
+        raise BackendError("handover plan files must be an array")
+    files: dict[str, dict] = {}
+    try:
+        for entry in value["files"]:
+            if not isinstance(entry, dict) or set(entry) != {"path", "sha256", "mode"}:
+                raise ValueError("invalid file entry")
+            rel = _plain_relative(entry["path"], config)
+            digest, mode = entry["sha256"], entry["mode"]
+            if (rel in files or not isinstance(digest, str) or len(digest) != 64
+                    or any(ch not in "0123456789abcdef" for ch in digest)
+                    or not isinstance(mode, int) or isinstance(mode, bool) or mode < 0 or mode > 0o777):
+                raise ValueError("invalid file entry")
+            files[rel] = {"sha256": digest, "mode": mode}
+    except ValueError as exc:
+        raise BackendError(f"invalid handover plan: {exc}") from exc
+    return files, backup, raw_bytes
+
+
+def _assert_new_plain_backup(backup: Path) -> None:
+    if _contains_link(backup):
+        raise BackendError(f"symlink or junction is not allowed: {backup}")
+    if backup.exists() or _is_link_or_reparse(backup):
+        raise BackendError(f"handover backup already exists: {backup}")
+    parent = backup.parent
+    if not parent.is_dir() or _is_link_or_reparse(parent):
+        raise BackendError(f"handover backup parent is not a plain directory: {parent}")
+
+
+def _write_handover_backup(backup: Path, output: Path, plan_files: dict[str, dict], plan_bytes: bytes, config: dict, desired: dict[str, tuple[bytes, int]]) -> None:
+    _assert_new_plain_backup(backup)
+    backup.mkdir(mode=0o700)
+    before = backup / "before"
+    before.mkdir()
+    for rel, meta in plan_files.items():
+        source = output / rel
+        data = source.read_bytes()
+        mode = stat.S_IMODE(source.stat().st_mode) & 0o777
+        if (_digest(data), mode) != (meta["sha256"], meta["mode"]):
+            raise BackendError(f"reviewed handover file changed while backing up: {rel}")
+        destination = before / rel
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        _write_atomic(destination, data, mode)
+    _write_atomic(backup / "plan.json", plan_bytes, 0o600)
+    _write_atomic(backup / "config.json", config["_file"].read_bytes(), 0o600)
+    _write_atomic(backup / "desired-ownership.json", _manifest_bytes(desired), 0o600)
+
+
+def handover(config_path: str | Path, plan_path: str | Path, rulesync: str | None = None) -> bool:
+    """Transfer explicitly reviewed handwritten outputs to Rulesync exactly once."""
+    config = _load_config(config_path)
+    executable = _resolve_executable(config, rulesync)
+    desired = _generate(config, executable)
+    _protect_sources(config, desired)
+    plan_files, backup, plan_bytes = _load_handover_plan(plan_path, config, desired)
+    output = config["_output"]
+    with _output_lock(output):
+        plan_files, backup, plan_bytes = _load_handover_plan(plan_path, config, desired)
+        manifest, journal = output / MANIFEST, output / JOURNAL
+        if _is_link_or_reparse(manifest) or _is_link_or_reparse(journal):
+            raise BackendError("symlink or junction is not allowed for Rulesync metadata")
+        if manifest.exists():
+            raise BackendError("handover requires no existing ownership manifest")
+        if journal.exists():
+            raise BackendError("handover requires no pending transaction journal")
+        _assert_new_plain_backup(backup)
+        owned = _validate_reconcile(output, desired, plan_files, config, allow_grok_stale_claude=True)
+        _write_handover_backup(backup, output, owned, plan_bytes, config, desired)
+        # Preserve edits that race backup creation rather than applying over them.
+        owned = _validate_reconcile(output, desired, owned, config, allow_grok_stale_claude=True)
+        return _apply_reconcile(output, desired, owned)
 
 def apply(config_path: str | Path, rulesync: str | None = None) -> bool:
     config = _load_config(config_path)
