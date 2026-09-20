@@ -61,7 +61,10 @@ not scan for cleanup. A lease is separate from Git's administrative lock.
 `run` supervises one task checkout. Linux uses a native subreaper and Windows a
 native job to track descendants. A normal child exit does not prove that an
 arbitrary detached external user released the workspace; explicit release
-evidence is still required. `lease-status` inspects a lease and
+evidence is still required. On Windows, a caller whose current directory remains
+inside the task still holds a directory handle; `--users-released` cannot turn
+that use into a removable worktree. Release that caller before retrying pending
+retirement. `lease-status` inspects a lease and
 `lease-release` recovers exactly one dead-owner lease after review.
 
 Runtime launchers use `resolve-run` with the already selected effective cwd and

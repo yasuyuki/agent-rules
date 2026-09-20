@@ -338,8 +338,13 @@ def run(repo, task, argv, cwd, before_spawn=None, child_env=None):
                 os.killpg(child.pid, signal.SIGCONT)
             while True:
                 try:
-                    code = child.wait()
+                    # Windows SIGBREAK does not interrupt an infinite process
+                    # wait. Return to Python at the existing descendant-check
+                    # cadence so its handler can forward the console event.
+                    code = child.wait(timeout=0.1 if os.name == 'nt' else None)
                     break
+                except subprocess.TimeoutExpired:
+                    continue
                 except KeyboardInterrupt:
                     if os.name == 'nt':
                         forward_console(signal.SIGINT, None)

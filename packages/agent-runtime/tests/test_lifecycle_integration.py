@@ -49,7 +49,9 @@ class InstalledLifecycleIntegrationTests(unittest.TestCase):
         git(self.root, "config", "user.name", "Runtime Integration")
         git(self.root, "config", "user.email", "runtime@example.invalid")
         (self.root / "README").write_text("base\n", encoding="utf-8")
-        git(self.root, "add", "README")
+        (self.root / "nested 日本語").mkdir()
+        (self.root / "nested 日本語" / ".keep").write_text("tracked\n")
+        git(self.root, "add", "README", "nested 日本語/.keep")
         git(self.root, "commit", "-m", "base")
         git(self.root, "push", "origin", "trunk")
         preflight = [sys.executable, "-m", "workspace_lifecycle.push", "{repo}",
@@ -67,7 +69,7 @@ class InstalledLifecycleIntegrationTests(unittest.TestCase):
             """import hashlib,json,os,pathlib,subprocess,sys,tempfile
 context=json.loads(os.environ['WORKSPACE_LIFECYCLE_CONTEXT'])
 repo=pathlib.Path(context['repo'])
-launch=os.getcwd(); os.chdir(repo); pathlib.Path(launch).rmdir()
+launch=os.getcwd(); os.chdir(repo)
 path=repo/'feature.txt'; path.write_text('integrated\\n',encoding='utf-8')
 descriptor,plan_name=tempfile.mkstemp(suffix='.json'); os.close(descriptor)
 plan=pathlib.Path(plan_name)
@@ -100,16 +102,20 @@ pathlib.Path(%r).write_text(json.dumps({'cwd':launch,'argv':sys.argv[1:]}),encod
 
     def test_managed_relative_cwd_executes_advertised_finish_and_retires(self):
         nested = self.topic / "nested 日本語"
-        nested.mkdir()
+        self.assertTrue(nested.is_dir())
         self.write_config([self.topic])
-        result = self.invoke(nested, "--cwd", "..", "two words", "日本語")
+        # An external launcher has released the worktree. On Windows a caller
+        # whose cwd is inside the tree still owns a directory handle and cannot
+        # truthfully request users-released retirement.
+        relative = str(nested.relative_to(self.base))
+        result = self.invoke(self.base, "--cwd", relative, "two words", "日本語")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "")
         self.assertFalse(self.topic.exists())
         self.assertEqual(git(self.root, "show", "HEAD:feature.txt"), "integrated")
         observed = json.loads(self.marker.read_text(encoding="utf-8"))
-        self.assertEqual(observed["cwd"], str(nested))
-        self.assertEqual(observed["argv"], ["--cwd", "..", "two words", "日本語"])
+        self.assertEqual(observed["cwd"], str(self.base))
+        self.assertEqual(observed["argv"], ["--cwd", relative, "two words", "日本語"])
 
     def test_owner_boundaries_refuse_and_unmanaged_creates_no_state(self):
         marker = self.marker
