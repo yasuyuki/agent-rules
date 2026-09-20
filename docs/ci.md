@@ -192,7 +192,7 @@ The pack-refs repair regression also asserts the product-owned configuration
 refusal instead of Git's version-dependent English spelling of "reference";
 pack-refs failure, successful repair, and unchanged semantic refs remain required.
 
-The regression tests use the existing necessity/source stages and remote
+The regression tests use the existing source regression stage and remote
 adoption collection; no new job, retry, skip, deadline increase, or failure
 suppression is introduced. The parent-exit fixture setup is bounded by the
 existing CI runner timeout rather than the product's pipe-drain deadline.

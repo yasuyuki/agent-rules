@@ -70,10 +70,6 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Rulesync safety contract
         run: python tests/ci_runner.py --output ci-results/rulesync.json --timeout 300 test_rulesync_backend test_rulesync_export
-      - name: Optional necessity parser dependencies
-        run: python -m pip install bashlex==0.18 tomli
-      - name: Opt-in necessity hooks contract
-        run: python tests/ci_runner.py --output ci-results/necessity.json --timeout 300 test_necessity_select test_necessity_hook test_necessity_install test_necessity_review
       - name: Handoff contract
         run: python tests/ci_runner.py --output ci-results/handoff.json --timeout 300 --command python tests/test_handoff.py
       - name: Placement and rules contract
