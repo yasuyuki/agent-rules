@@ -242,7 +242,8 @@ m.apply(sys.argv[2], sys.argv[3])
         plan, backup = self.handover_plan(legacy)
         self.assertTrue(backend.handover(self.config, plan, str(RULESYNC)))
         self.assertTrue((backup / "before/AGENTS.md").read_bytes().startswith(b"legacy "))
-        self.assertEqual((backup / "before/AGENTS.md").stat().st_mode & 0o777, 0o644)
+        if os.name != "nt":
+            self.assertEqual((backup / "before/AGENTS.md").stat().st_mode & 0o777, 0o644)
         self.assertEqual((backup / "plan.json").read_bytes(), plan.read_bytes())
         self.assertTrue((backup / "config.json").is_file())
         self.assertTrue((backup / "desired-ownership.json").is_file())
@@ -267,7 +268,8 @@ m.apply(sys.argv[2], sys.argv[3])
         finally:
             backend._generate = original
         self.assertEqual(agents.read_bytes(), b"new agents")
-        self.assertEqual(agents.stat().st_mode & 0o777, 0o755)
+        if os.name != "nt":
+            self.assertEqual(agents.stat().st_mode & 0o777, 0o755)
         self.assertFalse(claude.exists())
         self.assertEqual((backup / "before/CLAUDE.md").read_text(), "old claude")
 
