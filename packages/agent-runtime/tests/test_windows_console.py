@@ -47,13 +47,15 @@ runtime,config,cwd,ready,event=sys.argv[1:]
 event=int(event)
 # CI shells may inherit the ignore-Ctrl+C attribute. A normal interactive
 # caller processes it; set that inherited attribute before creating the private
-# console. Do not use CREATE_NEW_PROCESS_GROUP, which disables Ctrl+C.
+# console. A targetable Break group is separate from broadcast Ctrl+C.
 kernel=ctypes.WinDLL('kernel32',use_last_error=True)
 kernel.SetConsoleCtrlHandler.argtypes=(ctypes.c_void_p,ctypes.c_int)
 kernel.SetConsoleCtrlHandler.restype=ctypes.c_int
 if not kernel.SetConsoleCtrlHandler(None,False):
     raise ctypes.WinError(ctypes.get_last_error())
 creationflags=subprocess.CREATE_NEW_CONSOLE
+if event:
+    creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
 child=subprocess.Popen([runtime,'--config',config,'grok'],cwd=cwd,
     creationflags=creationflags)
 ready=pathlib.Path(ready)
