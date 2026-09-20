@@ -44,6 +44,6 @@ alone does not update a running environment.
 - [Development and CI](docs/ci.md): build and verification.
 - [Agent runtime guide](packages/agent-runtime/README.md): independent native CLI adapter and explicit adoption boundary.
 - [Workspace lifecycle guide](packages/workspace-lifecycle/README.md): independent task, finish, integration and retirement contract.
-- [Optional necessity hooks](docs/necessity-hooks.md): separate checkout-only tooling.
+- [Necessity review](https://github.com/yasuyuki/necessity-review): independent owner and management CLI; existing fixed consumers can retain their accepted agent-rules revision until separately migrated.
 
 MIT. See [LICENSE](LICENSE).

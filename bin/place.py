@@ -36,12 +36,6 @@ from pathlib import Path
 # material to classify's read-only contract: local imports must not emit pyc.
 sys.dont_write_bytecode = True
 
-# The pinned necessity recovery entry does not execute unrelated local modules.
-# Keep this direct-script path before the placement/controller imports below.
-if __name__ == "__main__" and sys.argv[1:2] == ["necessity"]:
-    import necessity_install
-    raise SystemExit(necessity_install.main(sys.argv[2:]))
-
 # Runtime dispatch must precede placement, inventory and branch imports.
 # Unmigrated live consumers retain their pinned checkout and saved inputs.
 if __name__ == "__main__" and sys.argv[1:2] in (["start"], ["standard-start"]):
@@ -2002,9 +1996,6 @@ def selfcheck(_args):
 
 
 def main(argv, *, runner=subprocess.run, resolver=None):
-    if argv[:1] == ["necessity"]:
-        import necessity_install
-        return necessity_install.main(argv[1:])
     if resolver is None:
         resolver = managed_entry.resolve_executable
     if argv[:1] == ["branch"]:
@@ -2097,7 +2088,6 @@ def main(argv, *, runner=subprocess.run, resolver=None):
     handoff_p.add_argument("--workspace", required=True)
 
     sub.add_parser("branch", help="register work and enforce Git branch operations")
-    sub.add_parser("necessity", help="opt-in Codex necessity hook install/check/remove")
     sub.add_parser("selfcheck")
     args = parser.parse_args(argv)
     try:

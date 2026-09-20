@@ -44,7 +44,6 @@ class ProjectCliTests(unittest.TestCase):
                       'p=Path(agent_rules_manager.__file__).parent; '
                       'assert not (p/"bin/place.py").exists(); '
                       'assert not (p/"bin/branch_management.py").exists(); '
-                      'assert not (p/"bin/necessity_install.py").exists(); '
                       'assert not (p/"placement.json").exists(); '
                       'assert not (p/"rules").exists(); '
                       'assert not (p/"skills").exists()')
