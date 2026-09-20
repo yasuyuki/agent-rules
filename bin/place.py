@@ -42,6 +42,12 @@ if __name__ == "__main__" and sys.argv[1:2] == ["necessity"]:
     import necessity_install
     raise SystemExit(necessity_install.main(sys.argv[2:]))
 
+# Runtime dispatch must precede placement, inventory and branch imports.
+# Unmigrated live consumers retain their pinned checkout and saved inputs.
+if __name__ == "__main__" and sys.argv[1:2] in (["start"], ["standard-start"]):
+    from runtime_entry import main as runtime_main
+    raise SystemExit(runtime_main(sys.argv[1:]))
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 entry_spec = importlib.util.spec_from_file_location("managed_entry", HERE / "managed_entry.py")

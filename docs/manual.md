@@ -157,26 +157,23 @@ proof of the new backend. Use the backend tests in the CI guide for that scope.
 
 ## Launch and environment maintenance
 
-Discover the declared entry before starting an installed, authenticated CLI:
+Normal launch is owned by the independently installable
+[agent-runtime package](../packages/agent-runtime/README.md). Its explicit adopted
+configuration selects vendor executables, workspace scope and fixed HANDOFF and
+workspace-lifecycle interfaces. Launch does not generate placement, scan inventory,
+adopt configuration or query vendor releases.
 
-```console
-python bin/place.py list --declaration PLACEMENT.md
-python bin/place.py start --declaration PLACEMENT.md WORKSPACE TOOL
-```
+The checkout's `start` and `standard-start` process entries delegate to that package
+before loading placement or inventory. `standard-start --config FILE TOOL -- ...`
+uses runtime configuration; `start --config FILE WORKSPACE TOOL -- ...` selects an
+explicit runtime workspace `id`. Legacy `placement-start.json` is not converted or
+silently accepted. `save-start-config` remains an adoption-input operation for
+pinned consumers, not a producer of new runtime configuration.
 
-Append native CLI arguments after `--`, including resume arguments. Start runs
-on the target host and supports local direct workspaces; transport, GUI opening,
-authentication and experiment lifecycle remain with their existing owners.
-It checks the selected CLI's placement and, when inventory-bound, active runtime
-identity. Another CLI's broken placement does not block this selected CLI.
-
-For repeated starts, `save-start-config` validates and saves the explicit inputs
-in `placement-start.json` in the launch directory. Then `start WORKSPACE TOOL`
-reuses them. Additional private sources must be included when saving; `--config`
-selects a different file. No HOME or parent search supplies hidden inputs.
-Saving configuration does not apply placement or adopt a runtime. A different
-existing configuration is not overwritten: select an explicit new config or
-resolve the existing one through its owner.
+Unmigrated live consumers must retain their pinned source and saved configuration
+until the separate adoption task verifies the new package, configuration, entry
+and rollback source together. Installing or testing this source does not switch
+a live PATH, trusted bundle, hook or lifecycle state.
 
 ### Catalogs and readiness
 
@@ -237,24 +234,15 @@ compatibility discovery can expose duplicate owners; placement itself does not
 enable native worktree creation or automatic approvals. OpenCode uses its native
 `.opencode/skills` layout; file checks likewise do not prove a session read it.
 
-### Standard command names on POSIX
+### Standard command names
 
-An owner can use `entry install --config FILE --directory DIRECTORY --tool TOOL`
-to put managed names in a dedicated PATH directory before vendor binaries. This
-connects ordinary `codex`, `claude`, or other declared commands to the same start
-checks. Do not replace vendor binaries or unrelated aliases. Keep the dispatcher
-source installed; repeat install to rebind a moved vendor/source or add tools.
-Use `entry remove --directory DIRECTORY`, then remove that PATH entry, to remove
-owned names while preserving vendors and settings. Windows transport stays with
-the environment's existing SSH lifecycle.
-
-Normal starts choose the deepest declared workspace, enforce an explicit child
-binding, and preserve native streams, terminal, signals and continuation arguments.
-They check the effective launch directory, not subsequent tool confinement.
-They do not adopt, establish trust, check releases or probe models. Exact native
-maintenance/help/version operations remain reachable with broken saved placement;
-there is no general skip-check option. [managed_entry.py](../bin/managed_entry.py)
-owns the permitted maintenance forms and vendor resolution.
+The runtime wheel provides `codex`, `claude` and `grok` in its isolated installation
+directory, separate from vendor executables. Its guide defines configuration and
+native argument handling for Linux and Windows. The old POSIX `entry` ownership
+operations remain available for existing links; the dispatcher now delegates to
+the runtime process boundary. Do not replace a live pinned dispatcher until its
+configuration has been adopted. Vendor files and global PATH are not changed by
+package installation into an isolated environment.
 
 ## Route work without executing it
 
@@ -298,8 +286,8 @@ Failure stage/code describes one query without exposing its payload or retrying.
 For an existing launch entry, `--launch-config FILE` maps platform IDs to literal
 argv prefixes. Use absolute executable/path arguments, preserve the selected
 product's target cwd and output/status, and keep credentials out of argv. A
-`place.py start` prefix needs the declared target workspace, its private source
-inputs and trailing `--`. Windows batch shims are refused; use the native binary
+`agent-runtime` prefix needs an explicitly adopted runtime configuration, tool
+name and trailing `--`. Windows batch shims are refused; use the native binary
 or existing `node.exe` plus CLI JavaScript path. The report cannot attest the
 internals of a custom launcher.
 
@@ -367,9 +355,10 @@ document and historical revision. Its fields are `version: 1`, `pair`,
 that workspace's HANDOFF.md. Keep private bindings/fragments outside this repo.
 Received Markdown cannot select paths or execute commands.
 
-Configured `start` receives after placement checks and before launch, including
-resume. Existing GUI owners can call `handoff-receive --workspace PATH` at that
-same point; a standalone call does not prove GUI integration. Updates arrive on
+Configured runtime receives before launch, including resume. The fixed receiver
+CLI is `python bin/handoff_receive.py --workspace PATH`; its JSON status and exit
+code identify success or refusal. Existing GUI owners retain their receiver entry;
+adopt exactly one receiver owner for each launch path. A standalone call does not prove GUI integration. Updates arrive on
 the next start/resume, not in a running session. Senders update the fragment
 through normal registered Git integration and push; detailed results stay in the
 shared task, and receipt blocks are not republished as source.

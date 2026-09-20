@@ -270,7 +270,7 @@ def _windows_job(token):
     return name, active, lambda: kernel.CloseHandle(handle)
 
 
-def run(repo, task, argv, cwd, before_spawn=None):
+def run(repo, task, argv, cwd, before_spawn=None, child_env=None):
     """Dedicated supervisor entry, preserving signals and holding descendants.
 
     External detached users must still release explicitly before retirement.
@@ -292,12 +292,22 @@ def run(repo, task, argv, cwd, before_spawn=None):
         foreground = None
         complete = False
         try:
-            options = {'cwd': str(cwd), 'env': {**os.environ, 'WORKSPACE_LIFECYCLE_USE': record['token']}}
+            options = {'cwd': str(cwd), 'env': {**os.environ, **(child_env or {}),
+                                                'WORKSPACE_LIFECYCLE_USE': record['token']}}
             if os.name == 'nt':
                 job, descendants, close_job = _windows_job(record['token'])
                 record['windows_job'] = job
                 _save(receipt, record)
                 options['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
+                def forward_console(_number, _frame):
+                    if child is not None and child.poll() is None:
+                        try:
+                            child.send_signal(signal.CTRL_BREAK_EVENT)
+                        except OSError:
+                            if child.poll() is None:
+                                raise
+                for number in (signal.SIGINT, signal.SIGBREAK):
+                    previous[number] = signal.signal(number, forward_console)
             else:
                 # Python 3.10 supports preexec_fn rather than process_group.
                 _linux_subreaper()
@@ -328,11 +338,16 @@ def run(repo, task, argv, cwd, before_spawn=None):
                 os.killpg(child.pid, signal.SIGCONT)
             while True:
                 try:
-                    code = child.wait()
+                    # Windows SIGBREAK does not interrupt an infinite process
+                    # wait. Return to Python at the existing descendant-check
+                    # cadence so its handler can forward the console event.
+                    code = child.wait(timeout=0.1 if os.name == 'nt' else None)
                     break
+                except subprocess.TimeoutExpired:
+                    continue
                 except KeyboardInterrupt:
                     if os.name == 'nt':
-                        child.send_signal(signal.CTRL_BREAK_EVENT)
+                        forward_console(signal.SIGINT, None)
             while descendants() if os.name == 'nt' else _linux_descendants():
                 time.sleep(0.1)
             complete = True

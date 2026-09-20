@@ -89,10 +89,8 @@ class ManagedEntryTests(unittest.TestCase):
     def test_dispatcher_preserves_quoted_unicode_arguments(self):
         fake_place = self.root / "place.py"
         fake_place.write_text(
-            "import json\n"
-            "def main(argv, **kwargs):\n"
-            " print(json.dumps(argv, ensure_ascii=False))\n"
-            " return 0\n", encoding="utf-8")
+            "import json, sys\n"
+            "print(json.dumps(sys.argv[1:], ensure_ascii=False))\n", encoding="utf-8")
         document = entry._document(self.managed, self.config, ["grok"], [str(self.vendor)], place=fake_place)
         (self.managed / entry.BINDING_NAME).write_text(json.dumps(document), encoding="utf-8")
         (self.managed / "grok").symlink_to(entry.DISPATCHER)

@@ -423,3 +423,18 @@ def receive(workspace):
         return _result("error", error=str(exc))
     except (OSError, UnicodeDecodeError) as exc:
         return _result("error", error=str(exc))
+
+
+def main(argv=None):
+    """Fixed CLI boundary for runtime and existing GUI consumers."""
+    import argparse
+    parser = argparse.ArgumentParser(description="Receive the explicitly bound shared HANDOFF")
+    parser.add_argument("--workspace", required=True)
+    args = parser.parse_args(argv)
+    result = receive(args.workspace)
+    print(json.dumps(result, ensure_ascii=True, sort_keys=True))
+    return 0 if result.get("status") in {"not-configured", "updated", "unchanged"} else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

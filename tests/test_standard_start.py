@@ -117,11 +117,23 @@ class StandardStartTests(unittest.TestCase):
         self.assertEqual(self.run_start(self.subdir, 'grok', ['--prompt', '--help'])[0], 1)
         self.assertEqual(len(self.calls), 2)
 
+    def runtime_config(self, vendor):
+        import hashlib
+        source = ROOT / 'bin/branch_management.py'
+        lifecycle = {'argv': [sys.executable, str(source)], 'source': str(source),
+                     'interface': 'resolve-run-v1',
+                     'pins': [{'path': str(source), 'sha256': hashlib.sha256(source.read_bytes()).hexdigest()}]}
+        self.config.write_text(json.dumps({'version': 1,
+            'tools': {'grok': {'argv': [str(vendor)]}},
+            'workspaces': [{'root': str(self.work), 'state': 'active', 'tools': ['grok'],
+                            'lifecycle': lifecycle}]}), encoding='utf-8')
+
     @unittest.skipIf(os.name == 'nt', 'POSIX standard-name installation')
     def test_real_child_standard_name_stdio_and_exit(self):
         vendor = self.root / 'vendor' / 'grok'
         vendor.write_text('#!%s\nimport json,os,sys\nprint(json.dumps({"cwd":os.getcwd(),"args":sys.argv[1:],"stdin":sys.stdin.read()},ensure_ascii=False))\nprint("vendor stderr",file=sys.stderr)\nsys.exit(23)\n' % sys.executable, encoding='utf-8')
         vendor.chmod(0o755)
+        self.runtime_config(vendor)
         directory = self.root / 'entry'
         path = str(vendor.parent) + os.pathsep + os.environ['PATH']
         place.managed_entry.install(self.config, directory, ['grok'], path=path)
@@ -146,6 +158,7 @@ class StandardStartTests(unittest.TestCase):
         # Python's asynchronous signal handler and a separate pause call.
         vendor.write_text('#!%s\nimport os,sys,signal\nsignal.pthread_sigmask(signal.SIG_BLOCK,{signal.SIGINT})\nprint("TTY="+str(all(os.isatty(fd) for fd in (0,1,2))),flush=True)\nreceived=signal.sigwait({signal.SIGINT})\nsys.exit(42 if received == signal.SIGINT else 1)\n' % sys.executable, encoding='utf-8')
         vendor.chmod(0o755)
+        self.runtime_config(vendor)
         directory = self.root / 'entry'
         path = str(vendor.parent) + os.pathsep + os.environ['PATH']
         place.managed_entry.install(self.config, directory, ['grok'], path=path)

@@ -20,13 +20,16 @@ def main(argv=None, invoked=None):
         tool = invoked.name
         if tool not in binding["tools"] or not invoked.is_symlink() or not managed_entry._same_file(invoked, binding["dispatcher"]):
             raise managed_entry.EntryError("managed entry link is stale or changed: %s" % invoked)
-        place_spec = importlib.util.spec_from_file_location("managed_place", binding["place"])
-        place = importlib.util.module_from_spec(place_spec)
-        place_spec.loader.exec_module(place)
-        return place.main(
-            ["standard-start", "--config", binding["config"], tool, "--", *(sys.argv[1:] if argv is None else argv)],
-            resolver=lambda name: managed_entry.resolve_executable(name, binding=binding),
-        )
+        # The adopted config carries vendor identity. Never import placement or
+        # infer a replacement vendor from ambient PATH here.
+        import subprocess
+        import os
+        command = [sys.executable, binding["place"], "standard-start",
+                   "--config", binding["config"], tool, "--",
+                   *(sys.argv[1:] if argv is None else argv)]
+        if os.name == "posix":
+            os.execv(sys.executable, command)
+        return subprocess.run(command).returncode
     except managed_entry.EntryError as exc:
         print("FAIL: %s" % exc, file=sys.stderr)
         return 1

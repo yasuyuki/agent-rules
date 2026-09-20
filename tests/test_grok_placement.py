@@ -148,16 +148,23 @@ artifact\tlocation_id\trequirement\treason
                 )
                 command.chmod(0o755)
             self.assertTrue(load_place().detect_cli({"home": str(home)}, grok))
-            started = self.run_place(
-                "start", *common, "work", "grok", "--", "--fixture",
-                env={"PATH": str(executable) + os.pathsep + os.environ.get("PATH", ""), "PATHEXT": ".CMD;.EXE;.BAT;.COM"},
-            )
+            # Discovery remains the descriptor's concern; start consumes an
+            # adopted runtime binding and a portable native process fixture.
+            import hashlib
+            vendor = root / 'vendor.py'
+            vendor.write_text("import os,sys\nfrom pathlib import Path\nPath(%r).write_text(os.getcwd(),encoding='utf-8')\nraise SystemExit(23 if '--fail' in sys.argv else 0)\n" % str(marker), encoding='utf-8')
+            lifecycle = ROOT / 'bin/branch_management.py'
+            runtime_config = root / 'runtime.json'
+            runtime_config.write_text(json.dumps({'version': 1,
+                'tools': {'grok': {'argv': [sys.executable, str(vendor)]}},
+                'workspaces': [{'id': 'work', 'root': str(workspace), 'state': 'active', 'tools': ['grok'],
+                    'lifecycle': {'argv': [sys.executable, str(lifecycle)], 'source': str(lifecycle),
+                        'interface': 'resolve-run-v1', 'pins': [{'path': str(lifecycle),
+                            'sha256': hashlib.sha256(lifecycle.read_bytes()).hexdigest()}]}}]}), encoding='utf-8')
+            started = self.run_place('start', '--config', str(runtime_config), 'work', 'grok', '--', '--fixture')
             self.assert_ok(started)
-            self.assertEqual(str(workspace), marker.read_text(encoding="utf-8").strip())
-            failed = self.run_place(
-                "start", *common, "work", "grok", "--", "--fail",
-                env={"PATH": str(executable) + os.pathsep + os.environ.get("PATH", ""), "PATHEXT": ".CMD;.EXE;.BAT;.COM"},
-            )
+            self.assertEqual(workspace.resolve(), Path(marker.read_text(encoding='utf-8').strip()).resolve())
+            failed = self.run_place('start', '--config', str(runtime_config), 'work', 'grok', '--', '--fail')
             self.assertEqual(23, failed.returncode, failed.stdout + failed.stderr)
 
 
