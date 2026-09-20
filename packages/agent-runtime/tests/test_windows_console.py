@@ -45,7 +45,15 @@ raise SystemExit(98)
 import ctypes,json,os,pathlib,subprocess,sys,time
 runtime,config,cwd,ready,event=sys.argv[1:]
 event=int(event)
-creationflags=subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NEW_PROCESS_GROUP
+# CI shells may inherit the ignore-Ctrl+C attribute. A normal interactive
+# caller processes it; set that inherited attribute before creating the private
+# console. Do not use CREATE_NEW_PROCESS_GROUP, which disables Ctrl+C.
+kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+kernel.SetConsoleCtrlHandler.argtypes=(ctypes.c_void_p,ctypes.c_int)
+kernel.SetConsoleCtrlHandler.restype=ctypes.c_int
+if not kernel.SetConsoleCtrlHandler(None,False):
+    raise ctypes.WinError(ctypes.get_last_error())
+creationflags=subprocess.CREATE_NEW_CONSOLE
 child=subprocess.Popen([runtime,'--config',config,'grok'],cwd=cwd,
     creationflags=creationflags)
 ready=pathlib.Path(ready)
@@ -57,7 +65,6 @@ if not ready.exists():
     print(json.dumps({'driver_error':'vendor did not become ready','code':child.returncode,
                       'stdout':out,'stderr':err}))
     raise SystemExit(3)
-kernel=ctypes.WinDLL('kernel32',use_last_error=True)
 kernel.FreeConsole.restype=ctypes.c_int
 kernel.AttachConsole.argtypes=(ctypes.c_uint32,); kernel.AttachConsole.restype=ctypes.c_int
 kernel.SetConsoleCtrlHandler.argtypes=(ctypes.c_void_p,ctypes.c_int); kernel.SetConsoleCtrlHandler.restype=ctypes.c_int
