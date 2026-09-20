@@ -84,6 +84,30 @@ migration owner must retain the old revision, source inputs and outputs for
 recovery; reverting must stop at any subsequent user edit, rather than overwrite
 it. Synthetic generation proves files and safety behavior, not model loading.
 
+### One-time handwritten-output handover
+
+After the old public writer has stopped and each handwritten instruction has been
+preserved in a Rulesync source, an operator may transfer one reviewed destination
+with an explicit before-state plan using agent-rules handover --config rulesync-placement.json --plan reviewed-handover.json.
+
+The plan is not an ownership manifest and never infers ownership from equal bytes
+or legacy markers. It contains exactly version (1), output_root, files, evidence, backup_root,
+and desired_sha256. desired_sha256 is the lowercase SHA-256 of the reviewed generated
+ownership manifest. output_root must resolve exactly to the configured output. Each
+files entry has an allowed Rulesync path, its current lowercase SHA-256 sha256, and
+current numeric mode; list every reviewed existing allowed path to replace or
+remove. An old CLAUDE.md may be listed for reviewed removal when Grok will own
+AGENTS.md. Metadata, hooks and arbitrary paths are rejected.
+
+backup_root must be new, absolute, plain, and outside all selected source and
+output roots. Before mutation, handover writes the reviewed before bytes and modes,
+the plan, configuration and generated desired ownership manifest there. It refuses
+an existing ownership manifest, pending transaction, changed reviewed file,
+symlink, unknown replacement, same-name skill conflict or reused backup. The
+backup remains for a deliberate rollback procedure; handover does not adopt
+unchanged bytes or replay it automatically. A successful handover publishes normal
+ownership, so future apply and check use their usual protections.
+
 ## Declared placement and source authoring
 
 The following declaration commands are a temporary compatibility surface for
