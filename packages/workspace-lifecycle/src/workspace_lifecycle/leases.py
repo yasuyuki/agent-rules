@@ -301,7 +301,11 @@ def run(repo, task, argv, cwd, before_spawn=None, child_env=None):
                 options['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
                 def forward_console(_number, _frame):
                     if child is not None and child.poll() is None:
-                        child.send_signal(signal.CTRL_BREAK_EVENT)
+                        try:
+                            child.send_signal(signal.CTRL_BREAK_EVENT)
+                        except OSError:
+                            if child.poll() is None:
+                                raise
                 for number in (signal.SIGINT, signal.SIGBREAK):
                     previous[number] = signal.signal(number, forward_console)
             else:
@@ -338,7 +342,7 @@ def run(repo, task, argv, cwd, before_spawn=None, child_env=None):
                     break
                 except KeyboardInterrupt:
                     if os.name == 'nt':
-                        child.send_signal(signal.CTRL_BREAK_EVENT)
+                        forward_console(signal.SIGINT, None)
             while descendants() if os.name == 'nt' else _linux_descendants():
                 time.sleep(0.1)
             complete = True
