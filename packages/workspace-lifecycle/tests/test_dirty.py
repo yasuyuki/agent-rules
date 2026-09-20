@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -8,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from workspace_lifecycle.errors import LifecycleError
-from workspace_lifecycle.service import begin, finish
+from workspace_lifecycle.service import begin, finish, hold
 
 
 def git(cwd, *args):
@@ -44,6 +45,97 @@ class DirtyLifecycleTest(unittest.TestCase):
 
     def plan(self, name, value):
         path = self.base / name; path.write_text(json.dumps(value)); return path
+
+    def resolve_run(self, effective, launch, *argv):
+        environment = dict(__import__('os').environ,
+                           PYTHONPATH=str(Path(__file__).parents[1] / 'src'))
+        return subprocess.run([sys.executable, '-m', 'workspace_lifecycle.cli',
+                               'resolve-run', '--cwd', str(effective),
+                               '--launch-cwd', str(launch), '--', *argv],
+                              text=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, env=environment)
+
+    def test_resolve_run_unmanaged_nested_preserves_launch_cwd_without_state(self):
+        nested = self.root / 'nested'; nested.mkdir()
+        launch = self.base / 'launch'; launch.mkdir()
+        child = self.resolve_run(nested, launch, sys.executable, '-c',
+                                 'import os,sys; print(os.getcwd()); sys.exit(19)')
+        self.assertEqual(child.returncode, 19, child.stderr)
+        self.assertEqual(child.stdout.strip(), str(launch))
+        common = Path(git(self.root, 'rev-parse', '--path-format=absolute', '--git-common-dir'))
+        self.assertFalse((common / 'workspace-lifecycle').exists())
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX exec signal identity')
+    def test_resolve_run_unmanaged_exec_preserves_signal_status(self):
+        environment = dict(os.environ,
+                           PYTHONPATH=str(Path(__file__).parents[1] / 'src'))
+        child = subprocess.Popen([sys.executable, '-m', 'workspace_lifecycle.cli',
+                                  'resolve-run', '--cwd', str(self.root),
+                                  '--launch-cwd', str(self.root), '--', sys.executable, '-c',
+                                  'import time; print("ready", flush=True); time.sleep(30)'],
+                                 text=True, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, env=environment)
+        self.assertEqual(child.stdout.readline().strip(), 'ready')
+        child.terminate()
+        self.assertEqual(child.wait(timeout=5), -15)
+        child.communicate()
+
+    def test_resolve_run_managed_nested_supplies_finish_context(self):
+        task = self.start('resolved')
+        nested = self.topic / 'nested'; nested.mkdir()
+        child = self.resolve_run(nested, self.topic, sys.executable, '-c',
+                                 'import json,os; value=json.loads(os.environ["WORKSPACE_LIFECYCLE_CONTEXT"]); '
+                                 'assert value["version"] == 1 and value["repo"] == os.environ["WORKSPACE_LIFECYCLE_REPO"] and value["task"] == "resolved"; '
+                                 'assert value["finish_argv"][-3:] == ["finish","--task","resolved"]; '
+                                 'assert os.environ["WORKSPACE_LIFECYCLE_TASK"] == "resolved"')
+        self.assertEqual(child.returncode, 0, child.stderr)
+        self.assertEqual(child.stdout, '')
+        hold(self.topic, task, 'fixture hold', 'await explicit release')
+        refused = self.resolve_run(nested, self.topic, sys.executable, '-c',
+                                   'raise SystemExit(99)')
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('held', refused.stderr)
+
+    def test_resolve_run_refuses_legacy_and_managed_unbound(self):
+        common = Path(git(self.root, 'rev-parse', '--path-format=absolute', '--git-common-dir'))
+        legacy = common / 'agent-branches'; legacy.mkdir()
+        (legacy / 'state.json').write_text('{}')
+        refused = self.resolve_run(self.root, self.root, sys.executable, '-c', 'raise SystemExit(99)')
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('legacy', refused.stderr)
+        (legacy / 'state.json').unlink(); legacy.rmdir()
+        (common / 'workspace-lifecycle').mkdir()
+        unbound = self.resolve_run(self.root, self.root, sys.executable, '-c', 'raise SystemExit(99)')
+        self.assertEqual(unbound.returncode, 2)
+        self.assertIn('binding', unbound.stderr)
+
+    def test_resolve_run_refuses_corrupt_git_boundary(self):
+        broken = self.base / 'broken'; broken.mkdir(); (broken / '.git').mkdir()
+        refused = self.resolve_run(broken, broken, sys.executable, '-c',
+                                   'raise SystemExit(99)')
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('invalid Git workspace', refused.stderr)
+
+    def test_resolve_run_child_finish_defers_retirement_until_lease_release(self):
+        task = self.start('child-finish')
+        script = '''
+import hashlib, json, os, tempfile
+from pathlib import Path
+from workspace_lifecycle.service import finish
+repo = Path(os.environ['WORKSPACE_LIFECYCLE_REPO'])
+target = repo / 'owned.txt'
+target.write_text('owned\\n')
+plan = Path(tempfile.mkstemp(suffix='.json')[1])
+plan.write_text(json.dumps({'commit': [{'path': 'owned.txt', 'classification': 'source',
+    'owner': os.environ['WORKSPACE_LIFECYCLE_TASK'], 'evidence': 'child-owned fixture',
+    'safe_to_commit': True, 'sha256': hashlib.sha256(target.read_bytes()).hexdigest()}]}))
+finish(repo, task=os.environ['WORKSPACE_LIFECYCLE_TASK'], plan_path=str(plan),
+       result_ref='issue/child-finish', users_released=True)
+'''
+        child = self.resolve_run(self.topic, self.topic, sys.executable, '-c', script)
+        self.assertEqual(child.returncode, 0, child.stderr)
+        self.assertFalse(self.topic.exists())
+        self.assertEqual(git(self.root, 'show', 'HEAD:owned.txt'), 'owned')
 
     def test_foreign_staged_change_is_never_mixed_into_source_commit(self):
         task = self.start(); (self.topic / "owned.txt").write_text("owned\n"); (self.topic / "foreign.txt").write_text("foreign\n")

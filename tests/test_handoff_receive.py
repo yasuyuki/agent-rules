@@ -62,6 +62,21 @@ class ReceiveTests(unittest.TestCase):
         (self.source / "shared.md").write_text(text, encoding="utf-8")
         git(self.source, "add", "shared.md"); git(self.source, "commit", "-qm", "update")
 
+    def test_fixed_cli_status_and_failure_exit(self):
+        import contextlib
+        import io
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = receive.main(["--workspace", str(self.dest)])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output.getvalue())["status"], "updated")
+        self.binding(repository="ssh://invalid/forbidden")
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = receive.main(["--workspace", str(self.dest)])
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(output.getvalue())["status"], "error")
+
     def test_first_update_repeat_and_crlf_is_preserved(self):
         first = receive.receive(self.dest)
         self.assertEqual("updated", first["status"])

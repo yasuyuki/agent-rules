@@ -11,7 +11,7 @@ python -m twine check --strict dist/*
 
 The build makes the wheel from the sdist. The main distribution includes only
 the project entry, Rulesync staging adapter and pinned dependency lock. The
-separate workspace-lifecycle wheel is built from its subdirectory and has no
+separate agent-runtime and workspace-lifecycle wheels are built from their subdirectories and have no
 dependency on this checkout's runtime, rules or private configuration.
 Install the built wheel into a separate clean environment, then use that
 interpreter for `tests/test_project.py`. Run installed `agent-rules --version`

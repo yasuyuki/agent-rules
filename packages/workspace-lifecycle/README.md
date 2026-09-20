@@ -2,7 +2,7 @@
 
 `workspace-lifecycle` is an independently installable Python 3.10+ package for
 the workspace contract that Git does not provide. Build or install it from this
-directory; version `0.1.0` is not published to PyPI. It imports no agent-rules
+directory; version `0.2.0` is not published to PyPI. It imports no agent-rules
 checkout, private runtime, rule placement or inventory code.
 
 Git owns worktree creation, branch and HEAD identity, upstream/default discovery,
@@ -63,6 +63,15 @@ native job to track descendants. A normal child exit does not prove that an
 arbitrary detached external user released the workspace; explicit release
 evidence is still required. `lease-status` inspects a lease and
 `lease-release` recovers exactly one dead-owner lease after review.
+
+Runtime launchers use `resolve-run` with the already selected effective cwd and
+the original invocation cwd. It runs unmanaged work without creating lifecycle
+state, refuses legacy or incomplete managed bindings, and delegates managed work
+to the same `run` supervisor. Managed children receive the bound repository and
+task and a fixed `finish_argv` prefix in `WORKSPACE_LIFECYCLE_CONTEXT`, plus
+`WORKSPACE_LIFECYCLE_REPO` and
+`WORKSPACE_LIFECYCLE_TASK`; they must still call `finish` with a reviewed plan
+and durable result reference. Use command help for the exact arguments.
 
 Use the installed command's `--help` for exact arguments and JSON output. The
 package's tests and workflow build an isolated wheel and run its tests from
