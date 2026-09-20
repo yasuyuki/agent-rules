@@ -42,7 +42,7 @@ raise SystemExit(98)
 import ctypes,json,os,pathlib,subprocess,sys,time
 runtime,config,cwd,ready=sys.argv[1:]
 creationflags=subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NEW_PROCESS_GROUP
-child=subprocess.Popen([sys.executable,'-m','agent_runtime.cli','--config',config,'grok'],cwd=cwd,
+child=subprocess.Popen([runtime,'--config',config,'grok'],cwd=cwd,
     creationflags=creationflags)
 ready=pathlib.Path(ready)
 deadline=time.monotonic()+20
