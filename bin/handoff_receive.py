@@ -432,7 +432,7 @@ def main(argv=None):
     parser.add_argument("--workspace", required=True)
     args = parser.parse_args(argv)
     result = receive(args.workspace)
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    print(json.dumps(result, ensure_ascii=True, sort_keys=True))
     return 0 if result.get("status") in {"not-configured", "updated", "unchanged"} else 1
 
 

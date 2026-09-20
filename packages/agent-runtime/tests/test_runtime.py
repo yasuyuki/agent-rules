@@ -150,6 +150,20 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn('recurs', result.stderr)
 
+    def test_vendor_can_launch_a_managed_child(self):
+        child_config = self.root / 'child.json'
+        child_vendor = self.root / 'child.py'
+        child_vendor.write_text("import os; assert 'AGENT_RUNTIME_DEPTH' not in os.environ; print('child')\n")
+        raw = json.loads(self.config.read_text())
+        raw['tools']['claude']['argv'] = [sys.executable, str(child_vendor)]
+        child_config.write_text(json.dumps(raw))
+        scripts = Path(sysconfig.get_path('scripts'))
+        entry = scripts / ('claude.exe' if os.name == 'nt' else 'claude')
+        self.vendor.write_text("import os,subprocess\nassert 'AGENT_RUNTIME_DEPTH' not in os.environ\nenv={**os.environ,'AGENT_RUNTIME_CONFIG':%r}\nraise SystemExit(subprocess.call([%r,'child prompt'],env=env))\n" % (str(child_config), str(entry)))
+        result = self.invoke('grok')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'child')
+
     def test_vendor_replacement_is_resolved_on_each_start(self):
         self.vendor.write_text("print('updated')\n", encoding='utf-8')
         result = self.invoke('grok')

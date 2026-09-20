@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import signal
 import sys
+import sysconfig
 
 VERSION = 1
 DEPTH_ENV = 'AGENT_RUNTIME_DEPTH'
@@ -219,11 +220,20 @@ def _run(tool, argv, config_path, independent=False):
         raise RuntimeError_('unknown tool: ' + tool)
     vendor = _argv(spec.get('argv'), 'vendor')
     executable = Path(vendor[0])
-    if executable.resolve() == Path(sys.argv[0]).resolve():
+    scripts = Path(sysconfig.get_path('scripts'))
+    suffix = '.exe' if os.name == 'nt' else ''
+    managed = {Path(sys.argv[0]).resolve(), Path(__file__).resolve()}
+    managed.update((scripts / (name + suffix)).resolve()
+                   for name in ('agent-runtime', 'codex', 'claude', 'grok'))
+    if (executable.resolve() in managed
+            or any(vendor[i:i + 2] in (['-m', 'agent_runtime'], ['-m', 'agent_runtime.cli'])
+                   for i in range(len(vendor)))):
         raise RuntimeError_('vendor executable recurses to agent-runtime')
     if not executable.is_file() or not os.access(executable, os.X_OK):
         raise RuntimeError_('vendor executable is unavailable: ' + str(executable))
-    env = {**os.environ, DEPTH_ENV: '1'}
+    # A real vendor may legitimately launch another managed CLI. Recursion
+    # guards for receiver callbacks must not prohibit those descendants.
+    env = os.environ.copy()
     if repair:
         return _launch([*vendor, *argv], env)
     launch = Path.cwd().resolve()
@@ -257,11 +267,6 @@ def main(argv=None):
         print('usage: agent-runtime [--config PATH] [--handoff-independent] TOOL [-- VENDOR-ARGS...]')
         return 0
     tool = values.pop(0)
-    if values[:1] == ['--config']:
-        if len(values) < 2:
-            return _error('--config requires a path')
-        config = values[1]
-        values = values[2:]
     if values[:1] == ['--']:
         values.pop(0)
     try:
