@@ -163,7 +163,7 @@ artifact\tlocation_id\trequirement\treason
                             'sha256': hashlib.sha256(lifecycle.read_bytes()).hexdigest()}]}}]}), encoding='utf-8')
             started = self.run_place('start', '--config', str(runtime_config), 'work', 'grok', '--', '--fixture')
             self.assert_ok(started)
-            self.assertEqual(str(workspace), marker.read_text(encoding='utf-8').strip())
+            self.assertEqual(workspace.resolve(), Path(marker.read_text(encoding='utf-8').strip()).resolve())
             failed = self.run_place('start', '--config', str(runtime_config), 'work', 'grok', '--', '--fail')
             self.assertEqual(23, failed.returncode, failed.stdout + failed.stderr)
 

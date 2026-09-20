@@ -47,8 +47,8 @@ class DirtyLifecycleTest(unittest.TestCase):
         path = self.base / name; path.write_text(json.dumps(value)); return path
 
     def resolve_run(self, effective, launch, *argv):
-        environment = dict(__import__('os').environ,
-                           PYTHONPATH=str(Path(__file__).parents[1] / 'src'))
+        environment = dict(os.environ)
+        environment.pop('PYTHONPATH', None)
         return subprocess.run([sys.executable, '-m', 'workspace_lifecycle.cli',
                                'resolve-run', '--cwd', str(effective),
                                '--launch-cwd', str(launch), '--', *argv],
@@ -61,7 +61,7 @@ class DirtyLifecycleTest(unittest.TestCase):
         child = self.resolve_run(nested, launch, sys.executable, '-c',
                                  'import os,sys; print(os.getcwd()); sys.exit(19)')
         self.assertEqual(child.returncode, 19, child.stderr)
-        self.assertEqual(child.stdout.strip(), str(launch))
+        self.assertEqual(Path(child.stdout.strip()).resolve(), launch.resolve())
         common = Path(git(self.root, 'rev-parse', '--path-format=absolute', '--git-common-dir'))
         self.assertFalse((common / 'workspace-lifecycle').exists())
 
