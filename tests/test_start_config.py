@@ -53,15 +53,8 @@ artifact\tlocation_id\trequirement\treason
                                    site=None, workspace=None, scope=None)
             self.assertIsNone(place.start_config(args))
             self.assertEqual(Path(args.declaration), declaration)
-            # The existing reader and normal start consume exactly these inputs.
+            # The reader exposes exactly the saved declaration inputs for inventory adoption.
             place.apply(args)
-            args.workspace_id, args.tool, args.tool_args = "work", "codex", ["--resume"]
-            args.declaration, args.rules, args.skills = None, None, None
-            calls = []
-            self.assertEqual(place.start(args, resolver=lambda _: "fixture-codex",
-                runner=lambda argv, **kw: calls.append((argv, kw)) or SimpleNamespace(returncode=7)), 7)
-            self.assertEqual(calls[0][0], ["fixture-codex", "--resume"])
-            self.assertEqual(Path(calls[0][1]["cwd"]), root)
             for contents in (b"not-json", b'{"version":1,"unknown":"keep"}', b'{}'):
                 output.write_bytes(contents)
                 self.assertEqual(place.main(argv), 1)

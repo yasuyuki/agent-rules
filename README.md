@@ -34,15 +34,14 @@ inputs as described in the [manual](docs/manual.md#declared-placement-and-source
 Generic skills are edited in [agent-skills](https://github.com/yasuyuki/agent-skills).
 Project-specific skills remain here. There is no reverse mirror command.
 
-The checkout's declaration/runtime commands are a temporary compatibility surface
-for consumers pinned before the source transition. They are not bundled with the
-project CLI. Live adoption and removal are tracked by
-[#15](https://github.com/yasuyuki/agent-rules/issues/15); installing this source
-alone does not update a running environment.
+Runtime launch and HANDOFF receiving are owned by
+[agent-runtime](https://github.com/yasuyuki/agent-runtime), not this checkout.
+Windows GUI consumers retained on their fixed historical agent-rules revision stay
+outside this compatibility surface until their separate adoption.
 
 - [User manual](docs/manual.md): source selection, ownership and migration boundaries.
 - [Development and CI](docs/ci.md): build and verification.
-- [Agent runtime guide](packages/agent-runtime/README.md): independent native CLI adapter and explicit adoption boundary.
+- [Agent runtime](https://github.com/yasuyuki/agent-runtime): native CLI adapter and HANDOFF receiver owner.
 - [Workspace lifecycle guide](https://github.com/yasuyuki/workspace-lifecycle): independent task, finish, integration and retirement contract.
 - [Necessity review](https://github.com/yasuyuki/necessity-review): independent owner and management CLI; existing fixed consumers can retain their accepted agent-rules revision until separately migrated.
 

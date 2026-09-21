@@ -181,18 +181,12 @@ proof of the new backend. Use the backend tests in the CI guide for that scope.
 
 ## Launch and environment maintenance
 
-Normal launch is owned by the independently installable
-[agent-runtime package](../packages/agent-runtime/README.md). Its explicit adopted
+Normal launch and HANDOFF receiving are owned by the independently installable
+[agent-runtime](https://github.com/yasuyuki/agent-runtime). Its explicit adopted
 configuration selects vendor executables, workspace scope and fixed HANDOFF and
-workspace-lifecycle interfaces. Launch does not generate placement, scan inventory,
-adopt configuration or query vendor releases.
-
-The checkout's `start` and `standard-start` process entries delegate to that package
-before loading placement or inventory. `standard-start --config FILE TOOL -- ...`
-uses runtime configuration; `start --config FILE WORKSPACE TOOL -- ...` selects an
-explicit runtime workspace `id`. Legacy `placement-start.json` is not converted or
-silently accepted. `save-start-config` remains an adoption-input operation for
-pinned consumers, not a producer of new runtime configuration.
+workspace-lifecycle interfaces. This checkout does not provide launch or receiver
+entries. `save-start-config` remains an adoption-input operation for pinned
+consumers, not a producer of new runtime configuration.
 
 Unmigrated live consumers must retain their pinned source and saved configuration
 until the separate adoption task verifies the new package, configuration, entry
@@ -260,13 +254,12 @@ enable native worktree creation or automatic approvals. OpenCode uses its native
 
 ### Standard command names
 
-The runtime wheel provides `codex`, `claude` and `grok` in its isolated installation
-directory, separate from vendor executables. Its guide defines configuration and
-native argument handling for Linux and Windows. The old POSIX `entry` ownership
-operations remain available for existing links; the dispatcher now delegates to
-the runtime process boundary. Do not replace a live pinned dispatcher until its
-configuration has been adopted. Vendor files and global PATH are not changed by
-package installation into an isolated environment.
+[agent-runtime](https://github.com/yasuyuki/agent-runtime) provides `codex`,
+`claude` and `grok` in its isolated installation directory, separate from vendor
+executables. Its guide defines configuration and native argument handling for Linux
+and Windows. Existing pinned dispatchers remain on their historical revision until
+separately adopted. Vendor files and global PATH are not changed by package
+installation into an isolated environment.
 
 ## Route work without executing it
 
@@ -372,25 +365,7 @@ human relays; classification does not authorize execution. Saving a task is not
 recipient receipt or acceptance. The [handoff fixtures](../tests/fixtures/handoff/README.md)
 test this distinction; real host delivery and UI copying need separate evidence.
 
-For an existing pair that should receive the same current-state fragment, a
-locally reviewed `rules/handoff-receive.json` binds one HTTPS repository, branch,
-document and historical revision. Its fields are `version: 1`, `pair`,
-`repository`, `branch`, `document`, and `initial_revision`; the target is always
-that workspace's HANDOFF.md. Keep private bindings/fragments outside this repo.
-Received Markdown cannot select paths or execute commands.
-
-Configured runtime receives before launch, including resume. The fixed receiver
-CLI is `python bin/handoff_receive.py --workspace PATH`; its JSON status and exit
-code identify success or refusal. Existing GUI owners retain their receiver entry;
-adopt exactly one receiver owner for each launch path. A standalone call does not prove GUI integration. Updates arrive on
-the next start/resume, not in a running session. Senders update the fragment
-through normal registered Git integration and push; detailed results stay in the
-shared task, and receipt blocks are not republished as source.
-
-Conflicts and failed fetches stop dependent starts. For work independent of that
-state, `start --handoff-independent` retains an explicit unconfirmed warning.
-Local content outside the receipt block and Git working state are preserved.
-Replacement failures retain private recovery data and a journal in Git metadata;
-retry the same entry and follow its recovery-path diagnostics without discarding
-competing edits. A success marker does not erase unresolved recovery state.
-Byte receipt cannot attest a model's understanding or force an open editor to reload.
+The runtime owner documents the receiver binding, launch ordering, recovery and
+independent-work behavior. Existing GUI owners retain their fixed historical
+receiver entry until a separate adoption selects exactly one receiver owner for
+that launch path. Keep private bindings and shared fragments outside this repo.

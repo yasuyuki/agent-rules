@@ -6,7 +6,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -74,7 +73,7 @@ artifact\tlocation_id\trequirement\treason
         )
         return declaration
 
-    def test_grok_apply_check_start_and_unmanaged_skill_rejection(self):
+    def test_grok_apply_check_and_unmanaged_skill_rejection(self):
         descriptor = json.loads((ROOT / "placement.json").read_text(encoding="utf-8"))
         grok = descriptor["tools"]["grok"]
         self.assertEqual("grok", grok["entrypoint"])
@@ -128,44 +127,6 @@ artifact\tlocation_id\trequirement\treason
             (collision_source / "SKILL.md").unlink()
             collision_source.rmdir()
 
-            executable = home / ".grok" / "bin"
-            executable.mkdir()
-            marker = root / "grok-started.txt"
-            if os.name == "nt":
-                (executable / "grok").write_text("fixture discovery marker\n", encoding="utf-8")
-                command = executable / "grok.cmd"
-                command.write_text(
-                    "@echo off\r\necho %CD%> \"" + str(marker) + "\"\r\n"
-                    "if \"%~1\"==\"--fail\" exit /b 23\r\nexit /b 0\r\n",
-                    encoding="utf-8",
-                )
-            else:
-                command = executable / "grok"
-                command.write_text(
-                    "#!/bin/sh\npwd > " + shlex.quote(str(marker))
-                    + "\nif [ \"$1\" = \"--fail\" ]; then exit 23; fi\n",
-                    encoding="utf-8",
-                )
-                command.chmod(0o755)
-            self.assertTrue(load_place().detect_cli({"home": str(home)}, grok))
-            # Discovery remains the descriptor's concern; start consumes an
-            # adopted runtime binding and a portable native process fixture.
-            import hashlib
-            vendor = root / 'vendor.py'
-            vendor.write_text("import os,sys\nfrom pathlib import Path\nPath(%r).write_text(os.getcwd(),encoding='utf-8')\nraise SystemExit(23 if '--fail' in sys.argv else 0)\n" % str(marker), encoding='utf-8')
-            lifecycle = ROOT / 'bin/branch_management.py'
-            runtime_config = root / 'runtime.json'
-            runtime_config.write_text(json.dumps({'version': 1,
-                'tools': {'grok': {'argv': [sys.executable, str(vendor)]}},
-                'workspaces': [{'id': 'work', 'root': str(workspace), 'state': 'active', 'tools': ['grok'],
-                    'lifecycle': {'argv': [sys.executable, str(lifecycle)], 'source': str(lifecycle),
-                        'interface': 'resolve-run-v1', 'pins': [{'path': str(lifecycle),
-                            'sha256': hashlib.sha256(lifecycle.read_bytes()).hexdigest()}]}}]}), encoding='utf-8')
-            started = self.run_place('start', '--config', str(runtime_config), 'work', 'grok', '--', '--fixture')
-            self.assert_ok(started)
-            self.assertEqual(workspace.resolve(), Path(marker.read_text(encoding='utf-8').strip()).resolve())
-            failed = self.run_place('start', '--config', str(runtime_config), 'work', 'grok', '--', '--fail')
-            self.assertEqual(23, failed.returncode, failed.stdout + failed.stderr)
 
 
 if __name__ == "__main__":
