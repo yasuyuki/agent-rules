@@ -153,38 +153,6 @@ artifact\tlocation_id\trequirement\treason
     args = type("Args", (), dict(
         common, workspace_id="work", tool="codex", tool_args=["--version"],
     ))()
-    agents = workspace / "AGENTS.md"
-    agents.write_text(
-        agents.read_text(encoding="utf-8").replace("-->\n", "-->\ndrift\n", 1),
-        encoding="utf-8",
-    )
-    refused = []
-    try:
-        place.start(
-            args,
-            resolver=lambda name: "/usr/bin/" + name,
-            runner=lambda argv, **kwargs: refused.append((argv, kwargs)),
-        )
-    except place.PlacementError:
-        pass
-    else:
-        raise AssertionError("start accepted drifted policy")
-    assert refused == []
-    assert place.apply(type("Args", (), common)()) == 0
-
-    calls = []
-    result = place.start(
-        args,
-        resolver=lambda name: "/usr/bin/" + name,
-        runner=lambda argv, **kwargs: (
-            calls.append((argv, kwargs))
-            or subprocess.CompletedProcess(argv, 7)
-        ),
-    )
-    assert result == 7
-    assert calls == [
-        (["/usr/bin/codex", "--version"], {"cwd": str(workspace)})
-    ]
 
 
 # The private inventory is data-only: resolve its declared sources, retain a

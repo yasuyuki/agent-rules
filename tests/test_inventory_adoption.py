@@ -95,12 +95,15 @@ class InventoryAdoptionTests(unittest.TestCase):
         return place.main(["inventory", "adopt", "--config", str(self.config), "--site", "s1"],
                           resolver=lambda name: "/bin/" + name if name == "codex" else None)
 
-    def start(self):
-        calls = []
-        result = place.main(["start", "--config", str(self.config), "w1", "codex"],
-                            resolver=lambda name: "/bin/" + name if name == "codex" else None,
-                            runner=lambda argv, **kwargs: (calls.append((argv, kwargs)) or SimpleNamespace(returncode=0)))
-        return result, calls
+    def check_inputs(self):
+        return place.main(["inventory", "adopt", "--config", str(self.config), "--site", "s1", "--check-inputs"],
+                          resolver=lambda name: "/bin/" + name if name == "codex" else None)
+
+    def active_adoption(self):
+        args = SimpleNamespace(config=str(self.config), declaration=None, rules=None, skills=None,
+                               site=None, workspace=None, scope=None)
+        place.start_config(args)
+        return place.inventory_adoption.effective_active(place, args, place.load_context(args), "s1")
 
     def test_environment_request_resolves_saved_site_and_refuses_unknown_target(self):
         before = self.config.read_bytes()
@@ -126,7 +129,7 @@ class InventoryAdoptionTests(unittest.TestCase):
             place.inventory_binding(SimpleNamespace(declaration=self.declaration),
                                     (None, None, {"s1": {}}), "s1")
 
-    def test_adopt_keeps_catalog_and_allows_exact_pending_start(self):
+    def test_adopt_keeps_catalog_and_validates_exact_inputs(self):
         self.assertEqual(self.adopt(), 0)
         self.assertEqual(self.catalog.read_bytes(), self.catalog_bytes)
         active = self.config.read_bytes()
@@ -135,13 +138,7 @@ class InventoryAdoptionTests(unittest.TestCase):
         self.assertEqual(document["adoption"]["state"], "active")
         self.assertEqual(self.adopt(), 0)
         self.assertEqual(self.config.read_bytes(), active)
-        result, calls = self.start()
-        self.assertEqual(result, 0)
-        self.assertEqual(calls[-1][0], ["/bin/codex"])
-        explicit = place.main(["start", "--declaration", str(self.declaration), "w1", "codex"],
-                              resolver=lambda name: "/bin/" + name if name == "codex" else None,
-                              runner=lambda *_args, **_kwargs: SimpleNamespace(returncode=0))
-        self.assertEqual(explicit, 1)
+        self.assertEqual(self.check_inputs(), 0)
         self.assertEqual(self.catalog.read_bytes(), self.catalog_bytes)
 
     def test_dirty_tracked_declaration_refuses_before_config_mutation(self):
@@ -165,26 +162,24 @@ class InventoryAdoptionTests(unittest.TestCase):
         active = self.config.read_bytes()
         rule = self.root / "private-rules" / "environment-inventory-required.rule.md"
         original_rule = rule.read_bytes(); rule.write_bytes(original_rule + b"\nchanged\n")
-        self.assertEqual(self.start()[0], 1)
+        self.assertFalse(self.active_adoption())
         rule.write_bytes(original_rule)
         self.catalog.write_bytes(self.catalog_bytes + b" ")
         self.assertEqual(self.adopt(), 1)
         self.assertEqual(self.config.read_bytes(), active)
         self.catalog.write_bytes(self.catalog_bytes)
-        self.assertEqual(self.start()[0], 0)
+        self.assertTrue(self.active_adoption())
 
     def test_unrelated_commit_preserves_adoption_but_changed_inputs_still_refuse(self):
         self.assertEqual(self.adopt(), 0)
         active = self.config.read_bytes()
         (self.root / "unrelated").write_text("next\n", encoding="utf-8")
         self.git("add", "unrelated"); self.git("commit", "-qm", "head moves")
-        result, calls = self.start()
-        self.assertEqual(result, 0)
-        self.assertEqual(calls[-1][0], ["/bin/codex"])
+        self.assertTrue(self.active_adoption())
         self.assertEqual(self.config.read_bytes(), active)
         rule = self.root / "private-rules" / "environment-inventory-required.rule.md"
         rule.write_bytes(rule.read_bytes() + b"\nchanged\n")
-        self.assertEqual(self.start()[0], 1)
+        self.assertFalse(self.active_adoption())
         self.assertEqual(self.config.read_bytes(), active)
         self.assertEqual(self.catalog.read_bytes(), self.catalog_bytes)
 
@@ -219,9 +214,9 @@ class InventoryAdoptionTests(unittest.TestCase):
             self.assertEqual(adopted["sourceScope"], "catalog")
             self.assertEqual(adopted["declarationSource"], "external-runtime-policy")
             self.assertTrue(adopted["declarationDigest"])
-            self.assertEqual(self.start()[0], 0)
+            self.assertEqual(self.check_inputs(), 0)
             external.write_bytes(external.read_bytes() + b"\npolicy changed\n")
-            self.assertEqual(self.start()[0], 1)
+            self.assertFalse(self.active_adoption())
             self.assertEqual(self.catalog.read_bytes(), self.catalog_bytes)
 
 

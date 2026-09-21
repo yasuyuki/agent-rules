@@ -96,15 +96,11 @@ with tempfile.TemporaryDirectory() as directory:
         "configRoots": {name: tool["configHome"]["default"].replace("$HOME", str(home))
                         for name, tool in ctx[0]["tools"].items()},
     }
-    args = SimpleNamespace(declaration=str(decl), workspace_id="w1", tool="codex", tool_args=["--version"])
-    calls = []
     try:
-        # No evidence file is involved.  A broken Claude projection cannot
-        # prevent an otherwise ready Codex start.
+        # A broken Claude projection is reported by readiness without changing
+        # the catalog or accepting a foreign runtime identity.
         claude_marker = home / ".claude" / "skills" / "maintain-environment-inventory" / place.agent_rules.SKILL_MARKER
         claude_marker.unlink()
-        result = place.start(args, runner=lambda argv, **kwargs: (calls.append((argv, kwargs)) or SimpleNamespace(returncode=0)), resolver=lambda name: "/bin/" + name)
-        assert result == 0 and calls[-1][0] == ["/bin/codex", "--version"]
         readiness = SimpleNamespace(declaration=str(decl), site="s1", workspace=None, scope=None, readiness=True)
         try:
             place.check(readiness)
@@ -113,12 +109,6 @@ with tempfile.TemporaryDirectory() as directory:
         else:
             raise AssertionError("readiness accepted a broken registered CLI")
         catalog(data, decl, state="pending")
-        try:
-            place.start(args, runner=lambda *_a, **_k: None, resolver=lambda name: "/bin/" + name)
-        except place.PlacementError as exc:
-            assert "active state" in str(exc)
-        else:
-            raise AssertionError("pending environment started")
         # Pending readiness is allowed and remains read-only; repair is still
         # reported as needed rather than silently changing the state.
         before = data.read_bytes()
@@ -338,74 +328,6 @@ with tempfile.TemporaryDirectory() as directory:
     else:
         raise AssertionError("legacy four-column binding was accepted")
 
-# A saved start choice is the only implicit input: it resolves its paths from
-# its own directory, checks only the selected CLI, and gives the child the
-# inventory host without leaking it into the caller.
-with tempfile.TemporaryDirectory() as directory:
-    root = Path(directory); home = root / "home"; (home / "work").mkdir(parents=True)
-    decl = root / "placement.md"; decl.write_text(declaration(home), encoding="utf-8")
-    data = root / "catalog.json"; catalog(data, decl)
-    extra = root / "extra-rules"; extra.mkdir()
-    (extra / "environment-inventory-required.rule.md").write_text(
-        "---\nid: environment-inventory-required\ntitle: Inventory\nsummary: inventory\n---\n\ninventory binding\n",
-        encoding="utf-8")
-    ctx = place.load_context(SimpleNamespace(declaration=str(decl), rules=[str(extra)], skills=None))
-    place.apply_projection(ctx[1], ctx[0], list(ctx[4].values()), ctx[5], ctx[2], ctx[3], ctx[7])
-    # A different registered CLI is broken, but it is not part of this launch.
-    (home / ".claude" / "skills" / "maintain-environment-inventory" / place.agent_rules.SKILL_MARKER).unlink()
-    config = root / "placement-start.json"
-    config.write_text(json.dumps({"version": 1, "declaration": "placement.md",
-                                  "rules": ["extra-rules"],
-                                  "inventory_host": "inventory.test"}), encoding="utf-8")
-    calls = []
-    old_cwd = os.getcwd(); old_host = os.environ.get("ENVIRONMENT_INVENTORY_HOST")
-    old_runtime = place.current_runtime
-    place.current_runtime = lambda _context: {
-        "user": __import__("getpass").getuser(), "home": str(home),
-        "host": platform.system(), "platform": platform.system(),
-        "configRoots": {name: tool["configHome"]["default"].replace("$HOME", str(home))
-                        for name, tool in ctx[0]["tools"].items()},
-    }
-    os.environ.pop("ENVIRONMENT_INVENTORY_HOST", None)
-    try:
-        os.chdir(root)
-        result = place.main(["start", "w1", "codex", "--version"],
-                            runner=lambda argv, **kwargs: (calls.append((argv, kwargs)) or SimpleNamespace(returncode=0)),
-                            resolver=lambda name: "/bin/" + name)
-        assert result == 0 and calls[-1][0] == ["/bin/codex", "--version"]
-        assert Path(calls[-1][1]["cwd"]) == home / "work"
-        assert calls[-1][1]["env"]["ENVIRONMENT_INVENTORY_HOST"] == "inventory.test"
-        assert "ENVIRONMENT_INVENTORY_HOST" not in os.environ
-        os.chdir(home)
-        assert place.main(["start", "--config", str(config), "w1", "codex", "--resume"],
-                          runner=lambda argv, **kwargs: (calls.append((argv, kwargs)) or SimpleNamespace(returncode=0)),
-                          resolver=lambda name: "/bin/" + name) == 0
-        assert calls[-1][0] == ["/bin/codex", "--resume"]
-        os.chdir(root)
-        assert place.main(["start", "--config", str(config), "--declaration", str(decl), "w1", "codex"],
-                          resolver=lambda _name: None) == 1
-        assert place.main(["start", "--rules", "extra-rules", "w1", "codex"],
-                          resolver=lambda _name: None) == 1
-        os.environ["ENVIRONMENT_INVENTORY_HOST"] = "other.inventory"
-        assert place.main(["start", "w1", "codex"], resolver=lambda _name: None) == 1
-        os.environ.pop("ENVIRONMENT_INVENTORY_HOST", None)
-        config.write_text("[]", encoding="utf-8")
-        assert place.main(["start", "w1", "codex"], resolver=lambda _name: None) == 1
-        config.write_text(json.dumps({"version": 1, "declaration": "placement.md", "rules": None}), encoding="utf-8")
-        assert place.main(["start", "w1", "codex"], resolver=lambda _name: None) == 1
-        config.write_bytes(b"\xff")
-        assert place.main(["start", "w1", "codex"], resolver=lambda _name: None) == 1
-        # An explicit declaration retains its established behavior and ignores
-        # a malformed implicit config in the current directory.
-        assert place.main(["start", "--declaration", str(decl), "--rules", str(extra), "w1", "codex"],
-                          runner=lambda *_a, **_k: SimpleNamespace(returncode=0),
-                          resolver=lambda name: "/bin/" + name) == 0
-    finally:
-        place.current_runtime = old_runtime
-        os.chdir(old_cwd)
-        if old_host is None: os.environ.pop("ENVIRONMENT_INVENTORY_HOST", None)
-        else: os.environ["ENVIRONMENT_INVENTORY_HOST"] = old_host
-
 
 for argv in (
     ["check", "--declaration", "unused", "--readiness"],
@@ -413,6 +335,7 @@ for argv in (
     ["check", "--declaration", "unused", "--site", "s1", "--readiness", "--environment", "env"],
 ):
     assert place.main(argv) == 1, argv
+
 
 
 # The bounded update commands derive the agent's runtime references from the

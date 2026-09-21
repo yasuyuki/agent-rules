@@ -50,8 +50,7 @@ def identity(place, args, context, site, source_ref='HEAD'):
     loaders = place._inventory_loader_inputs(args)
     code = inventory.snapshot_inputs([place.HERE / name for name in (
         'place.py', 'rules.py', 'environment_inventory.py', 'inventory_lifecycle.py',
-        'inventory_adoption.py', 'inventory_inspection.py', 'work_classification.py',
-        'handoff_receive.py', 'managed_entry.py', 'managed-cli')])
+        'inventory_adoption.py', 'inventory_inspection.py', 'work_classification.py')])
     digest = hashlib.sha256()
     for path, value in sorted({**sources, **code}.items(), key=lambda item: str(item[0])):
         digest.update(str(path).encode('utf-8'))

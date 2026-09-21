@@ -77,7 +77,7 @@ jobs:
       - name: Placement and rules contract
         run: python tests/ci_runner.py --output ci-results/rules.json --timeout 300 --command python tests/test_rules.py
       - name: Source regression contracts
-        run: python tests/ci_runner.py --output ci-results/source.json --timeout 300 test_grok_placement test_start_config test_standard_start test_managed_entry test_handoff_receive test_handoff_start test_inventory_adoption test_inventory_inspection test_push_preflight test_agent_report test_workspace_entry test_runtime_entry test_ci_runner test_verification_skill
+        run: python tests/ci_runner.py --output ci-results/source.json --timeout 300 test_grok_placement test_start_config test_inventory_adoption test_inventory_inspection test_push_preflight test_agent_report test_workspace_entry test_ci_runner test_verification_skill
       - name: Record resolved dependencies
         if: always()
         shell: bash
@@ -115,10 +115,9 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: python -m pip install build twine
       - run: python -m build
-      - run: python -m build packages/agent-runtime
       - name: Validate distribution metadata
         shell: bash
-        run: python -m twine check --strict dist/* packages/agent-runtime/dist/*
+        run: python -m twine check --strict dist/*
       - name: Install and test the wheel outside the checkout
         shell: bash
         run: |
@@ -137,20 +136,6 @@ jobs:
           cd "$RUNNER_TEMP"
           "$runtime/agent-rules" --version
           "$runtime/agent-rules" --help
-      - name: Install independent runtime wheel and test outside checkout
-        shell: bash
-        run: |
-          python -m venv "$RUNNER_TEMP/native-agent-runtime"
-          if [ "$RUNNER_OS" = Windows ]; then
-            runtime="$RUNNER_TEMP/native-agent-runtime/Scripts"
-          else
-            runtime="$RUNNER_TEMP/native-agent-runtime/bin"
-          fi
-          "$runtime/python" -m pip install --no-index packages/agent-runtime/dist/*.whl
-          "$runtime/python" -m pip install "workspace-lifecycle @ https://github.com/yasuyuki/workspace-lifecycle/archive/fdd4f16a11e095b8ea49c8a7d40ff49307ed738d.zip"
-          cd "$RUNNER_TEMP"
-          "$runtime/agent-runtime" --version
-          "$runtime/python" -m unittest discover -s "$GITHUB_WORKSPACE/packages/agent-runtime/tests" -v
       - name: Record resolved dependencies
         if: always()
         shell: bash
