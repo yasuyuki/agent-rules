@@ -43,7 +43,12 @@ alone does not update a running environment.
 - [User manual](docs/manual.md): source selection, ownership and migration boundaries.
 - [Development and CI](docs/ci.md): build and verification.
 - [Agent runtime guide](packages/agent-runtime/README.md): independent native CLI adapter and explicit adoption boundary.
-- [Workspace lifecycle guide](packages/workspace-lifecycle/README.md): independent task, finish, integration and retirement contract.
+- [Workspace lifecycle guide](https://github.com/yasuyuki/workspace-lifecycle): independent task, finish, integration and retirement contract.
 - [Necessity review](https://github.com/yasuyuki/necessity-review): independent owner and management CLI; existing fixed consumers can retain their accepted agent-rules revision until separately migrated.
 
 MIT. See [LICENSE](LICENSE).
+
+Checkout lifecycle compatibility entries require the independently installed
+[workspace-lifecycle 0.2.1](https://github.com/yasuyuki/workspace-lifecycle).
+Its source, build and lifecycle tests belong to that repository; this repository
+keeps only the existing compatibility entries and tests their public interface.

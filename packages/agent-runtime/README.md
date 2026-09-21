@@ -59,7 +59,7 @@ the separately reviewed plan and result evidence required by its owner.
 
 Version 0.1.0 is source-only, not a confirmed PyPI publication. Build the wheel
 from the accepted source revision and install it alongside the separately pinned
-workspace-lifecycle 0.2.0 wheel in an isolated environment. Pins identify the invoked
+[workspace-lifecycle 0.2.1](https://github.com/yasuyuki/workspace-lifecycle) wheel in an isolated environment. Pins identify the invoked
 entry and any adopted package files requiring drift detection; the environment
 owner controls their installation and source revision. Normal launch never
 repairs changed pins or grants trust.
