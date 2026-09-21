@@ -11,7 +11,7 @@ python -m twine check --strict dist/*
 
 The build makes the wheel from the sdist. The main distribution includes only
 the project entry, Rulesync staging adapter and pinned dependency lock. The
-separate agent-runtime and workspace-lifecycle wheels are built from their subdirectories and have no
+separate agent-runtime wheel is built from its subdirectory and has no
 dependency on this checkout's runtime, rules or private configuration.
 Install the built wheel into a separate clean environment, then use that
 interpreter for `tests/test_project.py`. Run installed `agent-rules --version`
@@ -58,7 +58,7 @@ skip. Failures, cancellation and unexpected skips cannot satisfy them.
 | Boundary | Evidence |
 | --- | --- |
 | Source behavior | Current source, placement, handoff, inventory, optional-hook and workspace-entry contracts |
-| Installed distribution | Build/metadata, project CLI end-to-end checks, plus the independently installed workspace-lifecycle wheel and its lifecycle/lease/push tests; imports must resolve outside the checkout |
+| Installed distribution | Build/metadata, project CLI end-to-end checks, plus the independently installed agent-runtime wheel and its CLI contract tests; imports must resolve outside the checkout |
 | Selection and documentation | Whole-range classification, intentional/abnormal skips, and maintained local reference tests |
 | Real environment behavior | Separate authorized host acceptance; fixture/byte checks do not establish native agent loading or UI delivery |
 
@@ -212,3 +212,12 @@ its failure was isolated and recorded in the same report. Real report data and
 launch configuration remain outside this repository. These observations do
 not establish completeness of the agents' self-reports or absence of startup
 side effects outside the target.
+
+Workspace lifecycle source/build/tests are owned by the independent
+[workspace-lifecycle repository](https://github.com/yasuyuki/workspace-lifecycle).
+Checkout compatibility tests install its explicit fixed public source artifact;
+this CI does not build or run a local lifecycle package suite. The installed
+agent-runtime suite keeps its public CLI composition/Windows console tests using
+the same fixed external artifact; no lifecycle implementation is copied here.
+Live composition with lifecycle 0.2.1 was also accepted in
+[the Linux migration](https://github.com/yasuyuki/agent-rules/issues/16#issuecomment-5753690090).

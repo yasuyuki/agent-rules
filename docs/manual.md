@@ -351,7 +351,7 @@ before collection; response errors remain isolated to their platform.
 
 ## Workspace lifecycle
 
-The independent [workspace lifecycle guide](../packages/workspace-lifecycle/README.md)
+The independent [workspace lifecycle guide](https://github.com/yasuyuki/workspace-lifecycle)
 documents the current task and worktree contract. It owns only state Git cannot
 recover: task identity, dependencies, acceptance, holds, retirement requests and
 process-use leases. Git remains the source of truth for worktree, branch, HEAD,
