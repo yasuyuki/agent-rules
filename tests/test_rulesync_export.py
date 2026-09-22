@@ -31,6 +31,28 @@ class ExportTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'unknown excluded'):
                 rules.export_sources([source],root/'typo',['codexcli'],['typo'])
 
+    def test_opencode_export_is_root_only_and_has_one_project_shared_writer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); source=root/'input'; source.mkdir()
+            payload='---\nid: example\ntitle: Example\nsummary: Example\n---\nCOMMON\n<!-- binding: codex -->\nCODEX\n<!-- binding: claude -->\nCLAUDE\n'
+            (source/'example.rule.md').write_text(payload,encoding='utf-8')
+            project=root/'project'
+            self.assertEqual(rules.export_sources([source],project,['codexcli','grokcli','opencode']),1)
+            files=sorted(p.name for p in (project/'rules').iterdir())
+            self.assertEqual(files,['example-00.md','example-01-shared.md'])
+            self.assertIn('["codexcli"]',(project/'rules/example-01-shared.md').read_text())
+            self.assertFalse(any('opencode' in p.name for p in (project/'rules').iterdir()))
+            only=root/'opencode-only'
+            self.assertEqual(rules.export_sources([source],only,['opencode']),1)
+            only_rules=sorted((only/'rules').iterdir())
+            self.assertEqual([p.name for p in only_rules],['example-00-opencode.md','example-01-shared.md'])
+            self.assertTrue(all('root: true' in p.read_text() for p in only_rules))
+            global_dest=root/'global'
+            self.assertEqual(rules.export_sources([source],global_dest,['codexcli','grokcli','opencode'],global_mode=True),1)
+            names=sorted(p.name for p in (global_dest/'rules').iterdir())
+            self.assertEqual(names,['example-00-grok.md','example-00-opencode.md','example-00.md','example-01-grok.md','example-01-opencode.md','example-01-shared.md'])
+            self.assertTrue(all('root: true' in (global_dest/'rules'/name).read_text() for name in ['example-00-grok.md','example-00-opencode.md','example-01-grok.md','example-01-opencode.md']))
+
     def test_all_current_sources_export_without_extra_policy(self):
         with tempfile.TemporaryDirectory() as temporary:
             dest=Path(temporary)/'native'

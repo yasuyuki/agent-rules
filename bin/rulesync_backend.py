@@ -23,7 +23,7 @@ VERSION = "16.39.1"
 MANIFEST = ".rulesync-ownership.json"
 JOURNAL = ".rulesync-transaction.json"
 LOCK = ".rulesync-transaction.lock"
-TARGETS = {"codexcli", "claudecode", "grokcli"}
+TARGETS = {"codexcli", "claudecode", "grokcli", "opencode"}
 FEATURES = {"rules", "skills"}
 
 
@@ -126,7 +126,7 @@ def _load_config(config_path: str | Path) -> dict:
     if not isinstance(raw["input_roots"], list) or not raw["input_roots"] or not all(isinstance(x, str) for x in raw["input_roots"]):
         raise BackendError("input_roots must be a non-empty array of paths")
     if not isinstance(raw["targets"], list) or not raw["targets"] or not all(isinstance(x, str) for x in raw["targets"]) or set(raw["targets"]) - TARGETS:
-        raise BackendError("targets must be a non-empty subset of codexcli, claudecode, grokcli")
+        raise BackendError("targets must be a non-empty subset of codexcli, claudecode, grokcli, opencode")
     if not isinstance(raw["features"], list) or not raw["features"] or not all(isinstance(x, str) for x in raw["features"]) or set(raw["features"]) - FEATURES:
         raise BackendError("features must be a non-empty subset of rules, skills")
     if not isinstance(raw["output_root"], str) or not isinstance(raw["global"], bool):
@@ -222,7 +222,9 @@ def _allowed(target: str, rel: str, global_mode: bool = False) -> bool:
         return rel == rule or rel.startswith(".agents/skills/")
     if target == "claudecode":
         return rel == (".claude/CLAUDE.md" if global_mode else "CLAUDE.md") or rel.startswith(".claude/rules/") or rel.startswith(".claude/skills/")
-    return rel == (".grok/AGENTS.md" if global_mode else "AGENTS.md") or rel.startswith(".grok/rules/") or rel.startswith(".grok/skills/")
+    if target == "grokcli":
+        return rel == (".grok/AGENTS.md" if global_mode else "AGENTS.md") or rel.startswith(".grok/rules/") or rel.startswith(".grok/skills/")
+    return rel == (".config/opencode/AGENTS.md" if global_mode else "AGENTS.md") or rel.startswith(".config/opencode/skills/" if global_mode else ".opencode/skills/")
 
 
 def _digest(data: bytes) -> str:
@@ -251,7 +253,7 @@ def _generate(config: dict, executable: str) -> dict[str, tuple[bytes, int]]:
             # Preserve only process essentials; redirect every known tool home so
             # native generation cannot discover or modify live configuration.
             env = {key: os.environ[key] for key in ("PATH", "SystemRoot", "COMSPEC", "HOMEDRIVE", "HOMEPATH", "TEMP", "TMP") if key in os.environ}
-            env.update({"HOME": str(home), "USERPROFILE": str(home), "XDG_CONFIG_HOME": str(home / ".config"), "XDG_DATA_HOME": str(home / ".local/share"), "CODEX_HOME": str(home / ".codex"), "CLAUDE_CONFIG_DIR": str(home / ".claude"), "GROK_CONFIG_DIR": str(home / ".grok")})
+            env.update({"HOME": str(home), "USERPROFILE": str(home), "XDG_CONFIG_HOME": str(home / ".config"), "XDG_DATA_HOME": str(home / ".local/share"), "CODEX_HOME": str(home / ".codex"), "CLAUDE_CONFIG_DIR": str(home / ".claude"), "GROK_CONFIG_DIR": str(home / ".grok"), "OPENCODE_CONFIG_DIR": str(home / ".config" / "opencode")})
             run = subprocess.run(_tool_command(executable, cmd), cwd=temp_root, env=env, text=True, capture_output=True, check=False)
             if run.returncode:
                 raise BackendError(f"Rulesync generation failed for {target}: {(run.stderr or run.stdout).strip()}")

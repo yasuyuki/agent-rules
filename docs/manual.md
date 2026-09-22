@@ -28,7 +28,7 @@ Create `rulesync-placement.json` alongside `sources/`:
 {
   "version": 1,
   "input_roots": ["sources"],
-  "targets": ["codexcli", "claudecode", "grokcli"],
+  "targets": ["codexcli", "claudecode", "grokcli", "opencode"],
   "features": ["rules", "skills"],
   "output_root": ".",
   "global": false
@@ -55,9 +55,8 @@ Only rules and skills are managed; permissions, hooks, MCP and ignores are not.
 Rulesync generates each target in an isolated staging directory. Shared output
 paths must have identical contents across targets; conflicting `AGENTS.md`
 content is rejected rather than resolved by target order. Use identical shared
-policy for Codex and Grok, with Claude-specific fragments separately targeted.
-For the three-target example, only Codex generates shared `AGENTS.md`; Grok
-reads it and generates its own skills. Claude uses `.claude/rules/`. A root
+policy for Codex, Grok, and OpenCode, with Claude-specific fragments separately targeted.
+For a collocated project, only one target generates shared `AGENTS.md` (Codex, then Grok, then OpenCode); the others read it and generate their own skills. OpenCode input rules must use `root: true`: its managed project surface is only `AGENTS.md` and `.opencode/skills/`, while user scope is only `.config/opencode/AGENTS.md` and `.config/opencode/skills/`. The adapter rejects `opencode.json`, `opencode.jsonc`, memories, and all other OpenCode settings, which remain owned by the machine configuration. Claude uses `.claude/rules/`. A root
 `CLAUDE.md` would also be read by Grok and duplicate common policy, so do not
 select that shape for this collocated consumer set. Grok also discovers
 `.claude/rules/` by default. Its machine configuration owner must explicitly
@@ -158,7 +157,7 @@ Edit only the original policies, regenerate a fresh export, and never maintain
 an exported copy as a second source. Tool bindings sharing `AGENTS.md` are
 combined to preserve the existing shared-file policy. Use `--exclude-id` for
 explicit location exclusions before generating a separate scope. Add `--global`
-when exporting user-scope inputs, where Codex and Grok use separate native roots.
+when exporting user-scope inputs, where Codex, Grok, and OpenCode use separate native roots.
 Use `--skills skills` to include this checkout's project skills in the same
 disposable source tree; do not select this repository root as native input,
 because its canonical rules use the legacy authoring format. Native private/project

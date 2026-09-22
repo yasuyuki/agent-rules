@@ -184,6 +184,87 @@ class RulesyncBackendTest(unittest.TestCase):
         self.assertTrue(self.apply())
         self.assertTrue((self.root / "out/.codex/AGENTS.md").is_file())
 
+    def test_opencode_root_generation_update_delete_noop_check_and_global(self):
+        data = json.loads(self.config.read_text())
+        data["targets"] = ["opencode"]
+        self.config.write_text(json.dumps(data))
+        (self.src / "rules/a.md").write_text("---\ndescription: root\nroot: true\n---\n# OpenCode\n")
+        self.assertTrue(self.apply())
+        out = self.root / "out"
+        self.assertTrue((out / "AGENTS.md").is_file())
+        self.assertTrue((out / ".opencode/skills/demo/SKILL.md").is_file())
+        self.assertTrue(backend.check(self.config, str(RULESYNC)))
+        mtime = (out / "AGENTS.md").stat().st_mtime_ns
+        self.assertFalse(self.apply())
+        self.assertEqual(mtime, (out / "AGENTS.md").stat().st_mtime_ns)
+        self.rule("a", "Updated OpenCode")
+        (self.src / "rules/a.md").write_text("---\ndescription: root\nroot: true\n---\n# Updated OpenCode\n")
+        self.assertTrue(self.apply())
+        self.assertIn("Updated OpenCode", (out / "AGENTS.md").read_text())
+        (self.src / "rules/a.md").unlink()
+        self.assertTrue(self.apply())
+        self.assertFalse((out / "AGENTS.md").exists())
+        self.assertTrue(backend.check(self.config, str(RULESYNC)))
+        data["global"] = True
+        data["output_root"] = "global-out"
+        self.config.write_text(json.dumps(data))
+        out = self.root / "global-out"
+        self.rule("global", "Global OpenCode")
+        (self.src / "rules/global.md").write_text("---\ndescription: global\nroot: true\n---\n# Global OpenCode\n")
+        self.assertTrue(self.apply())
+        self.assertTrue((out / ".config/opencode/AGENTS.md").is_file())
+        self.assertTrue((out / ".config/opencode/skills/demo/SKILL.md").is_file())
+
+    def test_opencode_rejects_nonroot_settings_and_memories_before_output_write(self):
+        data = json.loads(self.config.read_text())
+        data["targets"] = ["opencode"]
+        self.config.write_text(json.dumps(data))
+        out = self.root / "out"
+        out.mkdir()
+        sentinel = out / "keep.txt"
+        sentinel.write_text("keep")
+        with self.assertRaisesRegex(backend.BackendError, "unsupported path.*opencode"):
+            self.apply()
+        self.assertEqual(sentinel.read_text(), "keep")
+        self.assertFalse((out / backend.MANIFEST).exists())
+
+    def test_opencode_allowlist_is_root_only_and_has_no_settings_or_memory_prefixes(self):
+        self.assertTrue(backend._allowed("opencode", "AGENTS.md"))
+        self.assertTrue(backend._allowed("opencode", ".opencode/skills/demo/SKILL.md"))
+        self.assertTrue(backend._allowed("opencode", ".config/opencode/AGENTS.md", True))
+        self.assertTrue(backend._allowed("opencode", ".config/opencode/skills/demo/SKILL.md", True))
+        for rel in ("opencode.json", "opencode.jsonc", ".opencode/memories/a.md",
+                    ".opencode/skills-copy/a.md", ".config/opencode.jsonc",
+                    ".config/opencode/memories/a.md", ".config/opencode/skills-copy/a.md"):
+            self.assertFalse(backend._allowed("opencode", rel, rel.startswith(".config/")))
+
+    def test_opencode_unowned_external_edit_and_junction_are_refused(self):
+        data = json.loads(self.config.read_text())
+        data["targets"] = ["opencode"]
+        self.config.write_text(json.dumps(data))
+        (self.src / "rules/a.md").write_text("---\ndescription: root\nroot: true\n---\n# OpenCode\n")
+        out = self.root / "out"
+        out.mkdir()
+        (out / "AGENTS.md").write_text("mine")
+        with self.assertRaisesRegex(backend.BackendError, "unowned file"):
+            self.apply()
+        (out / "AGENTS.md").unlink()
+        self.assertTrue(self.apply())
+        (out / "AGENTS.md").write_text("edited")
+        with self.assertRaisesRegex(backend.BackendError, "externally modified"):
+            self.apply()
+        foreign = self.root / "foreign"
+        foreign.mkdir()
+        linked = self.root / "linked-out"
+        if os.name == "nt":
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(linked), str(foreign)], check=True, capture_output=True)
+        else:
+            linked.symlink_to(foreign, target_is_directory=True)
+        data["output_root"] = "linked-out"
+        self.config.write_text(json.dumps(data))
+        with self.assertRaisesRegex(backend.BackendError, "symlink or junction"):
+            self.apply()
+
     def test_hard_exit_transaction_recovers_before_retry(self):
         self.assertTrue(self.apply())
         (self.src / "rules/a.md").unlink()  # stale owned deletion

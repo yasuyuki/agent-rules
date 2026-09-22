@@ -235,9 +235,9 @@ def export_sources(sources, destination, targets, exclude_ids=(), global_mode=Fa
     from pathlib import Path
     import shutil
     import tempfile
-    target_tools = {"codexcli": "codex", "claudecode": "claude", "grokcli": "grok"}
+    target_tools = {"codexcli": "codex", "claudecode": "claude", "grokcli": "grok", "opencode": "opencode"}
     if not targets or set(targets) - set(target_tools):
-        raise ValueError("select codexcli, claudecode and/or grokcli")
+        raise ValueError("select codexcli, claudecode, grokcli and/or opencode")
     destination = Path(destination).absolute()
     if destination.exists() or destination.is_symlink():
         raise ValueError("export destination must not exist")
@@ -267,7 +267,7 @@ def export_sources(sources, destination, targets, exclude_ids=(), global_mode=Fa
                       "agents-md-section" in placement["tools"][tool]["reads"]["rules"]]
             active = [target for target in targets if
                       target_tools[target] in allowed or
-                      (target in ("codexcli", "grokcli") and shared)]
+                      (target in ("codexcli", "grokcli", "opencode") and shared)]
             if not active:
                 continue
             def emit(suffix, selected, body, root_rule=False):
@@ -277,19 +277,25 @@ def export_sources(sources, destination, targets, exclude_ids=(), global_mode=Fa
                     header + body.strip() + "\n", encoding="utf-8", newline="\n")
             # Grok reads CLAUDE.md as well as AGENTS.md. Keep Claude in its
             # native rules directory; one target owns the shared AGENTS.md.
-            shared_targets = [target for target in active if target in ("codexcli", "grokcli")]
-            writer = "codexcli" if "codexcli" in shared_targets else "grokcli" if shared_targets else None
+            shared_targets = [target for target in active if target in ("codexcli", "grokcli", "opencode")]
+            writer = ("codexcli" if "codexcli" in shared_targets else
+                      "grokcli" if "grokcli" in shared_targets else
+                      "opencode" if "opencode" in shared_targets else None)
             common_targets = [target for target in active if target in ("codexcli", "claudecode")]
             body = "# " + meta["title"] + "\n\n" + common.strip()
             if common_targets:
                 emit("-00", common_targets, body)
             if "grokcli" in shared_targets and (global_mode or writer == "grokcli"):
                 emit("-00-grok", ["grokcli"], body, root_rule=True)
+            if "opencode" in shared_targets and (global_mode or writer == "opencode"):
+                emit("-00-opencode", ["opencode"], body, root_rule=True)
             shared_body = "\n\n".join(bindings[tool].strip() for tool in shared if tool in bindings)
             if writer and shared_body:
-                emit("-01-shared", [writer], shared_body, root_rule=writer == "grokcli")
+                emit("-01-shared", [writer], shared_body, root_rule=writer in ("grokcli", "opencode"))
                 if global_mode and writer == "codexcli" and "grokcli" in shared_targets:
                     emit("-01-grok", ["grokcli"], shared_body, root_rule=True)
+                if global_mode and writer != "opencode" and "opencode" in shared_targets:
+                    emit("-01-opencode", ["opencode"], shared_body, root_rule=True)
             if "claudecode" in active and "claude" in bindings:
                 emit("-01-claude", ["claudecode"], bindings["claude"])
         shutil.move(str(root), str(destination))
@@ -302,7 +308,7 @@ if __name__ == "__main__":
     parser.add_argument("source", nargs="+", help="explicit directories containing canonical .rule.md files")
     parser.add_argument("--dest", required=True, help="new disposable source directory")
     parser.add_argument("--targets", nargs="+", required=True,
-                        choices=["codexcli", "claudecode", "grokcli"])
+                        choices=["codexcli", "claudecode", "grokcli", "opencode"])
     parser.add_argument("--exclude-id", action="append", default=[],
                         help="explicit scope exclusion from the selected sources (repeatable)")
     parser.add_argument("--global", dest="global_mode", action="store_true",
