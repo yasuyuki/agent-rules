@@ -19,7 +19,8 @@ commit は次をすべて満たすときだけ行う。
 無関係な dirty state はそのまま保ち、自分の変更を分離して stage できれば進める。
 検証失敗はまず自分で解決する。分離できない変更や解消できない失敗だけを報告して判断を仰ぐ。
 
-commit 後、push 前に環境が指定する正本の `bin/push_preflight.py` を対象 repo に対して実行する。
+commit 後、push 前に環境が指定する固定 `workspace-lifecycle` install の Python で
+`-m workspace_lifecycle.push <repo>` を対象 repo に対して実行する。
 入力と出力は同入口の `--help` を参照し、判定表や宛先選択を規約側で再実装しない。
 指定された private policy は必ず渡し、読取不能を省略で迂回しない。入口が利用できなければ
 不足を報告し、独自判断で push しない。

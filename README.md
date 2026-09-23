@@ -47,7 +47,7 @@ outside this compatibility surface until their separate adoption.
 
 MIT. See [LICENSE](LICENSE).
 
-Checkout lifecycle compatibility entries require the independently installed
+The remaining checkout branch compatibility entry requires the independently installed
 [workspace-lifecycle 0.2.1](https://github.com/yasuyuki/workspace-lifecycle).
-Its source, build and lifecycle tests belong to that repository; this repository
-keeps only the existing compatibility entries and tests their public interface.
+Push preflight uses the fixed independent package directly. Its source, build and
+lifecycle tests belong to that repository.

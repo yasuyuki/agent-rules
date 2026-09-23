@@ -77,7 +77,7 @@ jobs:
       - name: Placement and rules contract
         run: python tests/ci_runner.py --output ci-results/rules.json --timeout 300 --command python tests/test_rules.py
       - name: Source regression contracts
-        run: python tests/ci_runner.py --output ci-results/source.json --timeout 300 test_grok_placement test_start_config test_inventory_adoption test_inventory_inspection test_push_preflight test_agent_report test_workspace_entry test_ci_runner test_verification_skill
+        run: python tests/ci_runner.py --output ci-results/source.json --timeout 300 test_grok_placement test_start_config test_inventory_adoption test_inventory_inspection test_agent_report test_workspace_entry test_ci_runner test_verification_skill
       - name: Record resolved dependencies
         if: always()
         shell: bash

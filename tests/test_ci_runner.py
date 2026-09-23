@@ -115,7 +115,7 @@ class SetupError(unittest.TestCase):
             self.assertEqual(selected[0] | selected[1], set(collected))
 
     def test_real_checkout_and_recovery_ids_are_assigned_once_at_all_bucket_counts(self):
-        ids = runner.collect(['test_workspace_entry', 'test_push_preflight'])
+        ids = runner.collect(['test_workspace_entry', 'test_agent_report'])
         for bucket_count in (1, 3, 6, len(ids) + 1):
             assigned = [test_id for bucket in runner.assign_buckets(ids, bucket_count)
                         for test_id in bucket]
