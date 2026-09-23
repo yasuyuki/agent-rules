@@ -47,7 +47,8 @@ outside this compatibility surface until their separate adoption.
 
 MIT. See [LICENSE](LICENSE).
 
-The remaining checkout branch compatibility entry requires the independently installed
-[workspace-lifecycle 0.2.1](https://github.com/yasuyuki/workspace-lifecycle).
+Inventory inspection uses a read-only compatibility import from the independently
+installed [workspace-lifecycle](https://github.com/yasuyuki/workspace-lifecycle).
+Use its CLI directly for task, finish, integration and retirement operations.
 Push preflight uses the fixed independent package directly. Its source, build and
 lifecycle tests belong to that repository.

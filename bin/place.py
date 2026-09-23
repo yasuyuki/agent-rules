@@ -1743,9 +1743,6 @@ def selfcheck(_args):
 def main(argv, *, runner=subprocess.run, resolver=None):
     if resolver is None:
         resolver = shutil.which
-    if argv[:1] == ["branch"]:
-        import branch_management
-        return branch_management.main(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -1807,7 +1804,6 @@ def main(argv, *, runner=subprocess.run, resolver=None):
     save_p.add_argument("--skills", action="append")
     save_p.add_argument("--inventory-host")
 
-    sub.add_parser("branch", help="register work and enforce Git branch operations")
     sub.add_parser("selfcheck")
     args = parser.parse_args(argv)
     try:
