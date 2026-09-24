@@ -73,6 +73,49 @@ class RulesyncBackendTest(unittest.TestCase):
         self.assertFalse((out / "AGENTS.md").exists())
         self.assertTrue(backend.check(self.config, str(RULESYNC)))
 
+    def test_cursor_project_ownership_update_delete_and_global_skills(self):
+        data = json.loads(self.config.read_text())
+        data['targets'] = ['codexcli', 'cursor']
+        self.config.write_text(json.dumps(data))
+        rule = self.src / 'rules/a.md'
+        rule.write_text('---\ndescription: Example\ncursor: {alwaysApply: true}\n---\n# Hello\n')
+        out = self.root / 'out'
+        native = out / '.cursor/rules/a.mdc'
+        native.parent.mkdir(parents=True)
+        native.write_text('handwritten')
+        with self.assertRaisesRegex(backend.BackendError, 'unowned file'):
+            self.apply()
+        self.assertEqual(native.read_text(), 'handwritten')
+        native.unlink()
+        self.assertTrue(self.apply())
+        self.assertIn('alwaysApply: true', native.read_text())
+        self.assertTrue((out / 'AGENTS.md').is_file())
+        self.assertTrue((out / '.cursor/skills/demo/reference.md').is_file())
+        before = native.stat().st_mtime_ns
+        self.assertFalse(self.apply())
+        self.assertEqual(before, native.stat().st_mtime_ns)
+        self.assertTrue(backend.check(self.config, str(RULESYNC)))
+        original = native.read_bytes()
+        native.write_text('external edit')
+        with self.assertRaisesRegex(backend.BackendError, 'externally modified'):
+            self.apply()
+        native.write_bytes(original)
+        rule.write_text('---\ndescription: Updated\ncursor: {alwaysApply: true}\n---\n# Updated\n')
+        self.assertTrue(self.apply())
+        self.assertIn('Updated', native.read_text())
+        rule.unlink()
+        self.assertTrue(self.apply())
+        self.assertFalse(native.exists())
+        self.assertTrue(backend.check(self.config, str(RULESYNC)))
+        data['targets'] = ['cursor']
+        data['global'] = True
+        data['output_root'] = 'global-out'
+        data['features'] = ['skills']
+        self.config.write_text(json.dumps(data))
+        self.assertTrue(self.apply())
+        self.assertTrue((self.root / 'global-out/.cursor/skills/demo/SKILL.md').is_file())
+        self.assertFalse((self.root / 'global-out/.cursor/rules').exists())
+
     def test_rejects_unowned_file_and_same_name_skill(self):
         out = self.root / "out"
         (out / "AGENTS.md").parent.mkdir(parents=True)
