@@ -11,6 +11,28 @@ spec.loader.exec_module(rules)
 
 
 class ExportTests(unittest.TestCase):
+    def test_cursor_exports_always_on_common_policy_with_shared_codex_writer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'input'
+            source.mkdir()
+            (source / 'example.rule.md').write_text(
+                '---\nid: example\ntitle: Example\nsummary: Example summary\n---\nCOMMON\n'
+                '<!-- binding: codex -->\nCODEX\n<!-- binding: cursor-agent -->\nCURSOR\n', encoding='utf-8')
+            dest = root / 'export'
+            rules.export_sources([source], dest, ['codexcli', 'cursor', 'opencode'])
+            common = (dest / 'rules/example-00.md').read_text(encoding='utf-8')
+            self.assertIn('targets: ["codexcli", "cursor"]', common)
+            self.assertIn('description: "Example summary"', common)
+            self.assertIn('cursor: {alwaysApply: true}', common)
+            self.assertIn('COMMON', common)
+            shared = (dest / 'rules/example-01-shared.md').read_text()
+            self.assertIn('targets: ["codexcli"]', shared)
+            self.assertIn('CODEX', shared)
+            cursor = (dest / 'rules/example-01-cursor.md').read_text()
+            self.assertIn('targets: ["cursor"]', cursor)
+            self.assertIn('CURSOR', cursor)
+
     def test_explicit_policy_binding_order_and_single_authority(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary); source=root/'input'; source.mkdir()

@@ -28,7 +28,7 @@ Create `rulesync-placement.json` alongside `sources/`:
 {
   "version": 1,
   "input_roots": ["sources"],
-  "targets": ["codexcli", "claudecode", "grokcli", "opencode"],
+  "targets": ["codexcli", "claudecode", "grokcli", "opencode", "cursor"],
   "features": ["rules", "skills"],
   "output_root": ".",
   "global": false
@@ -51,6 +51,14 @@ Pass `--rulesync` to select an installed executable outside PATH. It must report
 with `global: true` and an explicit disposable HOME as `output_root` during
 verification. Do not repeat the same policy in both user and project inputs.
 Only rules and skills are managed; permissions, hooks, MCP and ignores are not.
+
+Cursor project output is limited to `.cursor/rules/` and `.cursor/skills/`.
+Use `cursor: {alwaysApply: true}` in native rule frontmatter for always-on rules;
+the canonical-policy exporter preserves that behavior and the policy summary.
+Cursor user scope supports skills only, not rules. Consumers of shared project
+`AGENTS.md` and `.agents/skills/`, such as agy, can use the existing `codexcli`
+output without a second target or writer. Combine all selected targets in one
+config per output root: that root has one ownership manifest.
 
 Rulesync generates each target in an isolated staging directory. Shared output
 paths must have identical contents across targets; conflicting `AGENTS.md`

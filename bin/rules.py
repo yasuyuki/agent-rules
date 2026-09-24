@@ -235,9 +235,9 @@ def export_sources(sources, destination, targets, exclude_ids=(), global_mode=Fa
     from pathlib import Path
     import shutil
     import tempfile
-    target_tools = {"codexcli": "codex", "claudecode": "claude", "grokcli": "grok", "opencode": "opencode"}
+    target_tools = {"codexcli": "codex", "claudecode": "claude", "grokcli": "grok", "opencode": "opencode", "cursor": "cursor-agent"}
     if not targets or set(targets) - set(target_tools):
-        raise ValueError("select codexcli, claudecode, grokcli and/or opencode")
+        raise ValueError("select codexcli, claudecode, grokcli, opencode and/or cursor")
     destination = Path(destination).absolute()
     if destination.exists() or destination.is_symlink():
         raise ValueError("export destination must not exist")
@@ -271,8 +271,11 @@ def export_sources(sources, destination, targets, exclude_ids=(), global_mode=Fa
             if not active:
                 continue
             def emit(suffix, selected, body, root_rule=False):
-                header = "---\nroot: %s\ntargets: %s\n---\n" % (
+                header = "---\nroot: %s\ntargets: %s\n" % (
                     "true" if root_rule else "false", json.dumps(selected))
+                if "cursor" in selected:
+                    header += "description: %s\ncursor: {alwaysApply: true}\n" % json.dumps(meta["summary"], ensure_ascii=False)
+                header += "---\n"
                 (root / "rules" / (meta["id"] + suffix + ".md")).write_text(
                     header + body.strip() + "\n", encoding="utf-8", newline="\n")
             # Grok reads CLAUDE.md as well as AGENTS.md. Keep Claude in its
@@ -281,7 +284,7 @@ def export_sources(sources, destination, targets, exclude_ids=(), global_mode=Fa
             writer = ("codexcli" if "codexcli" in shared_targets else
                       "grokcli" if "grokcli" in shared_targets else
                       "opencode" if "opencode" in shared_targets else None)
-            common_targets = [target for target in active if target in ("codexcli", "claudecode")]
+            common_targets = [target for target in active if target in ("codexcli", "claudecode", "cursor")]
             body = "# " + meta["title"] + "\n\n" + common.strip()
             if common_targets:
                 emit("-00", common_targets, body)
@@ -298,6 +301,8 @@ def export_sources(sources, destination, targets, exclude_ids=(), global_mode=Fa
                     emit("-01-opencode", ["opencode"], shared_body, root_rule=True)
             if "claudecode" in active and "claude" in bindings:
                 emit("-01-claude", ["claudecode"], bindings["claude"])
+            if "cursor" in active and "cursor-agent" in bindings:
+                emit("-01-cursor", ["cursor"], bindings["cursor-agent"])
         shutil.move(str(root), str(destination))
     return len(rules)
 
@@ -308,7 +313,7 @@ if __name__ == "__main__":
     parser.add_argument("source", nargs="+", help="explicit directories containing canonical .rule.md files")
     parser.add_argument("--dest", required=True, help="new disposable source directory")
     parser.add_argument("--targets", nargs="+", required=True,
-                        choices=["codexcli", "claudecode", "grokcli", "opencode"])
+                        choices=["codexcli", "claudecode", "grokcli", "opencode", "cursor"])
     parser.add_argument("--exclude-id", action="append", default=[],
                         help="explicit scope exclusion from the selected sources (repeatable)")
     parser.add_argument("--global", dest="global_mode", action="store_true",
