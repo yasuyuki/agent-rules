@@ -44,8 +44,8 @@ jobs:
         vendor: ${{ fromJSON((github.event.schedule == '47 19 * * 0' || inputs.matrix == 'weekly') && '["pair","claude","codex"]' || '["pair"]') }}
     env:
       NATIVE_VENDOR: ${{ matrix.vendor }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ (matrix.vendor == 'pair' || matrix.vendor == 'claude') && secrets.ANTHROPIC_API_KEY || '' }}
+      OPENAI_API_KEY: ${{ (matrix.vendor == 'pair' || matrix.vendor == 'codex') && secrets.OPENAI_API_KEY || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
