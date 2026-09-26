@@ -177,6 +177,7 @@ class NativeResultTests(unittest.TestCase):
         self.assertFalse(decode_events("codex", "\n".join(map(json.dumps, events)), "other.py")[2])
         self.assertEqual(codex_command_diagnostics("\n".join(map(json.dumps, events)), "proof.py"),
                          {"codex_command_attempted": True,
+                          "codex_item_types": ["agent_message", "command_execution"],
                           "codex_proof_command_attempted": True,
                           "codex_proof_command_failed": False,
                           "codex_other_tool_attempted": False,
