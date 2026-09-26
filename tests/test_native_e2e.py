@@ -29,13 +29,13 @@ class NativeResultTests(unittest.TestCase):
         self.assertLess(argv.index(prompt), argv.index("--allowedTools"))
         self.assertIn("Skill,Read,Bash", argv)
 
-    def test_codex_skill_probe_uses_unattended_none_effort(self):
+    def test_codex_skill_probe_uses_unattended_default_effort(self):
         argv = command("codex", Path("/tmp/codex"), "gpt-6-luna",
                        Path("/tmp/consumer"), "Use the skill.", "proof.py")
         self.assertEqual(argv[argv.index("--ask-for-approval") + 1], "never")
         self.assertLess(argv.index("--ask-for-approval"), argv.index("exec"))
         self.assertNotIn("--skip-git-repo-check", argv)
-        self.assertIn('model_reasoning_effort="none"', argv)
+        self.assertNotIn('model_reasoning_effort="none"', argv)
         self.assertNotIn('model_reasoning_effort="none"', command(
             "codex", Path("/tmp/codex"), "gpt-6-luna", Path("/tmp/consumer"), "Rule probe."))
 

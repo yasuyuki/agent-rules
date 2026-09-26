@@ -256,8 +256,6 @@ def command(vendor: str, cli: Path, model: str, workspace: Path, prompt: str,
         argv = [str(cli), "--ask-for-approval", "never", "exec", "--json", "--ephemeral",
                 "--sandbox", "workspace-write", "-C", str(workspace),
                 "-m", model]
-        if proof_name is not None:
-            argv += ["-c", 'model_reasoning_effort="none"']
         return [*argv, prompt]
     if vendor == "agy":
         return [str(cli), "-p", "--output-format", "stream-json", "--model", model,
@@ -441,8 +439,9 @@ def main() -> int:
                     binaries[vendor], workspace, args.user, args.home, name)
                 if not result["codex_skill_listed"]:
                     raise EvidenceUnavailable("codex skill absent from isolated prompt inventory")
-                prompt = (f'${name}\nExecute this skill\'s instructions. Use the '
-                          f'exec_command shell tool '
+                prompt = (f'${name}\nThis explicitly invokes the named skill. Read its '
+                          f'SKILL.md from the path in your skill inventory, then follow its '
+                          f'instructions. Use the exec_command shell tool '
                           f'to run its proof.py with --challenge {challenge} --output {proof}. '
                           f'Read that generated JSON file and return its exact skill and challenge '
                           f'fields as JSON. If you cannot execute the helper, do not guess the skill value.')
