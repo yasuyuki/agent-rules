@@ -142,17 +142,20 @@ home = Path('/home/native-e2e/.codex')
 catalog = json.loads(subprocess.check_output([cli, 'debug', 'models', '--bundled'],
                                              stderr=subprocess.DEVNULL))
 matches = [model for model in catalog['models'] if model['slug'] == 'gpt-6-luna']
-if len(matches) != 1 or matches[0].get('use_responses_lite') is not True:
+if (len(matches) != 1 or matches[0].get('use_responses_lite') is not True
+        or matches[0].get('tool_mode') != 'code_mode_only'):
     raise RuntimeError('pinned Codex model catalog changed; review native tool setup')
 matches[0]['use_responses_lite'] = False
+matches[0]['tool_mode'] = None
 catalog_path = home / 'native-e2e-models.json'
 catalog_path.write_text(json.dumps(catalog))
 (home / 'config.toml').write_text(f'model_catalog_json = "{catalog_path}"\n')
 effective = json.loads(subprocess.check_output([cli, 'debug', 'models'],
                                                 stderr=subprocess.DEVNULL))
 chosen = [model for model in effective['models'] if model['slug'] == 'gpt-6-luna']
-if len(chosen) != 1 or chosen[0].get('use_responses_lite') is not False:
+if (len(chosen) != 1 or chosen[0].get('use_responses_lite') is not False
+        or chosen[0].get('tool_mode') is not None):
     raise RuntimeError('isolated Codex catalog override was not loaded')
-print('isolated Codex standard Responses catalog loaded')
+print('isolated Codex standard Responses direct-tool catalog loaded')
 PY
 fi
