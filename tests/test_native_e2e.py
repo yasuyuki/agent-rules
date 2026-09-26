@@ -178,7 +178,13 @@ class NativeResultTests(unittest.TestCase):
         self.assertEqual(codex_command_diagnostics("\n".join(map(json.dumps, events)), "proof.py"),
                          {"codex_command_attempted": True,
                           "codex_proof_command_attempted": True,
-                          "codex_proof_command_failed": False})
+                          "codex_proof_command_failed": False,
+                          "codex_other_tool_attempted": False,
+                          "codex_turn_completed": True,
+                          "codex_turn_failed": False,
+                          "codex_terminal_json": True,
+                          "codex_terminal_mentions_tool": False,
+                          "codex_terminal_refusal_hint": False})
 
     def test_codex_failed_command_diagnostics_hide_command(self):
         events = [{"type": "item.completed", "item": {"type": "command_execution",

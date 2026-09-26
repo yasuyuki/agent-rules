@@ -192,12 +192,27 @@ def codex_command_diagnostics(stdout: str, proof_name: str) -> dict[str, bool]:
              if event.get("type") in ("item.started", "item.completed")]
     commands = [item for item in items if item.get("type") == "command_execution"]
     proof_commands = [item for item in commands if proof_name in str(item.get("command", ""))]
+    messages = [item.get("text", "") for item in items if item.get("type") == "agent_message"
+                and isinstance(item.get("text"), str)]
+    terminal = messages[-1] if messages else ""
+    try:
+        terminal_is_json = isinstance(terminal_json(terminal), dict)
+    except (TypeError, ValueError):
+        terminal_is_json = False
     return {"codex_command_attempted": bool(commands),
             "codex_proof_command_attempted": bool(proof_commands),
             "codex_proof_command_failed": any(
                 item.get("status") == "failed" or
                 (isinstance(item.get("exit_code"), int) and item["exit_code"] != 0)
-                for item in proof_commands)}
+                for item in proof_commands),
+            "codex_other_tool_attempted": any(item.get("type") in
+                ("mcp_tool_call", "dynamic_tool_call", "web_search") for item in items),
+            "codex_turn_completed": any(event.get("type") == "turn.completed" for event in events),
+            "codex_turn_failed": any(event.get("type") == "turn.failed" for event in events),
+            "codex_terminal_json": terminal_is_json,
+            "codex_terminal_mentions_tool": "tool" in terminal.lower(),
+            "codex_terminal_refusal_hint": any(term in terminal.lower() for term in
+                ("cannot", "can't", "unable", "not available", "don't have access"))}
 
 
 def command(vendor: str, cli: Path, model: str, workspace: Path, prompt: str,
@@ -381,6 +396,8 @@ def main() -> int:
         placement("apply")
         applied = True
         placement("check")
+        owned_files = [workspace / item["path"] for item in
+                       json.loads((workspace / ".rulesync-ownership.json").read_text())["files"]]
         for vendor in vendors:
             result["phase"] = f"positive-rule-{vendor}"
             challenge = secrets.token_hex(12)
@@ -435,10 +452,8 @@ def main() -> int:
         shutil.rmtree(skill_dir)
         placement("apply")
         placement("check")
-        paths = [workspace / ".claude/rules/native-probe.md", workspace / "AGENTS.md",
-                 workspace / ".cursor/rules/native-probe.mdc"]
-        if any(path.exists() for path in paths) or list(workspace.glob("**/" + name)):
-            raise RuntimeError("owned native paths remain after rollback")
+        if any(path.exists() for path in owned_files):
+            raise RuntimeError("owned native files remain after rollback")
         for vendor in vendors:
             result["phase"] = f"negative-rule-{vendor}"
             challenge = secrets.token_hex(12)
