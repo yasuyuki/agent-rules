@@ -2,10 +2,13 @@
 import json
 import unittest
 
-from native_e2e import answer, decode_events
+from native_e2e import SCENARIO, answer, decode_events
 
 
 class NativeResultTests(unittest.TestCase):
+    def test_pair_scenario_contains_only_funded_vendors(self):
+        self.assertEqual(SCENARIO["pair"], ("claude", "codex"))
+
     def test_terminal_result_only(self):
         prompt = '{"rule":"RULE_echoed","challenge":"fresh"}'
         lines = [

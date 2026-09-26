@@ -4,6 +4,7 @@ set -euo pipefail
 
 scenario=${1:?scenario required}
 case "$scenario" in
+  pair) vendors=(claude codex) ;;
   all) vendors=(claude codex agy cursor) ;;
   claude|codex|agy|cursor) vendors=("$scenario") ;;
   *) exit 2 ;;
@@ -30,7 +31,7 @@ for vendor in "${vendors[@]}"; do
       npm install --global --prefix "$tools_root/npm" @openai/codex@0.157.1
       cli="$tools_root/npm/bin/codex"
       expected='codex-cli 0.157.1'
-      model='gpt-5.3-codex'
+      model='gpt-6-luna'
       ;;
     agy)
       curl -fsSL https://antigravity.google/cli/install.sh -o "$RUNNER_TEMP/agy-install.sh"
@@ -66,7 +67,7 @@ for vendor in "${vendors[@]}"; do
   upper=${vendor^^}
   printf '%s\n' "NATIVE_CLI_$upper=$cli" "NATIVE_MODEL_$upper=$model" \
     "NATIVE_VERSION_$upper=$actual" >> "$GITHUB_ENV"
-  if [[ "$scenario" != all ]]; then
+  if [[ "$scenario" != all && "$scenario" != pair ]]; then
     printf '%s\n' "NATIVE_CLI=$cli" "NATIVE_MODEL=$model" >> "$GITHUB_ENV"
   fi
 done

@@ -41,13 +41,11 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        vendor: ${{ fromJSON((github.event.schedule == '47 19 * * 0' || inputs.matrix == 'weekly') && '["all","claude","codex","agy","cursor"]' || '["all"]') }}
+        vendor: ${{ fromJSON((github.event.schedule == '47 19 * * 0' || inputs.matrix == 'weekly') && '["pair","claude","codex"]' || '["pair"]') }}
     env:
       NATIVE_VENDOR: ${{ matrix.vendor }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -66,9 +64,8 @@ jobs:
         run: |
           python - <<'PY'
           import json, os, pathlib, sys
-          keys = {'claude': 'ANTHROPIC_API_KEY', 'codex': 'OPENAI_API_KEY',
-                  'agy': 'GEMINI_API_KEY', 'cursor': 'CURSOR_API_KEY'}
-          required = keys.values() if os.environ['NATIVE_VENDOR'] == 'all' else [keys[os.environ['NATIVE_VENDOR']]]
+          keys = {'claude': 'ANTHROPIC_API_KEY', 'codex': 'OPENAI_API_KEY'}
+          required = keys.values() if os.environ['NATIVE_VENDOR'] == 'pair' else [keys[os.environ['NATIVE_VENDOR']]]
           missing = [key for key in required if not os.environ.get(key)]
           if missing:
               path = pathlib.Path('ci-results')
@@ -96,7 +93,7 @@ jobs:
         shell: bash
         run: |
           extra=()
-          if [ "$NATIVE_VENDOR" != all ]; then
+          if [ "$NATIVE_VENDOR" != pair ]; then
             extra=(--cli "$NATIVE_CLI" --model "$NATIVE_MODEL")
           fi
           python tests/native_e2e.py \

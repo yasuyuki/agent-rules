@@ -22,6 +22,7 @@ import time
 FIXTURE = Path(__file__).parent / "fixtures/native-e2e"
 TARGET = {"claude": "claudecode", "codex": "codexcli", "agy": "codexcli", "cursor": "cursor"}
 SECRET = {"claude": "ANTHROPIC_API_KEY", "codex": "OPENAI_API_KEY", "agy": "GEMINI_API_KEY", "cursor": "CURSOR_API_KEY"}
+SCENARIO = {"pair": ("claude", "codex"), "all": tuple(TARGET)}
 
 
 class EvidenceUnavailable(RuntimeError):
@@ -154,7 +155,7 @@ def run_native(vendor: str, cli: Path, model: str, workspace: Path, user: str,
 def main() -> int:
     started = time.monotonic()
     parser = argparse.ArgumentParser()
-    parser.add_argument("--vendor", choices=(*TARGET, "all"), required=True)
+    parser.add_argument("--vendor", choices=(*TARGET, *SCENARIO), required=True)
     parser.add_argument("--cli", type=Path)
     parser.add_argument("--model")
     parser.add_argument("--entry", type=Path, required=True)
@@ -163,11 +164,11 @@ def main() -> int:
     parser.add_argument("--home", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    vendors = list(TARGET) if args.vendor == "all" else [args.vendor]
+    vendors = SCENARIO.get(args.vendor, (args.vendor,))
     binaries = {vendor: Path(os.environ.get(f"NATIVE_CLI_{vendor.upper()}", ""))
-                for vendor in vendors} if args.vendor == "all" else {args.vendor: args.cli}
+                for vendor in vendors} if args.vendor in SCENARIO else {args.vendor: args.cli}
     models = {vendor: os.environ.get(f"NATIVE_MODEL_{vendor.upper()}")
-              for vendor in vendors} if args.vendor == "all" else {args.vendor: args.model}
+              for vendor in vendors} if args.vendor in SCENARIO else {args.vendor: args.model}
     versions = {vendor: os.environ.get(f"NATIVE_VERSION_{vendor.upper()}") for vendor in vendors}
     result = {"scenario": args.vendor, "models": models, "status": "fail", "phase": "preflight",
               "source_sha": os.environ.get("GITHUB_SHA"), "wheel_sha256": os.environ.get("WHEEL_SHA256"),
