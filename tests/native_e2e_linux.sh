@@ -13,6 +13,19 @@ esac
 sudo useradd --create-home --shell /bin/bash native-e2e
 sudo chmod 700 /home/native-e2e
 sudo chmod -R o-rwx "$GITHUB_WORKSPACE"
+for vendor in "${vendors[@]}"; do
+  case "$vendor" in
+    claude) key=ANTHROPIC_API_KEY ;;
+    codex) key=OPENAI_API_KEY ;;
+    agy) key=GEMINI_API_KEY ;;
+    cursor) key=CURSOR_API_KEY ;;
+  esac
+  if ! sudo -n --preserve-env="$key" -u native-e2e python3 -c \
+      'import os,sys; sys.exit(not os.environ.get(sys.argv[1]))' "$key"; then
+    printf 'probe user cannot receive %s through isolated launcher\n' "$key" >&2
+    exit 1
+  fi
+done
 cd /tmp
 tools_root=/opt/agent-rules-native-tools
 sudo install -d -m 755 -o "$(id -un)" "$tools_root"
