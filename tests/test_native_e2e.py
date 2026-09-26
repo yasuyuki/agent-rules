@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import unittest
 
-from native_e2e import (CLAUDE_RESULT_SCHEMA, SCENARIO, answer, claude_structure_diagnostics,
+from native_e2e import (SCENARIO, answer, claude_structure_diagnostics,
                         claude_terminal_issue,
                         codex_command_diagnostics, command, decode_events,
                         negative_rule_issue, skill_answer_issue)
@@ -13,13 +13,13 @@ class NativeResultTests(unittest.TestCase):
     def test_pair_scenario_contains_only_funded_vendors(self):
         self.assertEqual(SCENARIO["pair"], ("claude", "codex"))
 
-    def test_claude_rule_probe_uses_structured_output(self):
+    def test_claude_rule_probe_disallows_tools_and_requires_json(self):
         prompt = 'Return only JSON {"challenge":"fresh"}.'
         argv = command("claude", Path("/tmp/claude"), "claude-haiku-4-5-20251001",
                        Path("/tmp/consumer"), prompt)
-        self.assertEqual(json.loads(argv[argv.index("--json-schema") + 1]),
-                         json.loads(CLAUDE_RESULT_SCHEMA))
-        self.assertNotIn("--tools", argv)
+        self.assertNotIn("--json-schema", argv)
+        self.assertEqual(argv[argv.index("--tools") + 1], "")
+        self.assertIn("exactly one compact JSON object", argv[argv.index("--append-system-prompt") + 1])
 
     def test_claude_skill_probe_keeps_tools_and_prompt_order(self):
         prompt = 'Use the probe skill.'
@@ -29,14 +29,14 @@ class NativeResultTests(unittest.TestCase):
         self.assertLess(argv.index(prompt), argv.index("--allowedTools"))
         self.assertIn("Skill,Read,Bash", argv)
 
-    def test_codex_skill_probe_uses_unattended_high_effort(self):
+    def test_codex_skill_probe_uses_unattended_none_effort(self):
         argv = command("codex", Path("/tmp/codex"), "gpt-6-luna",
                        Path("/tmp/consumer"), "Use the skill.", "proof.py")
         self.assertEqual(argv[argv.index("--ask-for-approval") + 1], "never")
         self.assertLess(argv.index("--ask-for-approval"), argv.index("exec"))
         self.assertNotIn("--skip-git-repo-check", argv)
-        self.assertIn('model_reasoning_effort="high"', argv)
-        self.assertNotIn('model_reasoning_effort="high"', command(
+        self.assertIn('model_reasoning_effort="none"', argv)
+        self.assertNotIn('model_reasoning_effort="none"', command(
             "codex", Path("/tmp/codex"), "gpt-6-luna", Path("/tmp/consumer"), "Rule probe."))
 
     def test_terminal_result_only(self):
@@ -64,7 +64,7 @@ class NativeResultTests(unittest.TestCase):
         self.assertFalse(tool)
         self.assertIsNone(negative_rule_issue(text, "fresh", tool))
 
-    def test_claude_completed_structured_tool_is_terminal_fallback(self):
+    def test_claude_completed_structured_tool_is_not_terminal_fallback(self):
         events = [
             {"type": "assistant", "message": {"content": [{"type": "tool_use",
                 "id": "structured", "name": "StructuredOutput", "input": {"challenge": "fresh"}}]}},
@@ -75,7 +75,7 @@ class NativeResultTests(unittest.TestCase):
         text, success, used_tool = decode_events("claude", "\n".join(map(json.dumps, events)))
         self.assertTrue(success)
         self.assertFalse(used_tool)
-        self.assertIsNone(negative_rule_issue(text, "fresh", used_tool))
+        self.assertEqual(negative_rule_issue(text, "fresh", used_tool), "terminal response was not JSON")
         events[1]["message"]["content"][0]["is_error"] = True
         text, _, _ = decode_events("claude", "\n".join(map(json.dumps, events)))
         self.assertEqual(negative_rule_issue(text, "fresh", False), "terminal response was not JSON")
@@ -88,7 +88,6 @@ class NativeResultTests(unittest.TestCase):
             {"type": "result", "subtype": "success", "result": "SECRET not JSON"},
         ]
         diagnostics = claude_structure_diagnostics("\n".join(map(json.dumps, events)))
-        self.assertTrue(diagnostics["claude_structured_tool_completed"])
         self.assertFalse(diagnostics["claude_terminal_json"])
         self.assertNotIn("SECRET", str(diagnostics))
 
@@ -132,6 +131,7 @@ class NativeResultTests(unittest.TestCase):
 
     def test_negative_rule_diagnostics_do_not_expose_response(self):
         self.assertIsNone(negative_rule_issue('{"challenge":"fresh"}', "fresh", False))
+        self.assertIsNone(negative_rule_issue('```json\n{"challenge":"fresh"}\n```', "fresh", False))
         cases = (
             ('not JSON SECRET', "terminal response was not JSON"),
             ('[]', "terminal response was not an object"),
