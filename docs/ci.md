@@ -64,13 +64,52 @@ and [Cursor Actions](https://cursor.com/docs/cli/github-actions) guidance.
 | `CURSOR_API_KEY` | Dedicated Cursor CLI test identity and its CLI API key | Headless Cursor Agent access to the pinned model; a team Admin API key is not a CLI login key |
 
 The account owner should confirm each model is enabled and choose vendor-side
-usage controls before registering keys. OpenAI project budgets are alerts rather
-than a hard stop; the workflow's per-probe and job deadlines and serial matrix
-provide an additional execution bound. See the official [OpenAI projects](https://platform.openai.com/docs/api-reference/projects),
+usage controls before registering keys. OpenAI organization/project spend limits
+can now be enforced as hard limits when that option is enabled; spend alerts alone
+do not stop traffic, and enforcement can lag. The workflow's per-probe and job
+deadlines and serial matrix provide an additional execution bound. See the official
+[OpenAI spend limits](https://developers.openai.com/api/docs/guides/spend-limits),
 [Anthropic workspaces](https://docs.anthropic.com/en/api/admin-api/workspaces/create-workspace),
 and [Gemini API key restrictions](https://ai.google.dev/gemini-api/docs/api-key)
 for the provider-side scopes. Record only key names and access status in Issue
 #19; never copy key values into artifacts or the Issue.
+
+### Contracts and cost before the first live run
+
+As of 2026-09-26, the requester has **no API contracts** for this test. Creating
+the GitHub environment does not create vendor billing or model access. An
+authorized payer must decide who owns each account and its payment method,
+accept the vendors' terms, fund or subscribe as needed, create the dedicated
+test project/identity and CLI credential, and confirm model availability before
+the four environment secrets can be registered. A personal CLI login or a
+ChatGPT/Claude subscription is not a substitute for the API-key path used here.
+
+| Vendor | Account and purchase path | Published price relevant to the pinned model |
+| --- | --- | --- |
+| Claude Code | Create a [Claude Console organization](https://support.claude.com/en/articles/8114531-i-created-a-claude-console-organization-how-do-i-start-using-the-claude-api), provide organization/use-case and payment details, buy [prepaid API credits](https://support.claude.com/en/articles/8977456-how-do-i-pay-for-my-claude-api-usage), then make a dedicated workspace/key. The initial credit purchase minimum is not stated in those public documents; confirm it in the purchase screen. | [Claude Haiku 4.5](https://www.anthropic.com/news/claude-haiku-4-5): $1 input / $5 output per 1M tokens. |
+| Codex CLI | Create an [OpenAI API Platform](https://developers.openai.com/api/docs/quickstart) organization with billing, separate test project and service-account key. API-key Codex is [API-billed](https://learn.chatgpt.com/docs/pricing); a ChatGPT subscription is not needed for this path. The [first paid usage tier](https://developers.openai.com/api/docs/guides/rate-limits) requires $5 paid; verify the initial purchase amount in the billing UI. | [gpt-5.3-codex](https://developers.openai.com/api/docs/models/gpt-5.3-codex): $1.75 input / $14 output per 1M tokens. |
+| Antigravity CLI | Create a separate Google AI Studio project/key, link a Cloud Billing account, and choose the paid Gemini API tier for repeatable CI. [Billing setup](https://ai.google.dev/gemini-api/docs/billing) currently describes at least $5 prepaid credit for new paid-tier accounts. The CLI requires `modelProvider: gemini` as well as the key. | [Gemini 3.5 Flash](https://ai.google.dev/gemini-api/docs/pricing): $1.50 input / $9 output per 1M tokens on Standard paid tier. `gemini-3.5-flash-medium` is the CLI slug; confirm its charged SKU at the first run. |
+| Cursor CLI | Create a dedicated Cursor identity and [User API Key](https://cursor.com/docs/cli/github-actions) from its dashboard. A separate Cursor CLI key is required; an OpenAI key or Cursor team Admin API key does not replace it. [Pro](https://cursor.com/docs/models-and-pricing) is $20/month before tax with included third-party model usage, while Teams Standard is $40/user/month if central team administration is required. Confirm that the chosen plan permits the headless key and pinned `gpt-5` model before purchase. | Cursor bills usage from the plan's model pool, then optional on-demand usage at model rates; check the dashboard for the pinned model's live rate and [set a spend limit](https://cursor.com/help/account-and-billing/spend-limits) if enabling on-demand. |
+
+This public repository's standard GitHub-hosted Ubuntu runner has no Actions
+minute charge under [GitHub's public-repository billing rule](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+Larger runners, artifacts over the storage allowance, taxes and currency
+conversion are separate. No self-hosted runner or machine purchase is required
+for the current Linux pilot.
+
+For scale only, the current daily combined cell makes five probes per vendor;
+the weekly run adds five solo probes per vendor. A 30-day month with four weekly
+runs would make 170 probes per vendor (680 in total). If **each** probe used
+10,000 uncached input and 2,000 output tokens, the three metered API models
+above would cost about **$3.40 Claude + $7.74 OpenAI + $5.61 Gemini = $16.75**
+for that illustrative month. A Cursor Pro seat would add **$20/month**, giving
+about **$36.75/month before Cursor overage, tax and prepaid cash balance**.
+These token counts are assumptions, not measurements or a spending cap. Native
+agents can make several model turns and use many more tokens; the first live run
+must record actual usage before setting an operating estimate. Prepaid credits
+are cash paid in advance, not an additional per-token fee. Buying a plan or
+credits, accepting terms, and entering payment data remain with an authorized
+human account owner.
 
 The Linux pilot deliberately fails on missing secrets, CLI version drift,
 unreadable tool binaries, lost source isolation, missing terminal evidence or
