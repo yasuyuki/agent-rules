@@ -44,8 +44,6 @@ jobs:
         vendor: ${{ fromJSON((github.event.schedule == '47 19 * * 0' || inputs.matrix == 'weekly') && '["pair","claude","codex"]' || '["pair"]') }}
     env:
       NATIVE_VENDOR: ${{ matrix.vendor }}
-      ANTHROPIC_API_KEY: ${{ (matrix.vendor == 'pair' || matrix.vendor == 'claude') && secrets.ANTHROPIC_API_KEY || '' }}
-      OPENAI_API_KEY: ${{ (matrix.vendor == 'pair' || matrix.vendor == 'codex') && secrets.OPENAI_API_KEY || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -61,6 +59,9 @@ jobs:
           printf '{"vendor":"%s","status":"blocked","phase":"setup"}\n' "$NATIVE_VENDOR" > "ci-results/native-$NATIVE_VENDOR.json"
       - name: Require dedicated environment secret
         shell: bash
+        env:
+          ANTHROPIC_API_KEY: ${{ (matrix.vendor == 'pair' || matrix.vendor == 'claude') && secrets.ANTHROPIC_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ (matrix.vendor == 'pair' || matrix.vendor == 'codex') && secrets.OPENAI_API_KEY || '' }}
         run: |
           python - <<'PY'
           import json, os, pathlib, sys
@@ -88,9 +89,15 @@ jobs:
           npm ci --ignore-scripts
       - name: Install native CLI and create isolated probe user
         shell: bash
+        env:
+          ANTHROPIC_API_KEY: ${{ (matrix.vendor == 'pair' || matrix.vendor == 'claude') && secrets.ANTHROPIC_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ (matrix.vendor == 'pair' || matrix.vendor == 'codex') && secrets.OPENAI_API_KEY || '' }}
         run: bash tests/native_e2e_linux.sh '${{ matrix.vendor }}'
       - name: Probe native loading and rollback
         shell: bash
+        env:
+          ANTHROPIC_API_KEY: ${{ (matrix.vendor == 'pair' || matrix.vendor == 'claude') && secrets.ANTHROPIC_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ (matrix.vendor == 'pair' || matrix.vendor == 'codex') && secrets.OPENAI_API_KEY || '' }}
         run: |
           extra=()
           if [ "$NATIVE_VENDOR" != pair ]; then

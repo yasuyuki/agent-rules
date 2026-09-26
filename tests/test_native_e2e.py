@@ -3,7 +3,8 @@ import json
 from pathlib import Path
 import unittest
 
-from native_e2e import SCENARIO, answer, command, decode_events, negative_rule_issue
+from native_e2e import (CLAUDE_RESULT_SCHEMA, SCENARIO, answer, command, decode_events,
+                        negative_rule_issue, skill_answer_issue)
 
 
 class NativeResultTests(unittest.TestCase):
@@ -15,12 +16,15 @@ class NativeResultTests(unittest.TestCase):
         argv = command("claude", Path("/tmp/claude"), "claude-haiku-4-5-20251001",
                        Path("/tmp/consumer"), prompt)
         self.assertLess(argv.index(prompt), argv.index("--allowedTools"))
+        self.assertEqual(json.loads(argv[argv.index("--json-schema") + 1]),
+                         json.loads(CLAUDE_RESULT_SCHEMA))
 
     def test_terminal_result_only(self):
         prompt = '{"rule":"RULE_echoed","challenge":"fresh"}'
         lines = [
             {"type": "user", "message": {"content": prompt}},
-            {"type": "result", "result": '{"challenge":"fresh"}', "is_error": False},
+            {"type": "result", "subtype": "success", "structured_output": {"challenge": "fresh"},
+             "result": "unstructured SECRET", "is_error": False},
         ]
         text, success, tool = decode_events("claude", "\n".join(map(json.dumps, lines)))
         self.assertTrue(success)
@@ -28,10 +32,18 @@ class NativeResultTests(unittest.TestCase):
         self.assertFalse(answer(text, "fresh", "rule", "RULE_echoed"))
 
     def test_auth_error_is_not_negative_success(self):
-        event = {"type": "result", "result": '{"challenge":"fresh"}', "is_error": True}
+        event = {"type": "result", "subtype": "error_max_structured_output_retries",
+                 "structured_output": {"challenge": "fresh"}, "is_error": True}
         text, success, _ = decode_events("claude", json.dumps(event))
         self.assertFalse(success)
         self.assertTrue(answer(text, "fresh", "rule", None))
+
+    def test_claude_missing_structured_result_does_not_use_free_text(self):
+        event = {"type": "result", "subtype": "success", "result": '{"challenge":"fresh"}'}
+        text, success, _ = decode_events("claude", json.dumps(event))
+        self.assertEqual(text, "")
+        self.assertFalse(success)
+        self.assertFalse(answer(text, "fresh", "rule", None))
 
     def test_negative_rule_diagnostics_do_not_expose_response(self):
         self.assertIsNone(negative_rule_issue('{"challenge":"fresh"}', "fresh", False))
@@ -46,6 +58,20 @@ class NativeResultTests(unittest.TestCase):
             self.assertNotIn("SECRET", expected)
         self.assertEqual(negative_rule_issue('{"challenge":"fresh"}', "fresh", True),
                          "tool ran during rule probe")
+
+    def test_skill_diagnostics_do_not_expose_response(self):
+        self.assertIsNone(skill_answer_issue('{"challenge":"fresh","skill":"SKILL_good"}',
+                                             "fresh", "SKILL_good"))
+        cases = (
+            ('not JSON SECRET', "terminal response was not JSON"),
+            ('[]', "terminal response was not an object"),
+            ('{"challenge":"stale SECRET","skill":"SKILL_good"}', "challenge did not match"),
+            ('{"challenge":"fresh"}', "skill field was absent"),
+            ('{"challenge":"fresh","skill":"SECRET"}', "skill field did not match"),
+        )
+        for response, expected in cases:
+            self.assertEqual(skill_answer_issue(response, "fresh", "SKILL_good"), expected)
+            self.assertNotIn("SECRET", expected)
 
     def test_stale_challenge_and_missing_terminal(self):
         self.assertFalse(answer('{"challenge":"old","rule":"RULE_x"}', "fresh", "rule", "RULE_x"))
