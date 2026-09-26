@@ -51,8 +51,11 @@ minimal vendor permissions, spending limits and revocable API keys. Store the
 keys as *environment* secrets in GitHub, never in a repository file or a chat.
 Claude consumes its key from the environment; Codex performs noninteractive
 API-key login in the isolated profile. The environment and branch policy are
-already created; the account owner must register the keys as environment
-secrets. See [Claude headless](https://code.claude.com/docs/en/headless) and
+already created, and both key names are registered as environment secrets.
+The setup checks access to the pinned Claude model through the
+[Models API](https://platform.claude.com/docs/en/api/http/models/retrieve) from
+the isolated user, reporting only the HTTP status on failure. See
+[Claude headless](https://code.claude.com/docs/en/headless) and
 [Codex authentication](https://learn.chatgpt.com/docs/auth).
 
 | Secret | Dedicated vendor-side scope | Required capability |
@@ -76,11 +79,9 @@ for the provider-side scopes. Record only key names and access status in Issue
 
 ### Contracts and cost before the first live run
 
-The requester has now obtained Claude and OpenAI API keys; as of 2026-09-26,
-neither is registered in the `native-e2e` environment. Creating that environment
-does not create vendor billing or model access. The two account owners must
-confirm the pinned models and usage controls, then register the keys as
-environment secrets before the pilot can run. A personal CLI login or a
+The requester has obtained Claude and OpenAI API keys and registered both as
+`native-e2e` environment secrets as of 2026-09-26. Creating that environment
+does not itself establish model access. A personal CLI login or a
 ChatGPT/Claude subscription is not a substitute for the API-key path used here.
 Google and Cursor contracts are not in place and are outside this pilot.
 
@@ -110,12 +111,14 @@ are cash paid in advance, not an additional per-token fee. Buying a plan or
 credits, accepting terms, and entering payment data remain with an authorized
 human account owner.
 
-The Linux pilot deliberately fails on missing secrets, CLI version drift,
+The Linux pilot deliberately fails on missing secrets, pinned Claude model
+access, CLI version drift,
 unreadable tool binaries, lost source isolation, missing terminal evidence or
-rollback residue. The combined/weekly cells are wired but have no authenticated
-run evidence yet. CI separately checks the Windows local-user/ACL isolation
+rollback residue. Authenticated Linux runs have begun, but the native acceptance
+conditions are not yet satisfied; see Issue #19 for run evidence and failures.
+CI separately checks the Windows local-user/ACL isolation
 primitive without credentials or a model call. It does not yet cover Windows native execution, supported
-user scope, or the first live run.
+user scope.
 Those cells are `blocked`/`unverified`, not PASS, until their implementation and
 actual authenticated evidence are recorded in Issue #19. GitHub-hosted jobs are
 destroyed after each run; they are not persistent managed agent environments,

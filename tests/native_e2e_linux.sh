@@ -3,6 +3,7 @@
 set -euo pipefail
 
 scenario=${1:?scenario required}
+claude_model=claude-haiku-4-5-20251001
 case "$scenario" in
   pair) vendors=(claude codex) ;;
   all) vendors=(claude codex agy cursor) ;;
@@ -26,6 +27,32 @@ for vendor in "${vendors[@]}"; do
     exit 1
   fi
 done
+if [[ " ${vendors[*]} " == *' claude '* ]]; then
+  sudo -n --preserve-env=ANTHROPIC_API_KEY -u native-e2e python3 - "$claude_model" <<'PY'
+import os
+import sys
+import urllib.error
+import urllib.request
+
+request = urllib.request.Request(
+    'https://api.anthropic.com/v1/models/' + sys.argv[1],
+    headers={'x-api-key': os.environ['ANTHROPIC_API_KEY'],
+             'anthropic-version': '2023-06-01'},
+)
+try:
+    with urllib.request.urlopen(request, timeout=10) as response:
+        if response.status != 200:
+            print(f'Claude model preflight HTTP {response.status}', file=sys.stderr)
+            sys.exit(1)
+except urllib.error.HTTPError as error:
+    print(f'Claude model preflight HTTP {error.code}', file=sys.stderr)
+    sys.exit(1)
+except (urllib.error.URLError, TimeoutError):
+    print('Claude model preflight network failure', file=sys.stderr)
+    sys.exit(1)
+print('Claude model preflight passed')
+PY
+fi
 cd /tmp
 tools_root=/opt/agent-rules-native-tools
 sudo install -d -m 755 -o "$(id -un)" "$tools_root"
@@ -38,7 +65,7 @@ for vendor in "${vendors[@]}"; do
       npm install --global --prefix "$tools_root/npm" @anthropic-ai/claude-code@2.1.283
       cli="$tools_root/npm/bin/claude"
       expected='2.1.283 (Claude Code)'
-      model='claude-haiku-4-5-20251001'
+      model=$claude_model
       ;;
     codex)
       npm install --global --prefix "$tools_root/npm" @openai/codex@0.157.1
