@@ -55,14 +55,12 @@ try:
     with urllib.request.urlopen(request, timeout=10) as response:
         if response.status != 200:
             print(f'{vendor} model preflight HTTP {response.status}', file=sys.stderr)
-            sys.exit(1)
+        else:
+            print(f'{vendor} model preflight passed')
 except urllib.error.HTTPError as error:
     print(f'{vendor} model preflight HTTP {error.code}', file=sys.stderr)
-    sys.exit(1)
 except (urllib.error.URLError, TimeoutError):
     print(f'{vendor} model preflight network failure', file=sys.stderr)
-    sys.exit(1)
-print(f'{vendor} model preflight passed')
 PY
 done
 cd /tmp

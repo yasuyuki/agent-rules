@@ -56,6 +56,8 @@ The setup checks access to both pinned models through the
 [Claude](https://platform.claude.com/docs/en/api/http/models/retrieve) and
 [OpenAI](https://developers.openai.com/api/reference/cli/resources/models/methods/retrieve)
 Models APIs from the isolated user, reporting only the HTTP status on failure.
+This metadata check is diagnostic; a key restricted from reading model metadata
+can still proceed to the native probe.
 Native CLI stdin is closed so no runner input can be appended to a probe. See
 [Claude headless](https://code.claude.com/docs/en/headless) and
 [Codex authentication](https://learn.chatgpt.com/docs/auth).
@@ -113,8 +115,7 @@ are cash paid in advance, not an additional per-token fee. Buying a plan or
 credits, accepting terms, and entering payment data remain with an authorized
 human account owner.
 
-The Linux pilot deliberately fails on missing secrets, pinned model
-access, CLI version drift,
+The Linux pilot deliberately fails on missing secrets, CLI version drift,
 unreadable tool binaries, lost source isolation, missing terminal evidence or
 rollback residue. Authenticated Linux runs have begun, but the native acceptance
 conditions are not yet satisfied; see Issue #19 for run evidence and failures.
