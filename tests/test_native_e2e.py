@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import unittest
 
-from native_e2e import SCENARIO, answer, command, decode_events
+from native_e2e import SCENARIO, answer, command, decode_events, negative_rule_issue
 
 
 class NativeResultTests(unittest.TestCase):
@@ -32,6 +32,20 @@ class NativeResultTests(unittest.TestCase):
         text, success, _ = decode_events("claude", json.dumps(event))
         self.assertFalse(success)
         self.assertTrue(answer(text, "fresh", "rule", None))
+
+    def test_negative_rule_diagnostics_do_not_expose_response(self):
+        self.assertIsNone(negative_rule_issue('{"challenge":"fresh"}', "fresh", False))
+        cases = (
+            ('not JSON SECRET', "terminal response was not JSON"),
+            ('[]', "terminal response was not an object"),
+            ('{"challenge":"stale SECRET"}', "challenge did not match"),
+            ('{"challenge":"fresh","rule":"SECRET"}', "rule field was present"),
+        )
+        for response, expected in cases:
+            self.assertEqual(negative_rule_issue(response, "fresh", False), expected)
+            self.assertNotIn("SECRET", expected)
+        self.assertEqual(negative_rule_issue('{"challenge":"fresh"}', "fresh", True),
+                         "tool ran during rule probe")
 
     def test_stale_challenge_and_missing_terminal(self):
         self.assertFalse(answer('{"challenge":"old","rule":"RULE_x"}', "fresh", "rule", "RULE_x"))
