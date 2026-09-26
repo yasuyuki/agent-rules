@@ -193,6 +193,19 @@ def codex_command_diagnostics(stdout: str, proof_name: str) -> dict[str, object]
              if event.get("type") in ("item.started", "item.completed")]
     commands = [item for item in items if item.get("type") == "command_execution"]
     proof_commands = [item for item in commands if proof_name in str(item.get("command", ""))]
+    completed_proof = [item for item in proof_commands if isinstance(item.get("exit_code"), int)]
+    command_text = "\n".join(str(item.get("command", "")) for item in proof_commands)
+    output_text = "\n".join(str(item.get("aggregated_output", "")) for item in completed_proof).lower()
+    if "permission denied" in output_text or "operation not permitted" in output_text:
+        proof_error = "permission"
+    elif any(term in output_text for term in ("no such file or directory", "can't open file", "not found")):
+        proof_error = "missing_path"
+    elif "traceback" in output_text:
+        proof_error = "python_error"
+    elif "usage:" in output_text or "unrecognized arguments" in output_text:
+        proof_error = "arguments"
+    else:
+        proof_error = "other" if any(item.get("exit_code") != 0 for item in completed_proof) else "none"
     messages = [item.get("text", "") for item in items if item.get("type") == "agent_message"
                 and isinstance(item.get("text"), str)]
     terminal = messages[-1] if messages else ""
@@ -211,6 +224,13 @@ def codex_command_diagnostics(stdout: str, proof_name: str) -> dict[str, object]
                 item.get("status") == "failed" or
                 (isinstance(item.get("exit_code"), int) and item["exit_code"] != 0)
                 for item in proof_commands),
+            "codex_proof_exit_codes": sorted({item["exit_code"] for item in completed_proof}),
+            "codex_proof_error_class": proof_error,
+            "codex_proof_command_shape": {
+                "python3": "python3" in command_text,
+                "skill_path": ".agents/skills/" in command_text,
+                "challenge_arg": "--challenge" in command_text,
+                "output_arg": "--output" in command_text},
             "codex_other_tool_attempted": any(item.get("type") in
                 ("mcp_tool_call", "dynamic_tool_call", "web_search") for item in items),
             "codex_turn_completed": any(event.get("type") == "turn.completed" for event in events),
