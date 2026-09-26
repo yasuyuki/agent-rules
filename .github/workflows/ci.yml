@@ -35,6 +35,8 @@ jobs:
         run: python tests/ci_runner.py --output ci-results/documentation.json --timeout 300 test_docs_check test_ci_changes
       - name: Check maintained documentation
         run: python tests/docs_check.py
+      - name: Native result parser negative controls
+        run: python tests/test_native_e2e.py
       - name: README distribution metadata
         if: steps.changes.outputs.full == 'false' && steps.changes.outputs.readme == 'true'
         run: |
@@ -78,6 +80,10 @@ jobs:
         run: python tests/ci_runner.py --output ci-results/rules.json --timeout 300 --command python tests/test_rules.py
       - name: Source regression contracts
         run: python tests/ci_runner.py --output ci-results/source.json --timeout 300 test_grok_placement test_start_config test_inventory_adoption test_inventory_inspection test_agent_report test_workspace_entry test_ci_runner test_verification_skill
+      - name: Windows isolated-user primitive for native E2E
+        if: matrix.os == 'windows-latest' && matrix.python == '3.12'
+        shell: pwsh
+        run: ./tests/native_e2e_windows_isolation.ps1
       - name: Record resolved dependencies
         if: always()
         shell: bash
@@ -127,6 +133,7 @@ jobs:
           else
             runtime="$RUNNER_TEMP/agent-rules-runtime/bin"
           fi
+          "$runtime/python" -c "import importlib.util,sys; sys.exit(importlib.util.find_spec('agent_rules_manager') is not None)"
           "$runtime/python" -m pip install --no-index dist/*.whl
           export RULESYNC_EXECUTABLE="$GITHUB_WORKSPACE/node_modules/.bin/rulesync"
           if [ "$RUNNER_OS" = Windows ]; then
@@ -136,6 +143,25 @@ jobs:
           cd "$RUNNER_TEMP"
           "$runtime/agent-rules" --version
           "$runtime/agent-rules" --help
+          "$runtime/python" -m pip uninstall -y agent-rules
+          "$runtime/python" -c "import importlib.util,sys; sys.exit(importlib.util.find_spec('agent_rules_manager') is not None)"
+      - name: Smoke source installation with the same rule and skill fixture
+        if: matrix.python == '3.12'
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/agent-rules-source-runtime"
+          if [ "$RUNNER_OS" = Windows ]; then
+            source_runtime="$RUNNER_TEMP/agent-rules-source-runtime/Scripts"
+            export RULESYNC_EXECUTABLE="$GITHUB_WORKSPACE/node_modules/.bin/rulesync.cmd"
+          else
+            source_runtime="$RUNNER_TEMP/agent-rules-source-runtime/bin"
+            export RULESYNC_EXECUTABLE="$GITHUB_WORKSPACE/node_modules/.bin/rulesync"
+          fi
+          "$source_runtime/python" -c "import importlib.util,sys; sys.exit(importlib.util.find_spec('agent_rules_manager') is not None)"
+          "$source_runtime/python" -m pip install .
+          "$source_runtime/python" tests/test_project.py -k test_native_probe_offline_round_trip
+          "$source_runtime/python" -m pip uninstall -y agent-rules
+          "$source_runtime/python" -c "import importlib.util,sys; sys.exit(importlib.util.find_spec('agent_rules_manager') is not None)"
       - name: Record resolved dependencies
         if: always()
         shell: bash
