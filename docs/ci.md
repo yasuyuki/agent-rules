@@ -56,6 +56,22 @@ remain the repository owner's responsibility. See the vendors' [Claude headless]
 [Antigravity authentication](https://antigravity.google/docs/cli-install?hl=en),
 and [Cursor Actions](https://cursor.com/docs/cli/github-actions) guidance.
 
+| Secret | Dedicated vendor-side scope | Required capability |
+| --- | --- | --- |
+| `ANTHROPIC_API_KEY` | Claude Console test workspace and workspace-scoped key | Claude Code API access to the pinned Haiku model |
+| `OPENAI_API_KEY` | OpenAI API test project and project service account | Codex API-key login and access to the pinned Codex model |
+| `GEMINI_API_KEY` | Separate Google AI Studio / Cloud project and Gemini-only restricted key | Gemini API access to the pinned Flash model |
+| `CURSOR_API_KEY` | Dedicated Cursor CLI test identity and its CLI API key | Headless Cursor Agent access to the pinned model; a team Admin API key is not a CLI login key |
+
+The account owner should confirm each model is enabled and choose vendor-side
+usage controls before registering keys. OpenAI project budgets are alerts rather
+than a hard stop; the workflow's per-probe and job deadlines and serial matrix
+provide an additional execution bound. See the official [OpenAI projects](https://platform.openai.com/docs/api-reference/projects),
+[Anthropic workspaces](https://docs.anthropic.com/en/api/admin-api/workspaces/create-workspace),
+and [Gemini API key restrictions](https://ai.google.dev/gemini-api/docs/api-key)
+for the provider-side scopes. Record only key names and access status in Issue
+#19; never copy key values into artifacts or the Issue.
+
 The Linux pilot deliberately fails on missing secrets, CLI version drift,
 unreadable tool binaries, lost source isolation, missing terminal evidence or
 rollback residue. The combined/weekly cells are wired but have no authenticated
