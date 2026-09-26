@@ -133,7 +133,8 @@ def run_native(vendor: str, cli: Path, model: str, workspace: Path, user: str,
     argv = ["sudo", "-n", f"--preserve-env={SECRET[vendor]}", "-u", user, "env",
             *[f"{key}={value}" for key, value in env.items()],
             *command(vendor, cli, model, workspace, prompt)]
-    proc = subprocess.Popen(argv, cwd=workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    proc = subprocess.Popen(argv, cwd=workspace, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, start_new_session=True)
     try:
         stdout, _ = proc.communicate(timeout=timeout)
