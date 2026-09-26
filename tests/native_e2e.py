@@ -208,7 +208,10 @@ def codex_skill_listed(cli: Path, workspace: Path, user: str, home: Path, name: 
            "PATH": f"{Path(node).parent}:/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"}
     argv = ["sudo", "-n", "-u", user, "env", *[f"{key}={value}" for key, value in env.items()],
             str(cli), "debug", "prompt-input", f"Use the ${name} skill."]
-    proc = subprocess.run(argv, cwd=workspace, capture_output=True, text=True, timeout=20)
+    try:
+        proc = subprocess.run(argv, cwd=workspace, capture_output=True, text=True, timeout=20)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("codex skill inventory exceeded its deadline") from None
     if proc.returncode:
         raise RuntimeError("codex skill inventory failed; raw output withheld")
     return f"- {name}:" in proc.stdout
