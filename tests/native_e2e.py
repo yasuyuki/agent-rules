@@ -23,6 +23,13 @@ FIXTURE = Path(__file__).parent / "fixtures/native-e2e"
 TARGET = {"claude": "claudecode", "codex": "codexcli", "agy": "codexcli", "cursor": "cursor"}
 SECRET = {"claude": "ANTHROPIC_API_KEY", "codex": "OPENAI_API_KEY", "agy": "GEMINI_API_KEY", "cursor": "CURSOR_API_KEY"}
 SCENARIO = {"pair": ("claude", "codex"), "all": tuple(TARGET)}
+CLAUDE_RESULT_SCHEMA = json.dumps({
+    "type": "object",
+    "properties": {"challenge": {"type": "string"}, "rule": {"type": "string"},
+                   "skill": {"type": "string"}},
+    "required": ["challenge"],
+    "additionalProperties": False,
+})
 
 
 class EvidenceUnavailable(RuntimeError):
@@ -42,7 +49,11 @@ def decode_events(vendor: str, stdout: str, proof_name: str | None = None) -> tu
         proof_ids = set()
         for event in events:
             if event.get("type") == "result":
-                terminal.append((event.get("result", ""), not event.get("is_error", False)))
+                structured = event.get("structured_output")
+                has_structured = isinstance(structured, dict)
+                terminal.append((json.dumps(structured) if has_structured else "",
+                                 has_structured and event.get("subtype") == "success"
+                                 and not event.get("is_error", False)))
             if event.get("type") == "assistant":
                 for block in event.get("message", {}).get("content", []):
                     if (isinstance(block, dict) and block.get("type") == "tool_use"
@@ -121,10 +132,28 @@ def negative_rule_issue(text: str, challenge: str, used_tool: bool) -> str | Non
     return None
 
 
+def skill_answer_issue(text: str, challenge: str, expected: str) -> str | None:
+    """Categorize terminal skill evidence without retaining its contents."""
+    try:
+        value = json.loads(text.strip())
+    except (ValueError, TypeError):
+        return "terminal response was not JSON"
+    if not isinstance(value, dict):
+        return "terminal response was not an object"
+    if value.get("challenge") != challenge:
+        return "challenge did not match"
+    if "skill" not in value:
+        return "skill field was absent"
+    if value["skill"] != expected:
+        return "skill field did not match"
+    return None
+
+
 def command(vendor: str, cli: Path, model: str, workspace: Path, prompt: str) -> list[str]:
     if vendor == "claude":
         return [str(cli), "-p", "--output-format", "stream-json", "--verbose", "--model", model,
-                "--max-turns", "5", prompt, "--allowedTools", "Skill,Read,Bash(python3 *)"]
+                "--max-turns", "5", "--json-schema", CLAUDE_RESULT_SCHEMA,
+                prompt, "--allowedTools", "Skill,Read,Bash(python3 *)"]
     if vendor == "codex":
         return [str(cli), "exec", "--json", "--ephemeral", "--sandbox", "workspace-write",
                 "--skip-git-repo-check", "-C", str(workspace), "-m", model, prompt]
@@ -168,6 +197,21 @@ def run_native(vendor: str, cli: Path, model: str, workspace: Path, user: str,
     if not success:
         raise RuntimeError(f"{vendor} terminal event reported failure")
     return text, used_tool
+
+
+def codex_skill_listed(cli: Path, workspace: Path, user: str, home: Path, name: str) -> bool:
+    """Check the isolated Codex prompt inventory, never exposing its contents."""
+    node = shutil.which("node")
+    if not node:
+        raise RuntimeError("Node.js is required for Codex skill inventory")
+    env = {"HOME": str(home), "CODEX_HOME": str(home / ".codex"),
+           "PATH": f"{Path(node).parent}:/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"}
+    argv = ["sudo", "-n", "-u", user, "env", *[f"{key}={value}" for key, value in env.items()],
+            str(cli), "debug", "prompt-input", f"Use the ${name} skill."]
+    proc = subprocess.run(argv, cwd=workspace, capture_output=True, text=True, timeout=20)
+    if proc.returncode:
+        raise RuntimeError("codex skill inventory failed; raw output withheld")
+    return f"- {name}:" in proc.stdout
 
 
 def main() -> int:
@@ -271,19 +315,29 @@ def main() -> int:
             result["phase"] = f"positive-skill-{vendor}"
             challenge = secrets.token_hex(12)
             proof = workspace / f"proof-{challenge}.json"
-            skill_reference = f"${name}" if vendor == "codex" else name
+            if vendor == "codex":
+                result["codex_skill_listed"] = codex_skill_listed(
+                    binaries[vendor], workspace, args.user, args.home, name)
+                if not result["codex_skill_listed"]:
+                    raise EvidenceUnavailable("codex skill absent from isolated prompt inventory")
+                prompt = (f'${name}: Execute this skill\'s proof.py with '
+                          f'--challenge {challenge} --output {proof}. Read the generated '
+                          f'JSON file and return exactly its skill and challenge fields as JSON.')
+            else:
+                prompt = (f'Use the {name} skill. Run its proof.py with challenge={challenge} '
+                          f'and output={proof}. Return only JSON with skill and challenge.')
             text, used_tool = run_native(vendor, binaries[vendor], models[vendor], workspace,
-                                         args.user, args.home,
-                                         f'Use the {skill_reference} skill. Run its proof.py with challenge={challenge} '
-                                         f'and output={proof}. Return only JSON with skill and challenge.',
+                                         args.user, args.home, prompt,
                                          proof_name="proof.py")
             has_proof = proof.is_file()
-            valid_answer = answer(text, challenge, "skill", skill)
+            answer_issue = skill_answer_issue(text, challenge, skill)
+            valid_answer = answer_issue is None
             if has_proof and valid_answer and not used_tool:
                 raise EvidenceUnavailable(f"{vendor} helper tool completion is not observable")
             if not used_tool or not has_proof or not valid_answer:
                 raise RuntimeError(f"{vendor} skill evidence: tool={used_tool}, "
-                                   f"proof={has_proof}, terminal={valid_answer}")
+                                   f"proof={has_proof}, terminal={valid_answer}, "
+                                   f"terminal_issue={answer_issue}")
             if json.loads(proof.read_text()) != {"skill": skill, "challenge": challenge}:
                 raise RuntimeError(f"{vendor} native skill proof mismatch")
             proof.unlink()
