@@ -271,9 +271,10 @@ def main() -> int:
             result["phase"] = f"positive-skill-{vendor}"
             challenge = secrets.token_hex(12)
             proof = workspace / f"proof-{challenge}.json"
+            skill_reference = f"${name}" if vendor == "codex" else name
             text, used_tool = run_native(vendor, binaries[vendor], models[vendor], workspace,
                                          args.user, args.home,
-                                         f'Use the {name} skill. Run its proof.py with challenge={challenge} '
+                                         f'Use the {skill_reference} skill. Run its proof.py with challenge={challenge} '
                                          f'and output={proof}. Return only JSON with skill and challenge.',
                                          proof_name="proof.py")
             has_proof = proof.is_file()
