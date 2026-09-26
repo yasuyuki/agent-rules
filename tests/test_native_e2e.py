@@ -1,18 +1,20 @@
 """Negative controls for the structured native-result verifier (no model calls)."""
 import json
+from pathlib import Path
 import unittest
 
-from native_e2e import SCENARIO, answer, decode_events, failure_category
+from native_e2e import SCENARIO, answer, command, decode_events
 
 
 class NativeResultTests(unittest.TestCase):
     def test_pair_scenario_contains_only_funded_vendors(self):
         self.assertEqual(SCENARIO["pair"], ("claude", "codex"))
 
-    def test_failure_category_never_emits_raw_error_or_key(self):
-        error = "authentication_error: invalid api key sk-ant-secret"
-        self.assertEqual(failure_category("", error), "authentication")
-        self.assertEqual(failure_category("", "unexpected private detail"), "unclassified")
+    def test_claude_prompt_precedes_variadic_allowed_tools(self):
+        prompt = 'Return only JSON {"challenge":"fresh"}.'
+        argv = command("claude", Path("/tmp/claude"), "claude-haiku-4-5-20251001",
+                       Path("/tmp/consumer"), prompt)
+        self.assertLess(argv.index(prompt), argv.index("--allowedTools"))
 
     def test_terminal_result_only(self):
         prompt = '{"rule":"RULE_echoed","challenge":"fresh"}'

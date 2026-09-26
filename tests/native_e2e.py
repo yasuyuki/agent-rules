@@ -10,7 +10,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import re
 import secrets
 import signal
 import shutil
@@ -105,28 +104,10 @@ def answer(text: str, challenge: str, field: str, expected: str | None) -> bool:
     return value.get(field) == expected if expected is not None else field not in value
 
 
-def failure_category(stdout: str, stderr: str) -> str:
-    """Classify a native failure without retaining provider output or credentials."""
-    output = stdout + "\n" + stderr
-    categories = (
-        ("command_line", r"unknown option|unrecognized argument|invalid value for --"),
-        ("authentication", r"\b401\b|authentication_error|invalid api key|not logged in|authentication required"),
-        ("billing", r"\b402\b|billing_error|insufficient credits|credit balance"),
-        ("permission", r"\b403\b|permission_error|permission denied|\bEACCES\b"),
-        ("model_access", r"\b404\b|not_found_error|model.{0,80}(not found|not available)"),
-        ("rate_limit", r"\b429\b|rate_limit_error|overloaded_error"),
-        ("network", r"ECONNREFUSED|ETIMEDOUT|ENOTFOUND|network error|certificate verify"),
-    )
-    for category, pattern in categories:
-        if re.search(pattern, output, re.IGNORECASE):
-            return category
-    return "unclassified"
-
-
 def command(vendor: str, cli: Path, model: str, workspace: Path, prompt: str) -> list[str]:
     if vendor == "claude":
         return [str(cli), "-p", "--output-format", "stream-json", "--verbose", "--model", model,
-                "--max-turns", "5", "--allowedTools", "Skill,Read,Bash(python3 *)", prompt]
+                "--max-turns", "5", prompt, "--allowedTools", "Skill,Read,Bash(python3 *)"]
     if vendor == "codex":
         return [str(cli), "exec", "--json", "--ephemeral", "--sandbox", "workspace-write",
                 "--skip-git-repo-check", "-C", str(workspace), "-m", model, prompt]
@@ -155,15 +136,13 @@ def run_native(vendor: str, cli: Path, model: str, workspace: Path, user: str,
     proc = subprocess.Popen(argv, cwd=workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, start_new_session=True)
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
+        stdout, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         os.killpg(proc.pid, signal.SIGKILL)
         proc.communicate()
         raise RuntimeError(f"{vendor} exceeded the per-probe deadline") from None
     if proc.returncode:
-        category = failure_category(stdout, stderr)
-        raise RuntimeError(f"{vendor} exited {proc.returncode}; category={category}; "
-                           f"stdout={bool(stdout)} stderr={bool(stderr)}; raw output withheld")
+        raise RuntimeError(f"{vendor} exited {proc.returncode}; raw output withheld")
     try:
         text, success, used_tool = decode_events(vendor, stdout, proof_name)
     except ValueError as exc:
