@@ -28,6 +28,14 @@ class NativeResultTests(unittest.TestCase):
         self.assertLess(argv.index(prompt), argv.index("--allowedTools"))
         self.assertIn("Skill,Read,Bash", argv)
 
+    def test_codex_skill_probe_uses_unattended_high_effort(self):
+        argv = command("codex", Path("/tmp/codex"), "gpt-6-luna",
+                       Path("/tmp/consumer"), "Use the skill.", "proof.py")
+        self.assertEqual(argv[argv.index("--ask-for-approval") + 1], "never")
+        self.assertIn('model_reasoning_effort="high"', argv)
+        self.assertNotIn('model_reasoning_effort="high"', command(
+            "codex", Path("/tmp/codex"), "gpt-6-luna", Path("/tmp/consumer"), "Rule probe."))
+
     def test_terminal_result_only(self):
         prompt = '{"rule":"RULE_echoed","challenge":"fresh"}'
         lines = [
@@ -40,6 +48,19 @@ class NativeResultTests(unittest.TestCase):
         self.assertFalse(tool)
         self.assertFalse(answer(text, "fresh", "rule", "RULE_echoed"))
 
+    def test_claude_structured_output_tool_is_not_rule_probe_tool_use(self):
+        lines = [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use",
+                "id": "structured", "name": "StructuredOutput", "input": {"challenge": "fresh"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result",
+                "tool_use_id": "structured"}]}},
+            {"type": "result", "subtype": "success", "structured_output": {"challenge": "fresh"}},
+        ]
+        text, success, tool = decode_events("claude", "\n".join(map(json.dumps, lines)))
+        self.assertTrue(success)
+        self.assertFalse(tool)
+        self.assertIsNone(negative_rule_issue(text, "fresh", tool))
+
     def test_auth_error_is_not_negative_success(self):
         event = {"type": "result", "subtype": "error_max_structured_output_retries",
                  "structured_output": {"challenge": "fresh"}, "is_error": True}
@@ -47,13 +68,16 @@ class NativeResultTests(unittest.TestCase):
         self.assertFalse(success)
         self.assertTrue(answer(text, "fresh", "rule", None))
 
-    def test_claude_missing_structured_result_does_not_use_free_text(self):
+    def test_claude_missing_structured_result_uses_only_terminal_text(self):
         event = {"type": "result", "subtype": "success", "result": '{"challenge":"fresh"}'}
         text, success, _ = decode_events("claude", json.dumps(event))
-        self.assertEqual(text, "")
-        self.assertFalse(success)
-        self.assertFalse(answer(text, "fresh", "rule", None))
-        self.assertEqual(claude_terminal_issue(json.dumps(event)), "structured output missing")
+        self.assertEqual(text, '{"challenge":"fresh"}')
+        self.assertTrue(success)
+        self.assertTrue(answer(text, "fresh", "rule", None))
+        event["result"] = "free text SECRET"
+        text, success, _ = decode_events("claude", json.dumps(event))
+        self.assertTrue(success)
+        self.assertEqual(negative_rule_issue(text, "fresh", False), "terminal response was not JSON")
 
     def test_claude_terminal_failure_categories_hide_content(self):
         event = {"type": "result", "subtype": "error_max_structured_output_retries",
