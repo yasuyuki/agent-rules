@@ -2,12 +2,17 @@
 import json
 import unittest
 
-from native_e2e import SCENARIO, answer, decode_events
+from native_e2e import SCENARIO, answer, decode_events, failure_category
 
 
 class NativeResultTests(unittest.TestCase):
     def test_pair_scenario_contains_only_funded_vendors(self):
         self.assertEqual(SCENARIO["pair"], ("claude", "codex"))
+
+    def test_failure_category_never_emits_raw_error_or_key(self):
+        error = "authentication_error: invalid api key sk-ant-secret"
+        self.assertEqual(failure_category("", error), "authentication")
+        self.assertEqual(failure_category("", "unexpected private detail"), "unclassified")
 
     def test_terminal_result_only(self):
         prompt = '{"rule":"RULE_echoed","challenge":"fresh"}'
