@@ -421,8 +421,8 @@ def main() -> int:
                     binaries[vendor], workspace, args.user, args.home, name)
                 if not result["codex_skill_listed"]:
                     raise EvidenceUnavailable("codex skill absent from isolated prompt inventory")
-                prompt = (f'${name}\nExecute this skill\'s instructions. Use the outer '
-                          f'functions.exec tool and its nested tools.exec_command shell call '
+                prompt = (f'${name}\nExecute this skill\'s instructions. Use the '
+                          f'exec_command shell tool '
                           f'to run its proof.py with --challenge {challenge} --output {proof}. '
                           f'Read that generated JSON file and return its exact skill and challenge '
                           f'fields as JSON. If you cannot execute the helper, do not guess the skill value.')
@@ -442,9 +442,8 @@ def main() -> int:
                     try:
                         _, smoke_tool = run_native(vendor, binaries[vendor], models[vendor],
                                                    workspace, args.user, args.home,
-                                                   'Call functions.exec and inside it call '
-                                                   'tools.exec_command with command python3 --version '
-                                                   'before replying.',
+                                                   'Call the exec_command shell tool with command '
+                                                   'python3 --version before replying.',
                                                    proof_name="python3")
                         result["codex_shell_probe"] = "tool_ok" if smoke_tool else "no_tool"
                     except Exception:
