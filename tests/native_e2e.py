@@ -104,6 +104,23 @@ def answer(text: str, challenge: str, field: str, expected: str | None) -> bool:
     return value.get(field) == expected if expected is not None else field not in value
 
 
+def negative_rule_issue(text: str, challenge: str, used_tool: bool) -> str | None:
+    """Describe a failed negative probe without exposing model output or nonces."""
+    try:
+        value = json.loads(text.strip())
+    except (ValueError, TypeError):
+        return "terminal response was not JSON"
+    if not isinstance(value, dict):
+        return "terminal response was not an object"
+    if value.get("challenge") != challenge:
+        return "challenge did not match"
+    if "rule" in value:
+        return "rule field was present"
+    if used_tool:
+        return "tool ran during rule probe"
+    return None
+
+
 def command(vendor: str, cli: Path, model: str, workspace: Path, prompt: str) -> list[str]:
     if vendor == "claude":
         return [str(cli), "-p", "--output-format", "stream-json", "--verbose", "--model", model,
@@ -236,8 +253,9 @@ def main() -> int:
             prompt = f'Return only JSON {{"challenge":"{challenge}"}}. This is a rule probe.'
             text, used_tool = run_native(vendor, binaries[vendor], models[vendor], workspace,
                                          args.user, args.home, prompt)
-            if not answer(text, challenge, "rule", None) or used_tool:
-                raise RuntimeError(f"{vendor} baseline rule probe was not a clean negative")
+            issue = negative_rule_issue(text, challenge, used_tool)
+            if issue:
+                raise RuntimeError(f"{vendor} baseline rule probe: {issue}")
         result["phase"] = "apply"
         placement("apply")
         applied = True
@@ -258,10 +276,13 @@ def main() -> int:
                                          f'Use the {name} skill. Run its proof.py with challenge={challenge} '
                                          f'and output={proof}. Return only JSON with skill and challenge.',
                                          proof_name="proof.py")
-            if proof.is_file() and answer(text, challenge, "skill", skill) and not used_tool:
+            has_proof = proof.is_file()
+            valid_answer = answer(text, challenge, "skill", skill)
+            if has_proof and valid_answer and not used_tool:
                 raise EvidenceUnavailable(f"{vendor} helper tool completion is not observable")
-            if not used_tool or not proof.is_file() or not answer(text, challenge, "skill", skill):
-                raise RuntimeError(f"{vendor} skill lacks tool, proof or terminal evidence")
+            if not used_tool or not has_proof or not valid_answer:
+                raise RuntimeError(f"{vendor} skill evidence: tool={used_tool}, "
+                                   f"proof={has_proof}, terminal={valid_answer}")
             if json.loads(proof.read_text()) != {"skill": skill, "challenge": challenge}:
                 raise RuntimeError(f"{vendor} native skill proof mismatch")
             proof.unlink()
@@ -280,8 +301,9 @@ def main() -> int:
             text, used_tool = run_native(vendor, binaries[vendor], models[vendor], workspace,
                                          args.user, args.home,
                                          f'Return only JSON {{"challenge":"{challenge}"}}. This is a rule probe.')
-            if not answer(text, challenge, "rule", None) or used_tool:
-                raise RuntimeError(f"{vendor} rule remained visible after rollback")
+            issue = negative_rule_issue(text, challenge, used_tool)
+            if issue:
+                raise RuntimeError(f"{vendor} rollback rule probe: {issue}")
             result["phase"] = f"negative-skill-{vendor}"
             challenge = secrets.token_hex(12)
             text, used_tool = run_native(vendor, binaries[vendor], models[vendor], workspace,
