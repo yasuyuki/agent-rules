@@ -52,9 +52,11 @@ keys as *environment* secrets in GitHub, never in a repository file or a chat.
 Claude consumes its key from the environment; Codex performs noninteractive
 API-key login in the isolated profile. The environment and branch policy are
 already created, and both key names are registered as environment secrets.
-The setup checks access to the pinned Claude model through the
-[Models API](https://platform.claude.com/docs/en/api/http/models/retrieve) from
-the isolated user, reporting only the HTTP status on failure. See
+The setup checks access to both pinned models through the
+[Claude](https://platform.claude.com/docs/en/api/http/models/retrieve) and
+[OpenAI](https://developers.openai.com/api/reference/cli/resources/models/methods/retrieve)
+Models APIs from the isolated user, reporting only the HTTP status on failure.
+Native CLI stdin is closed so no runner input can be appended to a probe. See
 [Claude headless](https://code.claude.com/docs/en/headless) and
 [Codex authentication](https://learn.chatgpt.com/docs/auth).
 
@@ -111,7 +113,7 @@ are cash paid in advance, not an additional per-token fee. Buying a plan or
 credits, accepting terms, and entering payment data remain with an authorized
 human account owner.
 
-The Linux pilot deliberately fails on missing secrets, pinned Claude model
+The Linux pilot deliberately fails on missing secrets, pinned model
 access, CLI version drift,
 unreadable tool binaries, lost source isolation, missing terminal evidence or
 rollback residue. Authenticated Linux runs have begun, but the native acceptance

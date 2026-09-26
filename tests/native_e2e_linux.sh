@@ -4,6 +4,7 @@ set -euo pipefail
 
 scenario=${1:?scenario required}
 claude_model=claude-haiku-4-5-20251001
+codex_model=gpt-6-luna
 case "$scenario" in
   pair) vendors=(claude codex) ;;
   all) vendors=(claude codex agy cursor) ;;
@@ -27,32 +28,43 @@ for vendor in "${vendors[@]}"; do
     exit 1
   fi
 done
-if [[ " ${vendors[*]} " == *' claude '* ]]; then
-  sudo -n --preserve-env=ANTHROPIC_API_KEY -u native-e2e python3 - "$claude_model" <<'PY'
+for vendor in "${vendors[@]}"; do
+  case "$vendor" in
+    claude) key=ANTHROPIC_API_KEY; model=$claude_model ;;
+    codex) key=OPENAI_API_KEY; model=$codex_model ;;
+    *) continue ;;
+  esac
+  sudo -n --preserve-env="$key" -u native-e2e python3 - "$vendor" "$model" <<'PY'
 import os
 import sys
 import urllib.error
 import urllib.request
 
+vendor, model = sys.argv[1:]
+if vendor == 'claude':
+    url = 'https://api.anthropic.com/v1/models/' + model
+    headers = {'x-api-key': os.environ['ANTHROPIC_API_KEY'],
+               'anthropic-version': '2023-06-01'}
+else:
+    url = 'https://api.openai.com/v1/models/' + model
+    headers = {'Authorization': 'Bearer ' + os.environ['OPENAI_API_KEY']}
 request = urllib.request.Request(
-    'https://api.anthropic.com/v1/models/' + sys.argv[1],
-    headers={'x-api-key': os.environ['ANTHROPIC_API_KEY'],
-             'anthropic-version': '2023-06-01'},
+    url, headers=headers,
 )
 try:
     with urllib.request.urlopen(request, timeout=10) as response:
         if response.status != 200:
-            print(f'Claude model preflight HTTP {response.status}', file=sys.stderr)
+            print(f'{vendor} model preflight HTTP {response.status}', file=sys.stderr)
             sys.exit(1)
 except urllib.error.HTTPError as error:
-    print(f'Claude model preflight HTTP {error.code}', file=sys.stderr)
+    print(f'{vendor} model preflight HTTP {error.code}', file=sys.stderr)
     sys.exit(1)
 except (urllib.error.URLError, TimeoutError):
-    print('Claude model preflight network failure', file=sys.stderr)
+    print(f'{vendor} model preflight network failure', file=sys.stderr)
     sys.exit(1)
-print('Claude model preflight passed')
+print(f'{vendor} model preflight passed')
 PY
-fi
+done
 cd /tmp
 tools_root=/opt/agent-rules-native-tools
 sudo install -d -m 755 -o "$(id -un)" "$tools_root"
@@ -71,7 +83,7 @@ for vendor in "${vendors[@]}"; do
       npm install --global --prefix "$tools_root/npm" @openai/codex@0.157.1
       cli="$tools_root/npm/bin/codex"
       expected='codex-cli 0.157.1'
-      model='gpt-6-luna'
+      model=$codex_model
       ;;
     agy)
       curl -fsSL https://antigravity.google/cli/install.sh -o "$RUNNER_TEMP/agy-install.sh"
