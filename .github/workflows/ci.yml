@@ -127,6 +127,7 @@ jobs:
           else
             runtime="$RUNNER_TEMP/agent-rules-runtime/bin"
           fi
+          "$runtime/python" -c "import importlib.util,sys; sys.exit(importlib.util.find_spec('agent_rules_manager') is not None)"
           "$runtime/python" -m pip install --no-index dist/*.whl
           export RULESYNC_EXECUTABLE="$GITHUB_WORKSPACE/node_modules/.bin/rulesync"
           if [ "$RUNNER_OS" = Windows ]; then
@@ -136,6 +137,25 @@ jobs:
           cd "$RUNNER_TEMP"
           "$runtime/agent-rules" --version
           "$runtime/agent-rules" --help
+          "$runtime/python" -m pip uninstall -y agent-rules
+          "$runtime/python" -c "import importlib.util,sys; sys.exit(importlib.util.find_spec('agent_rules_manager') is not None)"
+      - name: Smoke source installation with the same rule and skill fixture
+        if: matrix.python == '3.12'
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/agent-rules-source-runtime"
+          if [ "$RUNNER_OS" = Windows ]; then
+            source_runtime="$RUNNER_TEMP/agent-rules-source-runtime/Scripts"
+            export RULESYNC_EXECUTABLE="$GITHUB_WORKSPACE/node_modules/.bin/rulesync.cmd"
+          else
+            source_runtime="$RUNNER_TEMP/agent-rules-source-runtime/bin"
+            export RULESYNC_EXECUTABLE="$GITHUB_WORKSPACE/node_modules/.bin/rulesync"
+          fi
+          "$source_runtime/python" -c "import importlib.util,sys; sys.exit(importlib.util.find_spec('agent_rules_manager') is not None)"
+          "$source_runtime/python" -m pip install .
+          "$source_runtime/python" tests/test_project.py -k test_native_probe_offline_round_trip
+          "$source_runtime/python" -m pip uninstall -y agent-rules
+          "$source_runtime/python" -c "import importlib.util,sys; sys.exit(importlib.util.find_spec('agent_rules_manager') is not None)"
       - name: Record resolved dependencies
         if: always()
         shell: bash

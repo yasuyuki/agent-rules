@@ -17,6 +17,16 @@ interpreter for `tests/test_project.py`. Run installed `agent-rules --version`
 and `--help` outside the source tree as CI does. This distinguishes packaged
 code/data from imports accidentally satisfied by the checkout.
 
+The installed-entry test also creates one nonce-bearing rule and one skill with
+a relative support file from `tests/fixtures/native-e2e/`. It tests the four
+consumer outputs in separate disposable projects and the combined output twice
+with new nonces. Each round uses the installed CLI for apply, check, unchanged
+reapply and empty-source rollback; it checks the ownership manifest, support
+file, unowned sentinel and refusal to repair a missing owned support file.
+Python 3.12 package jobs additionally install from the checkout with the public
+`pip install .` route and run the same fixture. These are placement tests. They
+do not assert that a vendor CLI loaded or forgot the rule or skill.
+
 Run `npm ci --ignore-scripts`, then `python tests/test_rulesync_backend.py` and
 `python tests/test_rulesync_export.py` for real pinned-backend generation,
 ownership, conflict, deletion, check and rollback coverage. The tests use only
