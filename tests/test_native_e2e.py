@@ -3,7 +3,8 @@ import json
 from pathlib import Path
 import unittest
 
-from native_e2e import (CLAUDE_RESULT_SCHEMA, SCENARIO, answer, claude_terminal_issue,
+from native_e2e import (CLAUDE_RESULT_SCHEMA, SCENARIO, answer, claude_structure_diagnostics,
+                        claude_terminal_issue,
                         codex_command_diagnostics, command, decode_events,
                         negative_rule_issue, skill_answer_issue)
 
@@ -33,6 +34,7 @@ class NativeResultTests(unittest.TestCase):
                        Path("/tmp/consumer"), "Use the skill.", "proof.py")
         self.assertEqual(argv[argv.index("--ask-for-approval") + 1], "never")
         self.assertLess(argv.index("--ask-for-approval"), argv.index("exec"))
+        self.assertNotIn("--skip-git-repo-check", argv)
         self.assertIn('model_reasoning_effort="high"', argv)
         self.assertNotIn('model_reasoning_effort="high"', command(
             "codex", Path("/tmp/codex"), "gpt-6-luna", Path("/tmp/consumer"), "Rule probe."))
@@ -61,6 +63,34 @@ class NativeResultTests(unittest.TestCase):
         self.assertTrue(success)
         self.assertFalse(tool)
         self.assertIsNone(negative_rule_issue(text, "fresh", tool))
+
+    def test_claude_completed_structured_tool_is_terminal_fallback(self):
+        events = [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use",
+                "id": "structured", "name": "StructuredOutput", "input": {"challenge": "fresh"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result",
+                "tool_use_id": "structured", "is_error": False}]}},
+            {"type": "result", "subtype": "success", "result": "not JSON"},
+        ]
+        text, success, used_tool = decode_events("claude", "\n".join(map(json.dumps, events)))
+        self.assertTrue(success)
+        self.assertFalse(used_tool)
+        self.assertIsNone(negative_rule_issue(text, "fresh", used_tool))
+        events[1]["message"]["content"][0]["is_error"] = True
+        text, _, _ = decode_events("claude", "\n".join(map(json.dumps, events)))
+        self.assertEqual(negative_rule_issue(text, "fresh", False), "terminal response was not JSON")
+
+    def test_claude_shape_diagnostics_do_not_retain_output(self):
+        events = [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "one",
+                "name": "StructuredOutput", "input": {"challenge": "SECRET"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "one"}]}},
+            {"type": "result", "subtype": "success", "result": "SECRET not JSON"},
+        ]
+        diagnostics = claude_structure_diagnostics("\n".join(map(json.dumps, events)))
+        self.assertTrue(diagnostics["claude_structured_tool_completed"])
+        self.assertFalse(diagnostics["claude_terminal_json"])
+        self.assertNotIn("SECRET", str(diagnostics))
 
     def test_auth_error_is_not_negative_success(self):
         event = {"type": "result", "subtype": "error_max_structured_output_retries",

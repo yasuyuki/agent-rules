@@ -47,20 +47,18 @@ def decode_events(vendor: str, stdout: str, proof_name: str | None = None) -> tu
     tools = False
     if vendor == "claude":
         proof_ids = set()
+        structured_inputs = {}
+        completed_structured = []
+        result_events = []
         for event in events:
             if event.get("type") == "result":
-                if proof_name is None:
-                    structured = event.get("structured_output")
-                    has_structured = isinstance(structured, dict)
-                    text = json.dumps(structured) if has_structured else event.get("result", "")
-                    terminal.append((text, event.get("subtype") == "success"
-                                     and not event.get("is_error", False)))
-                else:
-                    terminal.append((event.get("result", ""),
-                                     event.get("subtype") == "success"
-                                     and not event.get("is_error", False)))
+                result_events.append(event)
             if event.get("type") == "assistant":
                 for block in event.get("message", {}).get("content", []):
+                    if (isinstance(block, dict) and block.get("type") == "tool_use"
+                            and block.get("name") == "StructuredOutput"
+                            and isinstance(block.get("input"), dict)):
+                        structured_inputs[block.get("id")] = block["input"]
                     if (isinstance(block, dict) and block.get("type") == "tool_use"
                             and block.get("name") != "StructuredOutput"
                             and (proof_name is None or (block.get("name") == "Bash"
@@ -68,9 +66,22 @@ def decode_events(vendor: str, stdout: str, proof_name: str | None = None) -> tu
                         proof_ids.add(block.get("id"))
             if event.get("type") == "user":
                 for block in event.get("message", {}).get("content", []):
-                    if (isinstance(block, dict) and block.get("type") == "tool_result"
-                            and block.get("tool_use_id") in proof_ids and not block.get("is_error")):
-                        tools = True
+                    if isinstance(block, dict) and block.get("type") == "tool_result" and not block.get("is_error"):
+                        if block.get("tool_use_id") in proof_ids:
+                            tools = True
+                        if block.get("tool_use_id") in structured_inputs:
+                            completed_structured.append(structured_inputs[block["tool_use_id"]])
+        if len(result_events) == 1:
+            result_event = result_events[0]
+            structured = result_event.get("structured_output")
+            if proof_name is None and isinstance(structured, dict):
+                text = json.dumps(structured)
+            elif proof_name is None and len(completed_structured) == 1:
+                text = json.dumps(completed_structured[0])
+            else:
+                text = result_event.get("result", "")
+            terminal.append((text, result_event.get("subtype") == "success"
+                             and not result_event.get("is_error", False)))
     elif vendor == "codex":
         messages = []
         completed = False
@@ -167,6 +178,29 @@ def claude_terminal_issue(stdout: str) -> str:
     return "terminal event failure"
 
 
+def claude_structure_diagnostics(stdout: str) -> dict[str, bool]:
+    """Retain only shape evidence when the rule result is not machine-readable."""
+    events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+    results = [event for event in events if event.get("type") == "result"]
+    tool_ids = {block.get("id") for event in events if event.get("type") == "assistant"
+                for block in event.get("message", {}).get("content", [])
+                if isinstance(block, dict) and block.get("type") == "tool_use"
+                and block.get("name") == "StructuredOutput" and isinstance(block.get("input"), dict)}
+    completed_ids = {block.get("tool_use_id") for event in events if event.get("type") == "user"
+                     for block in event.get("message", {}).get("content", [])
+                     if isinstance(block, dict) and block.get("type") == "tool_result"
+                     and not block.get("is_error")}
+    raw = results[0].get("result", "") if len(results) == 1 else ""
+    try:
+        terminal_json = isinstance(json.loads(raw), dict)
+    except (TypeError, ValueError):
+        terminal_json = False
+    return {"claude_structured_field": len(results) == 1 and isinstance(results[0].get("structured_output"), dict),
+            "claude_structured_tool_completed": bool(tool_ids & completed_ids),
+            "claude_terminal_json": terminal_json,
+            "claude_terminal_empty": not bool(raw)}
+
+
 def codex_command_diagnostics(stdout: str, proof_name: str) -> dict[str, bool]:
     """Report command activity without retaining commands or their output."""
     events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
@@ -193,7 +227,7 @@ def command(vendor: str, cli: Path, model: str, workspace: Path, prompt: str,
                 "--allowedTools", "Skill,Read,Bash(python3 *)"]
     if vendor == "codex":
         argv = [str(cli), "--ask-for-approval", "never", "exec", "--json", "--ephemeral",
-                "--sandbox", "workspace-write", "--skip-git-repo-check", "-C", str(workspace),
+                "--sandbox", "workspace-write", "-C", str(workspace),
                 "-m", model]
         if proof_name is not None:
             argv += ["-c", 'model_reasoning_effort="high"']
@@ -232,6 +266,8 @@ def run_native(vendor: str, cli: Path, model: str, workspace: Path, user: str,
         raise RuntimeError(f"{vendor} exceeded the per-probe deadline") from None
     if proc.returncode:
         raise RuntimeError(f"{vendor} exited {proc.returncode}; raw output withheld")
+    if vendor == "claude" and proof_name is None and diagnostics is not None:
+        diagnostics.update(claude_structure_diagnostics(stdout))
     if vendor == "codex" and proof_name is not None and diagnostics is not None:
         diagnostics.update(codex_command_diagnostics(stdout, proof_name))
     try:
@@ -310,6 +346,12 @@ def main() -> int:
                 raise RuntimeError(f"{vendor} native CLI version changed after setup")
         root.chmod(0o700)
         workspace.chmod(0o777)
+        if subprocess.run(["sudo", "-n", "chown", args.user, str(workspace)],
+                          capture_output=True).returncode:
+            raise RuntimeError("cannot assign isolated consumer workspace ownership")
+        if subprocess.run(["sudo", "-n", "-u", args.user, "git", "init", "--quiet", str(workspace)],
+                          capture_output=True).returncode:
+            raise RuntimeError("cannot initialize isolated consumer repository")
         for guarded in (root, FIXTURE.parent.parent, Path.cwd()):
             check = subprocess.run(["sudo", "-n", "-u", args.user, "test", "!", "-r", str(guarded)],
                                    capture_output=True)
@@ -345,7 +387,7 @@ def main() -> int:
             challenge = secrets.token_hex(12)
             prompt = f'Return only JSON {{"challenge":"{challenge}"}}. This is a rule probe.'
             text, used_tool = run_native(vendor, binaries[vendor], models[vendor], workspace,
-                                         args.user, args.home, prompt)
+                                         args.user, args.home, prompt, diagnostics=result)
             issue = negative_rule_issue(text, challenge, used_tool)
             if issue:
                 raise RuntimeError(f"{vendor} baseline rule probe: {issue}")
@@ -358,7 +400,8 @@ def main() -> int:
             challenge = secrets.token_hex(12)
             text, used_tool = run_native(vendor, binaries[vendor], models[vendor], workspace,
                                          args.user, args.home,
-                                         f'Rule probe. Return only JSON with rule and challenge; challenge={challenge}.')
+                                         f'Rule probe. Return only JSON with rule and challenge; challenge={challenge}.',
+                                         diagnostics=result)
             if not answer(text, challenge, "rule", rule) or used_tool:
                 raise RuntimeError(f"{vendor} native rule probe failed")
             result["phase"] = f"positive-skill-{vendor}"
