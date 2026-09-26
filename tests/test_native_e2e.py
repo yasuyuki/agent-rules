@@ -180,6 +180,10 @@ class NativeResultTests(unittest.TestCase):
                           "codex_item_types": ["agent_message", "command_execution"],
                           "codex_proof_command_attempted": True,
                           "codex_proof_command_failed": False,
+                          "codex_proof_exit_codes": [0],
+                          "codex_proof_error_class": "none",
+                          "codex_proof_command_shape": {"python3": True, "skill_path": False,
+                                                        "challenge_arg": False, "output_arg": False},
                           "codex_other_tool_attempted": False,
                           "codex_turn_completed": True,
                           "codex_turn_failed": False,
@@ -189,9 +193,12 @@ class NativeResultTests(unittest.TestCase):
 
     def test_codex_failed_command_diagnostics_hide_command(self):
         events = [{"type": "item.completed", "item": {"type": "command_execution",
-                   "command": "python3 proof.py SECRET", "exit_code": 1, "status": "failed"}}]
+                   "command": "python3 proof.py SECRET", "exit_code": 2, "status": "failed",
+                   "aggregated_output": "python3: can't open file SECRET: No such file or directory"}}]
         result = codex_command_diagnostics(json.dumps(events[0]), "proof.py")
         self.assertTrue(result["codex_proof_command_failed"])
+        self.assertEqual(result["codex_proof_exit_codes"], [2])
+        self.assertEqual(result["codex_proof_error_class"], "missing_path")
         self.assertNotIn("SECRET", str(result))
 
     def test_agy_requires_successful_terminal_and_matching_tool(self):
