@@ -52,6 +52,11 @@ keys as *environment* secrets in GitHub, never in a repository file or a chat.
 Claude consumes its key from the environment; Codex performs noninteractive
 API-key login in the isolated profile. The environment and branch policy are
 already created, and both key names are registered as environment secrets.
+For the pinned `gpt-6-luna` CLI probe, setup derives a test-only model catalog
+from the installed Codex binary and disables Responses Lite for that model.
+The bundled Lite path has completed turns without exposing a callable shell tool;
+the override stays in the disposable `native-e2e` profile and is checked before
+the probe. Recheck this workaround when updating Codex CLI or the model.
 The setup checks access to both pinned models through the
 [Claude](https://platform.claude.com/docs/en/api/http/models/retrieve) and
 [OpenAI](https://developers.openai.com/api/reference/cli/resources/models/methods/retrieve)
