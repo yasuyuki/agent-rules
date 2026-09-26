@@ -49,11 +49,16 @@ def decode_events(vendor: str, stdout: str, proof_name: str | None = None) -> tu
         proof_ids = set()
         for event in events:
             if event.get("type") == "result":
-                structured = event.get("structured_output")
-                has_structured = isinstance(structured, dict)
-                terminal.append((json.dumps(structured) if has_structured else "",
-                                 has_structured and event.get("subtype") == "success"
-                                 and not event.get("is_error", False)))
+                if proof_name is None:
+                    structured = event.get("structured_output")
+                    has_structured = isinstance(structured, dict)
+                    terminal.append((json.dumps(structured) if has_structured else "",
+                                     has_structured and event.get("subtype") == "success"
+                                     and not event.get("is_error", False)))
+                else:
+                    terminal.append((event.get("result", ""),
+                                     event.get("subtype") == "success"
+                                     and not event.get("is_error", False)))
             if event.get("type") == "assistant":
                 for block in event.get("message", {}).get("content", []):
                     if (isinstance(block, dict) and block.get("type") == "tool_use"
@@ -149,11 +154,45 @@ def skill_answer_issue(text: str, challenge: str, expected: str) -> str | None:
     return None
 
 
-def command(vendor: str, cli: Path, model: str, workspace: Path, prompt: str) -> list[str]:
+def claude_terminal_issue(stdout: str, expect_structured: bool = True) -> str:
+    """Summarize the terminal event without including model text or API errors."""
+    events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+    results = [event for event in events if event.get("type") == "result"]
+    if len(results) != 1:
+        return "missing or multiple terminal results"
+    result = results[0]
+    if result.get("subtype") == "error_max_structured_output_retries":
+        return "structured output retry limit"
+    if (expect_structured and result.get("subtype") == "success"
+            and not isinstance(result.get("structured_output"), dict)):
+        return "structured output missing"
+    return "terminal event failure"
+
+
+def codex_command_diagnostics(stdout: str, proof_name: str) -> dict[str, bool]:
+    """Report command activity without retaining commands or their output."""
+    events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+    items = [event.get("item", {}) for event in events
+             if event.get("type") in ("item.started", "item.completed")]
+    commands = [item for item in items if item.get("type") == "command_execution"]
+    proof_commands = [item for item in commands if proof_name in str(item.get("command", ""))]
+    return {"codex_command_attempted": bool(commands),
+            "codex_proof_command_attempted": bool(proof_commands),
+            "codex_proof_command_failed": any(
+                item.get("status") == "failed" or
+                (isinstance(item.get("exit_code"), int) and item["exit_code"] != 0)
+                for item in proof_commands)}
+
+
+def command(vendor: str, cli: Path, model: str, workspace: Path, prompt: str,
+            proof_name: str | None = None) -> list[str]:
     if vendor == "claude":
-        return [str(cli), "-p", "--output-format", "stream-json", "--verbose", "--model", model,
-                "--max-turns", "5", "--json-schema", CLAUDE_RESULT_SCHEMA,
-                prompt, "--allowedTools", "Skill,Read,Bash(python3 *)"]
+        base = [str(cli), "-p", "--output-format", "stream-json", "--verbose", "--model", model,
+                "--max-turns", "5"]
+        if proof_name is None:
+            return [*base, "--json-schema", CLAUDE_RESULT_SCHEMA, prompt, "--tools", ""]
+        return [*base, prompt, "--tools", "Skill,Read,Bash",
+                "--allowedTools", "Skill,Read,Bash(python3 *)"]
     if vendor == "codex":
         return [str(cli), "exec", "--json", "--ephemeral", "--sandbox", "workspace-write",
                 "--skip-git-repo-check", "-C", str(workspace), "-m", model, prompt]
@@ -168,7 +207,8 @@ def command(vendor: str, cli: Path, model: str, workspace: Path, prompt: str) ->
 
 def run_native(vendor: str, cli: Path, model: str, workspace: Path, user: str,
                home: Path, prompt: str, timeout: int = 150,
-               proof_name: str | None = None) -> tuple[str, bool]:
+               proof_name: str | None = None,
+               diagnostics: dict | None = None) -> tuple[str, bool]:
     node = shutil.which("node")
     if not node:
         raise RuntimeError("Node.js is required for native CLI execution")
@@ -178,7 +218,7 @@ def run_native(vendor: str, cli: Path, model: str, workspace: Path, user: str,
         env["AGY_CLI_DISABLE_AUTO_UPDATE"] = "true"
     argv = ["sudo", "-n", f"--preserve-env={SECRET[vendor]}", "-u", user, "env",
             *[f"{key}={value}" for key, value in env.items()],
-            *command(vendor, cli, model, workspace, prompt)]
+            *command(vendor, cli, model, workspace, prompt, proof_name)]
     proc = subprocess.Popen(argv, cwd=workspace, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, start_new_session=True)
@@ -190,12 +230,16 @@ def run_native(vendor: str, cli: Path, model: str, workspace: Path, user: str,
         raise RuntimeError(f"{vendor} exceeded the per-probe deadline") from None
     if proc.returncode:
         raise RuntimeError(f"{vendor} exited {proc.returncode}; raw output withheld")
+    if vendor == "codex" and proof_name is not None and diagnostics is not None:
+        diagnostics.update(codex_command_diagnostics(stdout, proof_name))
     try:
         text, success, used_tool = decode_events(vendor, stdout, proof_name)
     except ValueError as exc:
         raise EvidenceUnavailable(f"{vendor} structured terminal result unavailable") from exc
     if not success:
-        raise RuntimeError(f"{vendor} terminal event reported failure")
+        issue = (claude_terminal_issue(stdout, proof_name is None)
+                 if vendor == "claude" else "terminal event failure")
+        raise RuntimeError(f"{vendor} {issue}")
     return text, used_tool
 
 
@@ -323,15 +367,16 @@ def main() -> int:
                     binaries[vendor], workspace, args.user, args.home, name)
                 if not result["codex_skill_listed"]:
                     raise EvidenceUnavailable("codex skill absent from isolated prompt inventory")
-                prompt = (f'${name}: Execute this skill\'s proof.py with '
-                          f'--challenge {challenge} --output {proof}. Read the generated '
-                          f'JSON file and return exactly its skill and challenge fields as JSON.')
+                prompt = (f'${name}\nExecute this skill\'s instructions. Call the shell tool '
+                          f'to run its proof.py with --challenge {challenge} --output {proof}. '
+                          f'Read that generated JSON file and return its exact skill and challenge '
+                          f'fields as JSON. If you cannot execute the helper, do not guess the skill value.')
             else:
                 prompt = (f'Use the {name} skill. Run its proof.py with challenge={challenge} '
                           f'and output={proof}. Return only JSON with skill and challenge.')
             text, used_tool = run_native(vendor, binaries[vendor], models[vendor], workspace,
                                          args.user, args.home, prompt,
-                                         proof_name="proof.py")
+                                         proof_name="proof.py", diagnostics=result)
             has_proof = proof.is_file()
             answer_issue = skill_answer_issue(text, challenge, skill)
             valid_answer = answer_issue is None
