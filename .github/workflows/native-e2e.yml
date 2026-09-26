@@ -1,0 +1,133 @@
+name: Native E2E
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - project.py
+      - pyproject.toml
+      - package.json
+      - package-lock.json
+      - 'bin/**'
+      - 'tests/native_e2e*'
+      - 'tests/fixtures/native-e2e/**'
+      - '.github/workflows/native-e2e.yml'
+  schedule:
+    - cron: '23 18 * * *'
+    - cron: '47 19 * * 0'
+  workflow_dispatch:
+    inputs:
+      matrix:
+        description: Native cell set
+        type: choice
+        required: true
+        default: daily
+        options: [daily, weekly]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-e2e-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native-linux:
+    if: github.ref == 'refs/heads/main'
+    environment: native-e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        vendor: ${{ fromJSON((github.event.schedule == '47 19 * * 0' || inputs.matrix == 'weekly') && '["all","claude","codex","agy","cursor"]' || '["all"]') }}
+    env:
+      NATIVE_VENDOR: ${{ matrix.vendor }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Initialize sanitized outcome
+        shell: bash
+        run: |
+          mkdir -p ci-results
+          printf '{"vendor":"%s","status":"blocked","phase":"setup"}\n' "$NATIVE_VENDOR" > "ci-results/native-$NATIVE_VENDOR.json"
+      - name: Require dedicated environment secret
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, sys
+          keys = {'claude': 'ANTHROPIC_API_KEY', 'codex': 'OPENAI_API_KEY',
+                  'agy': 'GEMINI_API_KEY', 'cursor': 'CURSOR_API_KEY'}
+          required = keys.values() if os.environ['NATIVE_VENDOR'] == 'all' else [keys[os.environ['NATIVE_VENDOR']]]
+          missing = [key for key in required if not os.environ.get(key)]
+          if missing:
+              path = pathlib.Path('ci-results')
+              path.mkdir(exist_ok=True)
+              (path / ('native-' + os.environ['NATIVE_VENDOR'] + '.json')).write_text(
+                  json.dumps({'vendor': os.environ['NATIVE_VENDOR'], 'status': 'blocked',
+                              'phase': 'credentials', 'reason': ', '.join(missing) + ' environment secret missing'}) + '\n')
+              sys.exit(1)
+          PY
+      - name: Build source distribution and install outside checkout
+        shell: bash
+        run: |
+          python -m pip install build
+          python -m build
+          echo "WHEEL_SHA256=$(sha256sum dist/*.whl | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          python -m venv "$RUNNER_TEMP/agent-rules-runtime"
+          "$RUNNER_TEMP/agent-rules-runtime/bin/python" -c 'import importlib.util,sys;sys.exit(importlib.util.find_spec("agent_rules_manager") is not None)'
+          "$RUNNER_TEMP/agent-rules-runtime/bin/python" -m pip install --no-index dist/*.whl
+          "$RUNNER_TEMP/agent-rules-runtime/bin/agent-rules" --version
+          npm ci --ignore-scripts
+      - name: Install native CLI and create isolated probe user
+        shell: bash
+        run: bash tests/native_e2e_linux.sh '${{ matrix.vendor }}'
+      - name: Probe native loading and rollback
+        shell: bash
+        run: |
+          extra=()
+          if [ "$NATIVE_VENDOR" != all ]; then
+            extra=(--cli "$NATIVE_CLI" --model "$NATIVE_MODEL")
+          fi
+          python tests/native_e2e.py \
+            --vendor '${{ matrix.vendor }}' \
+            "${extra[@]}" \
+            --entry "$RUNNER_TEMP/agent-rules-runtime/bin/agent-rules" \
+            --rulesync "$GITHUB_WORKSPACE/node_modules/.bin/rulesync" \
+            --home /home/native-e2e \
+            --output "ci-results/native-${{ matrix.vendor }}.json"
+      - name: Remove test distribution
+        if: always()
+        shell: bash
+        run: |
+          if [ -x "$RUNNER_TEMP/agent-rules-runtime/bin/python" ]; then
+            "$RUNNER_TEMP/agent-rules-runtime/bin/python" -m pip uninstall -y agent-rules
+            "$RUNNER_TEMP/agent-rules-runtime/bin/python" -c 'import importlib.util,sys;sys.exit(importlib.util.find_spec("agent_rules_manager") is not None)'
+          fi
+      - name: Summarize sanitized outcome
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "ci-results/native-$NATIVE_VENDOR.json" ]; then
+            echo "### Native E2E: $NATIVE_VENDOR" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat "ci-results/native-$NATIVE_VENDOR.json" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Retain sanitized outcome
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-results-native-linux-${{ matrix.vendor }}-${{ github.run_attempt }}
+          path: ci-results/
+          if-no-files-found: warn

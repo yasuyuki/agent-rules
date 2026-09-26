@@ -27,6 +27,46 @@ Python 3.12 package jobs additionally install from the checkout with the public
 `pip install .` route and run the same fixture. These are placement tests. They
 do not assert that a vendor CLI loaded or forgot the rule or skill.
 
+## Native CLI acceptance (#19)
+
+The separate [Native E2E workflow](../.github/workflows/native-e2e.yml) is an
+authenticated pilot, not part of the PR gate. It runs only from `main` on a
+disposable GitHub-hosted Ubuntu VM and uses the `native-e2e` Actions environment.
+That environment has a custom deployment branch policy allowing only `main`;
+the workflow also checks the ref. Fork PR code never receives these secrets.
+The VM creates an unprivileged `native-e2e` account for the actual vendor CLI,
+keeps the fixture controller/source checkout unreadable to it, and retains the
+same consumer workspace and profile across fresh native processes. The job
+installs all four CLIs for the daily combined cell; the weekly cron adds each
+CLI-only cell. It records sanitized JSON per cell.
+`tests/native_e2e.py` requires a successful structured terminal event, a
+matching challenge and, for the skill probe, a matching proof file plus a
+completed helper tool event. Raw model transcripts and keys are not artifacts.
+
+The environment needs four secrets: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`GEMINI_API_KEY` and `CURSOR_API_KEY`. Use dedicated test identities/projects,
+minimal vendor permissions, spending limits and revocable API keys. Store the
+keys as *environment* secrets in GitHub, never in a repository file or a chat.
+Claude and Cursor consume their key from the environment; Codex performs
+noninteractive API-key login in the isolated profile; Antigravity requires both
+the Gemini key and `modelProvider: gemini` in that profile. The environment and
+the branch policy are already created; the keys and vendor-side billing access
+remain the repository owner's responsibility. See the vendors' [Claude headless](https://code.claude.com/docs/en/headless),
+[Codex authentication](https://learn.chatgpt.com/docs/auth),
+[Antigravity authentication](https://antigravity.google/docs/cli-install?hl=en),
+and [Cursor Actions](https://cursor.com/docs/cli/github-actions) guidance.
+
+The Linux pilot deliberately fails on missing secrets, CLI version drift,
+unreadable tool binaries, lost source isolation, missing terminal evidence or
+rollback residue. The combined/weekly cells are wired but have no authenticated
+run evidence yet. CI separately checks the Windows local-user/ACL isolation
+primitive without credentials or a model call. It does not yet cover Windows native execution, supported
+user scope, or the first live run.
+Those cells are `blocked`/`unverified`, not PASS, until their implementation and
+actual authenticated evidence are recorded in Issue #19. GitHub-hosted jobs are
+destroyed after each run; they are not persistent managed agent environments,
+so the workspace's runtime inventory does not list them.
+
 Run `npm ci --ignore-scripts`, then `python tests/test_rulesync_backend.py` and
 `python tests/test_rulesync_export.py` for real pinned-backend generation,
 ownership, conflict, deletion, check and rollback coverage. The tests use only
