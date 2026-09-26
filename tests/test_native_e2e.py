@@ -12,13 +12,13 @@ class NativeResultTests(unittest.TestCase):
     def test_pair_scenario_contains_only_funded_vendors(self):
         self.assertEqual(SCENARIO["pair"], ("claude", "codex"))
 
-    def test_claude_rule_probe_uses_structured_output_without_tools(self):
+    def test_claude_rule_probe_uses_structured_output(self):
         prompt = 'Return only JSON {"challenge":"fresh"}.'
         argv = command("claude", Path("/tmp/claude"), "claude-haiku-4-5-20251001",
                        Path("/tmp/consumer"), prompt)
         self.assertEqual(json.loads(argv[argv.index("--json-schema") + 1]),
                          json.loads(CLAUDE_RESULT_SCHEMA))
-        self.assertEqual(argv[argv.index("--tools") + 1], "")
+        self.assertNotIn("--tools", argv)
 
     def test_claude_skill_probe_keeps_tools_and_prompt_order(self):
         prompt = 'Use the probe skill.'
@@ -32,6 +32,7 @@ class NativeResultTests(unittest.TestCase):
         argv = command("codex", Path("/tmp/codex"), "gpt-6-luna",
                        Path("/tmp/consumer"), "Use the skill.", "proof.py")
         self.assertEqual(argv[argv.index("--ask-for-approval") + 1], "never")
+        self.assertLess(argv.index("--ask-for-approval"), argv.index("exec"))
         self.assertIn('model_reasoning_effort="high"', argv)
         self.assertNotIn('model_reasoning_effort="high"', command(
             "codex", Path("/tmp/codex"), "gpt-6-luna", Path("/tmp/consumer"), "Rule probe."))

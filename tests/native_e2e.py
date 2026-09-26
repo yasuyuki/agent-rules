@@ -188,12 +188,12 @@ def command(vendor: str, cli: Path, model: str, workspace: Path, prompt: str,
         base = [str(cli), "-p", "--output-format", "stream-json", "--verbose", "--model", model,
                 "--max-turns", "5"]
         if proof_name is None:
-            return [*base, "--json-schema", CLAUDE_RESULT_SCHEMA, prompt, "--tools", ""]
+            return [*base, "--json-schema", CLAUDE_RESULT_SCHEMA, prompt]
         return [*base, prompt, "--tools", "Skill,Read,Bash",
                 "--allowedTools", "Skill,Read,Bash(python3 *)"]
     if vendor == "codex":
-        argv = [str(cli), "exec", "--json", "--ephemeral", "--sandbox", "workspace-write",
-                "--ask-for-approval", "never", "--skip-git-repo-check", "-C", str(workspace),
+        argv = [str(cli), "--ask-for-approval", "never", "exec", "--json", "--ephemeral",
+                "--sandbox", "workspace-write", "--skip-git-repo-check", "-C", str(workspace),
                 "-m", model]
         if proof_name is not None:
             argv += ["-c", 'model_reasoning_effort="high"']
