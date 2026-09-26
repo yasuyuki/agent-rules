@@ -23,13 +23,6 @@ FIXTURE = Path(__file__).parent / "fixtures/native-e2e"
 TARGET = {"claude": "claudecode", "codex": "codexcli", "agy": "codexcli", "cursor": "cursor"}
 SECRET = {"claude": "ANTHROPIC_API_KEY", "codex": "OPENAI_API_KEY", "agy": "GEMINI_API_KEY", "cursor": "CURSOR_API_KEY"}
 SCENARIO = {"pair": ("claude", "codex"), "all": tuple(TARGET)}
-CLAUDE_RESULT_SCHEMA = json.dumps({
-    "type": "object",
-    "properties": {"challenge": {"type": "string"}, "rule": {"type": "string"},
-                   "skill": {"type": "string"}},
-    "required": ["challenge"],
-    "additionalProperties": False,
-})
 
 
 class EvidenceUnavailable(RuntimeError):
@@ -47,18 +40,12 @@ def decode_events(vendor: str, stdout: str, proof_name: str | None = None) -> tu
     tools = False
     if vendor == "claude":
         proof_ids = set()
-        structured_inputs = {}
-        completed_structured = []
         result_events = []
         for event in events:
             if event.get("type") == "result":
                 result_events.append(event)
             if event.get("type") == "assistant":
                 for block in event.get("message", {}).get("content", []):
-                    if (isinstance(block, dict) and block.get("type") == "tool_use"
-                            and block.get("name") == "StructuredOutput"
-                            and isinstance(block.get("input"), dict)):
-                        structured_inputs[block.get("id")] = block["input"]
                     if (isinstance(block, dict) and block.get("type") == "tool_use"
                             and block.get("name") != "StructuredOutput"
                             and (proof_name is None or (block.get("name") == "Bash"
@@ -69,15 +56,11 @@ def decode_events(vendor: str, stdout: str, proof_name: str | None = None) -> tu
                     if isinstance(block, dict) and block.get("type") == "tool_result" and not block.get("is_error"):
                         if block.get("tool_use_id") in proof_ids:
                             tools = True
-                        if block.get("tool_use_id") in structured_inputs:
-                            completed_structured.append(structured_inputs[block["tool_use_id"]])
         if len(result_events) == 1:
             result_event = result_events[0]
             structured = result_event.get("structured_output")
             if proof_name is None and isinstance(structured, dict):
                 text = json.dumps(structured)
-            elif proof_name is None and len(completed_structured) == 1:
-                text = json.dumps(completed_structured[0])
             else:
                 text = result_event.get("result", "")
             terminal.append((text, result_event.get("subtype") == "success"
@@ -122,9 +105,17 @@ def decode_events(vendor: str, stdout: str, proof_name: str | None = None) -> tu
     return terminal[0][0], terminal[0][1], tools
 
 
+def terminal_json(text: str):
+    """Parse an entire JSON reply, optionally enclosed by one Markdown fence."""
+    lines = text.strip().splitlines()
+    if len(lines) >= 3 and lines[0].lower() in ("```json", "```") and lines[-1] == "```":
+        text = "\n".join(lines[1:-1])
+    return json.loads(text.strip())
+
+
 def answer(text: str, challenge: str, field: str, expected: str | None) -> bool:
     try:
-        value = json.loads(text.strip())
+        value = terminal_json(text)
     except (ValueError, TypeError):
         return False
     if not isinstance(value, dict) or value.get("challenge") != challenge:
@@ -135,7 +126,7 @@ def answer(text: str, challenge: str, field: str, expected: str | None) -> bool:
 def negative_rule_issue(text: str, challenge: str, used_tool: bool) -> str | None:
     """Describe a failed negative probe without exposing model output or nonces."""
     try:
-        value = json.loads(text.strip())
+        value = terminal_json(text)
     except (ValueError, TypeError):
         return "terminal response was not JSON"
     if not isinstance(value, dict):
@@ -152,7 +143,7 @@ def negative_rule_issue(text: str, challenge: str, used_tool: bool) -> str | Non
 def skill_answer_issue(text: str, challenge: str, expected: str) -> str | None:
     """Categorize terminal skill evidence without retaining its contents."""
     try:
-        value = json.loads(text.strip())
+        value = terminal_json(text)
     except (ValueError, TypeError):
         return "terminal response was not JSON"
     if not isinstance(value, dict):
@@ -182,23 +173,16 @@ def claude_structure_diagnostics(stdout: str) -> dict[str, bool]:
     """Retain only shape evidence when the rule result is not machine-readable."""
     events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
     results = [event for event in events if event.get("type") == "result"]
-    tool_ids = {block.get("id") for event in events if event.get("type") == "assistant"
-                for block in event.get("message", {}).get("content", [])
-                if isinstance(block, dict) and block.get("type") == "tool_use"
-                and block.get("name") == "StructuredOutput" and isinstance(block.get("input"), dict)}
-    completed_ids = {block.get("tool_use_id") for event in events if event.get("type") == "user"
-                     for block in event.get("message", {}).get("content", [])
-                     if isinstance(block, dict) and block.get("type") == "tool_result"
-                     and not block.get("is_error")}
     raw = results[0].get("result", "") if len(results) == 1 else ""
     try:
-        terminal_json = isinstance(json.loads(raw), dict)
+        is_json = isinstance(json.loads(raw), dict)
     except (TypeError, ValueError):
-        terminal_json = False
-    return {"claude_structured_field": len(results) == 1 and isinstance(results[0].get("structured_output"), dict),
-            "claude_structured_tool_completed": bool(tool_ids & completed_ids),
-            "claude_terminal_json": terminal_json,
-            "claude_terminal_empty": not bool(raw)}
+        is_json = False
+    return {"claude_terminal_json": is_json,
+            "claude_terminal_empty": not bool(raw),
+            "claude_terminal_fenced": (isinstance(raw, str) and raw.strip().startswith("```")
+                                       and raw.strip().endswith("```")),
+            "claude_terminal_mentions_challenge": isinstance(raw, str) and "challenge" in raw.lower()}
 
 
 def codex_command_diagnostics(stdout: str, proof_name: str) -> dict[str, bool]:
@@ -222,7 +206,9 @@ def command(vendor: str, cli: Path, model: str, workspace: Path, prompt: str,
         base = [str(cli), "-p", "--output-format", "stream-json", "--verbose", "--model", model,
                 "--max-turns", "5"]
         if proof_name is None:
-            return [*base, "--json-schema", CLAUDE_RESULT_SCHEMA, prompt]
+            return [*base, "--append-system-prompt",
+                    "For a rule probe, reply with exactly one compact JSON object and no other text. "
+                    "Never use tools for a rule probe.", prompt, "--tools", ""]
         return [*base, prompt, "--tools", "Skill,Read,Bash",
                 "--allowedTools", "Skill,Read,Bash(python3 *)"]
     if vendor == "codex":
@@ -230,7 +216,7 @@ def command(vendor: str, cli: Path, model: str, workspace: Path, prompt: str,
                 "--sandbox", "workspace-write", "-C", str(workspace),
                 "-m", model]
         if proof_name is not None:
-            argv += ["-c", 'model_reasoning_effort="high"']
+            argv += ["-c", 'model_reasoning_effort="none"']
         return [*argv, prompt]
     if vendor == "agy":
         return [str(cli), "-p", "--output-format", "stream-json", "--model", model,
