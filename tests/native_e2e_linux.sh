@@ -130,4 +130,29 @@ fi
 if [[ " ${vendors[*]} " == *' codex '* ]]; then
   printf '%s' "$OPENAI_API_KEY" | sudo -n -u native-e2e env HOME=/home/native-e2e \
     "$tools_root/npm/bin/codex" login --with-api-key >/dev/null
+  sudo -n -u native-e2e env HOME=/home/native-e2e CODEX_HOME=/home/native-e2e/.codex \
+    python3 - "$tools_root/npm/bin/codex" <<'PY'
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+cli = sys.argv[1]
+home = Path('/home/native-e2e/.codex')
+catalog = json.loads(subprocess.check_output([cli, 'debug', 'models', '--bundled'],
+                                             stderr=subprocess.DEVNULL))
+matches = [model for model in catalog['models'] if model['slug'] == 'gpt-6-luna']
+if len(matches) != 1 or matches[0].get('use_responses_lite') is not True:
+    raise RuntimeError('pinned Codex model catalog changed; review native tool setup')
+matches[0]['use_responses_lite'] = False
+catalog_path = home / 'native-e2e-models.json'
+catalog_path.write_text(json.dumps(catalog))
+(home / 'config.toml').write_text(f'model_catalog_json = "{catalog_path}"\n')
+effective = json.loads(subprocess.check_output([cli, 'debug', 'models'],
+                                                stderr=subprocess.DEVNULL))
+chosen = [model for model in effective['models'] if model['slug'] == 'gpt-6-luna']
+if len(chosen) != 1 or chosen[0].get('use_responses_lite') is not False:
+    raise RuntimeError('isolated Codex catalog override was not loaded')
+print('isolated Codex standard Responses catalog loaded')
+PY
 fi
