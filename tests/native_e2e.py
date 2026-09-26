@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import signal
 import shutil
@@ -185,7 +186,7 @@ def claude_structure_diagnostics(stdout: str) -> dict[str, bool]:
             "claude_terminal_mentions_challenge": isinstance(raw, str) and "challenge" in raw.lower()}
 
 
-def codex_command_diagnostics(stdout: str, proof_name: str) -> dict[str, bool]:
+def codex_command_diagnostics(stdout: str, proof_name: str) -> dict[str, object]:
     """Report command activity without retaining commands or their output."""
     events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
     items = [event.get("item", {}) for event in events
@@ -195,11 +196,16 @@ def codex_command_diagnostics(stdout: str, proof_name: str) -> dict[str, bool]:
     messages = [item.get("text", "") for item in items if item.get("type") == "agent_message"
                 and isinstance(item.get("text"), str)]
     terminal = messages[-1] if messages else ""
+    item_types = {item.get("type") for item in items}
+    safe_types = sorted({value if isinstance(value, str) and
+                         re.fullmatch(r"[a-z_]{1,40}", value) else "other"
+                         for value in item_types})
     try:
         terminal_is_json = isinstance(terminal_json(terminal), dict)
     except (TypeError, ValueError):
         terminal_is_json = False
     return {"codex_command_attempted": bool(commands),
+            "codex_item_types": safe_types,
             "codex_proof_command_attempted": bool(proof_commands),
             "codex_proof_command_failed": any(
                 item.get("status") == "failed" or
@@ -416,11 +422,12 @@ def main() -> int:
                 if not result["codex_skill_listed"]:
                     raise EvidenceUnavailable("codex skill absent from isolated prompt inventory")
                 prompt = (f'${name}\nExecute this skill\'s instructions. Call the shell tool '
+                          f'(exec_command) '
                           f'to run its proof.py with --challenge {challenge} --output {proof}. '
                           f'Read that generated JSON file and return its exact skill and challenge '
                           f'fields as JSON. If you cannot execute the helper, do not guess the skill value.')
             else:
-                prompt = (f'Use the {name} skill. Run its proof.py with challenge={challenge} '
+                prompt = (f'/{name} Run this skill\'s proof.py with challenge={challenge} '
                           f'and output={proof}. Return only JSON with skill and challenge.')
             text, used_tool = run_native(vendor, binaries[vendor], models[vendor], workspace,
                                          args.user, args.home, prompt,
@@ -435,8 +442,8 @@ def main() -> int:
                     try:
                         _, smoke_tool = run_native(vendor, binaries[vendor], models[vendor],
                                                    workspace, args.user, args.home,
-                                                   'Use the shell tool to run python3 --version. '
-                                                   'Then answer with a short confirmation.',
+                                                   'Call the exec_command shell tool with command '
+                                                   'python3 --version before replying.',
                                                    proof_name="python3")
                         result["codex_shell_probe"] = "tool_ok" if smoke_tool else "no_tool"
                     except Exception:
