@@ -22,9 +22,9 @@ export PATH="$tools_root/.local/bin:$tools_root/npm/bin:$PATH"
 for vendor in "${vendors[@]}"; do
   case "$vendor" in
     claude)
-      npm install --global --prefix "$tools_root/npm" @anthropic-ai/claude-code@2.1.278
+      npm install --global --prefix "$tools_root/npm" @anthropic-ai/claude-code@2.1.283
       cli="$tools_root/npm/bin/claude"
-      expected='2.1.278 (Claude Code)'
+      expected='2.1.283 (Claude Code)'
       model='claude-haiku-4-5-20251001'
       ;;
     codex)
