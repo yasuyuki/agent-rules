@@ -61,6 +61,12 @@ exact file contents without retaining the raw transcript. A failure stops the
 cell before placement. Earlier probes with the bundled Lite/code-mode catalog
 and explicit `tool_mode=direct` also completed without command events; their
 failed run artifacts remain the evidence for those configurations.
+During this pre-placement probe, the isolated CLI uses a loopback base URL.
+The controller forwards the authenticated Responses request to OpenAI and
+records only the tool names/types, tool choice, HTTP status, and response event
+types. It does not save the key, request body, response body, or raw CLI output.
+The loopback override applies only to this probe; normal native probes use the
+direct provider URL.
 Recheck the selected mode when updating Codex CLI or the model.
 The setup checks access to both pinned models through the
 [Claude](https://platform.claude.com/docs/en/api/http/models/retrieve) and

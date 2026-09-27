@@ -1,14 +1,19 @@
 """Negative controls for the structured native-result verifier (no model calls)."""
 import json
+import io
+import http.client
+import os
 from pathlib import Path
 import re
 import tempfile
 import unittest
+from urllib.parse import urlsplit
 from unittest.mock import patch
 
 from native_e2e import (SCENARIO, answer, claude_structure_diagnostics,
                         claude_terminal_issue,
-                        codex_command_diagnostics, codex_tool_probe, command, decode_events,
+                        codex_command_diagnostics, codex_tool_probe, codex_wire_metadata,
+                        command, decode_events,
                         negative_rule_issue, skill_answer_issue)
 
 
@@ -41,6 +46,54 @@ class NativeResultTests(unittest.TestCase):
         self.assertNotIn('model_reasoning_effort="none"', argv)
         self.assertNotIn('model_reasoning_effort="none"', command(
             "codex", Path("/tmp/codex"), "gpt-6-luna", Path("/tmp/consumer"), "Rule probe."))
+
+    def test_codex_wire_relay_keeps_only_safe_tool_metadata(self):
+        secret = "secret-test-token"
+        payload = {"model": "gpt-6-luna", "stream": True,
+                   "input": "private prompt", "tools": [
+                       {"type": "function", "name": "exec_command", "description": "private tool body"}]}
+        event = b'event: response.output_item.added\ndata: {"item":{"type":"function_call","name":"exec_command","arguments":"private output"}}\n\n'
+
+        class FakeUpstream:
+            status = 200
+            headers = {"Content-Type": "text/event-stream"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def __iter__(self):
+                return iter(io.BytesIO(event))
+
+        class FakeOpener:
+            def open(self, request, timeout):
+                self_request = json.loads(request.data)
+                assert self_request["input"] == "private prompt"
+                assert request.get_header("Authorization") == "Bearer " + secret
+                return FakeUpstream()
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": secret}), \
+                patch("native_e2e.urllib.request.build_opener", return_value=FakeOpener()):
+            with codex_wire_metadata() as (base_url, calls):
+                parsed = urlsplit(base_url)
+                connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=3)
+                connection.request("POST", "/v1/responses", body=json.dumps(payload),
+                                   headers={"Authorization": "Bearer " + secret,
+                                            "Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.read(), event)
+                connection.close()
+        self.assertEqual(calls[0]["tool_count"], 1)
+        self.assertEqual(calls[0]["tools"], [("function", "exec_command")])
+        self.assertEqual(calls[0]["response_tool_names"], ["exec_command"])
+        self.assertTrue(calls[0]["auth_matches_test_key"])
+        for sensitive in (secret, "private prompt", "private tool body", "private output"):
+            self.assertNotIn(sensitive, json.dumps(calls))
+        argv = command("codex", Path("/tmp/codex"), "gpt-6-luna",
+                       Path("/tmp/consumer"), "probe", api_base_url=base_url)
+        self.assertIn(f'openai_base_url="{base_url}"', argv)
 
     def test_terminal_result_only(self):
         prompt = '{"rule":"RULE_echoed","challenge":"fresh"}'
@@ -223,7 +276,7 @@ class NativeResultTests(unittest.TestCase):
             workspace = Path(temporary)
 
             def native(_vendor, _cli, _model, _workspace, _user, _home, prompt,
-                       proof_name=None, diagnostics=None):
+                       proof_name=None, diagnostics=None, api_base_url=None):
                 challenge = re.search(r"exactly ([0-9a-f]{32})", prompt).group(1)
                 (workspace / proof_name).write_text(challenge + "\n")
                 diagnostics.update(codex_proof_command_attempted=True,
