@@ -53,11 +53,15 @@ Claude consumes its key from the environment; Codex performs noninteractive
 API-key login in the isolated profile. The environment and branch policy are
 already created, and both key names are registered as environment secrets.
 For the pinned `gpt-6-luna` CLI probe, setup derives a test-only model catalog
-from the installed Codex binary and selects standard Responses with direct tools
-for that model. The bundled Lite/code-mode path, and a standard Responses run
-that retained code mode, completed turns without a callable shell tool. The
-override stays in the disposable `native-e2e` profile and is checked before the
-probe. Recheck this workaround when updating Codex CLI or the model.
+from the installed Codex binary, changing only Lite/code mode to standard
+Responses with direct tools. Before placing a rule or skill, fresh Codex sessions
+in the same isolated user, profile, workspace, and sandbox try a Python file
+write with both the bundled catalog and this override. The result records
+completed command events, exit codes, and exact file contents without retaining
+the raw transcript. If neither catalog runs the tool, the cell stops before
+placement. A successful bundled probe keeps the bundled catalog for the rest of
+the cell; otherwise the override is selected within the disposable profile.
+This distinction must be rechecked when updating Codex CLI or the model.
 The setup checks access to both pinned models through the
 [Claude](https://platform.claude.com/docs/en/api/http/models/retrieve) and
 [OpenAI](https://developers.openai.com/api/reference/cli/resources/models/methods/retrieve)
