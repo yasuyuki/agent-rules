@@ -97,7 +97,8 @@ class NativeResultTests(unittest.TestCase):
             self.assertNotIn(sensitive, json.dumps(calls))
         argv = command("codex", Path("/tmp/codex"), "gpt-6-luna",
                        Path("/tmp/consumer"), "probe", api_base_url=base_url)
-        self.assertIn(f'openai_base_url="{base_url}"', argv)
+        self.assertIn(f'model_providers.native_http.base_url="{base_url}"', argv)
+        self.assertIn("model_providers.native_http.supports_websockets=false", argv)
 
     def test_codex_wire_relay_forwards_response_child_without_path_in_artifact(self):
         secret = "secret-test-token"

@@ -492,7 +492,12 @@ def command(vendor: str, cli: Path, model: str, workspace: Path, prompt: str,
     if vendor == "codex":
         argv = [str(cli), "--ask-for-approval", "never"]
         if api_base_url is not None:
-            argv += ["-c", f'openai_base_url="{api_base_url}"']
+            argv += ["-c", 'model_provider="native_http"',
+                     "-c", 'model_providers.native_http.name="Native HTTP probe"',
+                     "-c", f'model_providers.native_http.base_url="{api_base_url}"',
+                     "-c", 'model_providers.native_http.env_key="OPENAI_API_KEY"',
+                     "-c", 'model_providers.native_http.wire_api="responses"',
+                     "-c", "model_providers.native_http.supports_websockets=false"]
         argv += ["exec", "--json", "--ephemeral",
                 "--sandbox", "workspace-write", "-C", str(workspace),
                 "-m", model]
