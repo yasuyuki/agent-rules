@@ -346,6 +346,8 @@ def claude_skill_diagnostics(stdout: str, skill_name: str) -> dict[str, object]:
     failed: set[str] = set()
     terminal = []
     malformed = False
+    proof_commands: list[str] = []
+    bash_errors: set[str] = set()
     for line in stdout.splitlines():
         if not line.strip():
             continue
@@ -384,6 +386,8 @@ def claude_skill_diagnostics(stdout: str, skill_name: str) -> dict[str, object]:
                 else:
                     command_text = args.get("command", "")
                     relevant = isinstance(command_text, str) and "proof.py" in command_text
+                    if relevant:
+                        proof_commands.append(command_text)
                 calls[tool_id] = (name, relevant)
         if event.get("type") == "user":
             message = event.get("message")
@@ -393,6 +397,27 @@ def claude_skill_diagnostics(stdout: str, skill_name: str) -> dict[str, object]:
                     tool_id = block.get("tool_use_id")
                     if tool_id in calls:
                         (failed if block.get("is_error") else completed).add(tool_id)
+                        if block.get("is_error") and calls[tool_id] == ("Bash", True):
+                            content_text = str(block.get("content", "")).lower()
+                            tool_result = event.get("tool_use_result")
+                            if isinstance(tool_result, dict):
+                                content_text += " " + str(tool_result.get("stderr", "")).lower()
+                            if any(word in content_text for word in
+                                   ("permission denied", "not permitted", "not allowed", "denied")):
+                                bash_errors.add("permission")
+                            elif any(word in content_text for word in
+                                     ("no such file", "not found", "can't open file")):
+                                bash_errors.add("missing_path")
+                            elif any(word in content_text for word in
+                                     ("traceback", "syntaxerror", "modulenotfounderror")):
+                                bash_errors.add("python_error")
+                            elif any(word in content_text for word in
+                                     ("usage:", "unrecognized arguments", "argument required")):
+                                bash_errors.add("arguments")
+                            elif "timed out" in content_text:
+                                bash_errors.add("timeout")
+                            else:
+                                bash_errors.add("other")
         if event.get("type") == "result":
             terminal.append(event)
     relevant = {name for name, selected in calls.values() if selected}
@@ -411,6 +436,15 @@ def claude_skill_diagnostics(stdout: str, skill_name: str) -> dict[str, object]:
         "skill_invocation_result_ok": "Skill" in success,
         "skill_read_result_ok": "Read" in success,
         "proof_bash_result_ok": "Bash" in success,
+        "proof_bash_error_classes": sorted(bash_errors),
+        "proof_bash_command_shape": {
+            "starts_python3": any(command.lstrip().startswith("python3 ") for command in proof_commands),
+            "contains_python3": any("python3" in command for command in proof_commands),
+            "contains_skill_path": any(f".claude/skills/{skill_name}/" in command
+                                       for command in proof_commands),
+            "contains_challenge_arg": any("--challenge" in command for command in proof_commands),
+            "contains_output_arg": any("--output" in command for command in proof_commands),
+        },
         "tool_error_kinds": sorted(errors),
         "terminal_result_present": len(terminal) == 1,
         "terminal_success": len(terminal) == 1 and terminal[0].get("subtype") == "success"

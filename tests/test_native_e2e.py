@@ -200,13 +200,13 @@ class NativeResultTests(unittest.TestCase):
                 {"type": "tool_use", "id": "two", "name": "Read",
                  "input": {"file_path": f".claude/skills/{skill}/SKILL.md"}},
                 {"type": "tool_use", "id": "three", "name": "Bash",
-                 "input": {"command": "python3 proof.py --challenge SECRET"}},
+                 "input": {"command": "python3 proof.py --challenge SECRET --output out.json"}},
             ]}},
             {"type": "user", "message": {"content": [
                 {"type": "tool_result", "tool_use_id": "one", "content": "SECRET"},
                 {"type": "tool_result", "tool_use_id": "two", "content": "SECRET"},
                 {"type": "tool_result", "tool_use_id": "three", "is_error": True,
-                 "content": "SECRET"},
+                 "content": "permission denied SECRET"},
             ]}},
             {"type": "result", "subtype": "success", "result": "SECRET not JSON"},
         ]
@@ -219,6 +219,11 @@ class NativeResultTests(unittest.TestCase):
         self.assertFalse(shape["proof_bash_result_ok"])
         self.assertFalse(shape["terminal_json_object"])
         self.assertEqual(shape["tool_error_kinds"], ["Bash"])
+        self.assertEqual(shape["proof_bash_error_classes"], ["permission"])
+        self.assertEqual(shape["proof_bash_command_shape"], {
+            "starts_python3": True, "contains_python3": True,
+            "contains_skill_path": False, "contains_challenge_arg": True,
+            "contains_output_arg": True})
         self.assertNotIn("SECRET", json.dumps(diagnostics))
 
     def test_negative_rule_diagnostics_do_not_expose_response(self):
