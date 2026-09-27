@@ -338,6 +338,88 @@ def claude_structure_diagnostics(stdout: str) -> dict[str, bool]:
             "claude_terminal_mentions_challenge": isinstance(raw, str) and "challenge" in raw.lower()}
 
 
+def claude_skill_diagnostics(stdout: str, skill_name: str) -> dict[str, object]:
+    """Classify native skill boundaries without retaining prompts or tool payloads."""
+    discovered = None
+    calls: dict[str, tuple[str, bool]] = {}
+    completed: set[str] = set()
+    failed: set[str] = set()
+    terminal = []
+    malformed = False
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            malformed = True
+            continue
+        if not isinstance(event, dict):
+            malformed = True
+            continue
+        if event.get("type") == "system" and event.get("subtype") == "init":
+            commands = event.get("slash_commands")
+            if isinstance(commands, list):
+                discovered = skill_name in commands or f"/{skill_name}" in commands
+        if event.get("type") == "assistant":
+            message = event.get("message")
+            content = message.get("content", []) if isinstance(message, dict) else []
+            for block in content if isinstance(content, list) else []:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                name = block.get("name")
+                if name not in ("Skill", "Read", "Bash"):
+                    continue
+                tool_id = block.get("id")
+                if not isinstance(tool_id, str):
+                    continue
+                args = block.get("input", {})
+                if not isinstance(args, dict):
+                    args = {}
+                if name == "Skill":
+                    relevant = args.get("skill") in (skill_name, f"/{skill_name}")
+                elif name == "Read":
+                    path = args.get("file_path", "")
+                    relevant = isinstance(path, str) and skill_name in path and path.endswith("SKILL.md")
+                else:
+                    command_text = args.get("command", "")
+                    relevant = isinstance(command_text, str) and "proof.py" in command_text
+                calls[tool_id] = (name, relevant)
+        if event.get("type") == "user":
+            message = event.get("message")
+            content = message.get("content", []) if isinstance(message, dict) else []
+            for block in content if isinstance(content, list) else []:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    tool_id = block.get("tool_use_id")
+                    if tool_id in calls:
+                        (failed if block.get("is_error") else completed).add(tool_id)
+        if event.get("type") == "result":
+            terminal.append(event)
+    relevant = {name for name, selected in calls.values() if selected}
+    success = {calls[tool_id][0] for tool_id in completed if calls[tool_id][1]}
+    errors = {calls[tool_id][0] for tool_id in failed if calls[tool_id][1]}
+    raw = terminal[0].get("result") if len(terminal) == 1 else None
+    try:
+        terminal_json_object = isinstance(terminal_json(raw), dict) if isinstance(raw, str) else False
+    except (ValueError, TypeError):
+        terminal_json_object = False
+    return {"claude_skill_events": {
+        "discovery_listed": discovered,
+        "skill_invocation_call": "Skill" in relevant,
+        "skill_read_call": "Read" in relevant,
+        "proof_bash_call": "Bash" in relevant,
+        "skill_invocation_result_ok": "Skill" in success,
+        "skill_read_result_ok": "Read" in success,
+        "proof_bash_result_ok": "Bash" in success,
+        "tool_error_kinds": sorted(errors),
+        "terminal_result_present": len(terminal) == 1,
+        "terminal_success": len(terminal) == 1 and terminal[0].get("subtype") == "success"
+                            and not terminal[0].get("is_error", False),
+        "terminal_json_object": terminal_json_object,
+        "malformed_event": malformed,
+    }}
+
+
 def codex_command_diagnostics(stdout: str, proof_name: str, stderr: str = "") -> dict[str, object]:
     """Report command activity without retaining commands or their output."""
     events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
@@ -460,7 +542,8 @@ def run_native(vendor: str, cli: Path, model: str, workspace: Path, user: str,
                home: Path, prompt: str, timeout: int = 150,
                proof_name: str | None = None,
                diagnostics: dict | None = None,
-               api_base_url: str | None = None) -> tuple[str, bool]:
+               api_base_url: str | None = None,
+               skill_name: str | None = None) -> tuple[str, bool]:
     node = shutil.which("node")
     if not node:
         raise RuntimeError("Node.js is required for native CLI execution")
@@ -480,6 +563,8 @@ def run_native(vendor: str, cli: Path, model: str, workspace: Path, user: str,
         os.killpg(proc.pid, signal.SIGKILL)
         proc.communicate()
         raise RuntimeError(f"{vendor} exceeded the per-probe deadline") from None
+    if vendor == "claude" and proof_name is not None and diagnostics is not None:
+        diagnostics.update(claude_skill_diagnostics(stdout, skill_name or ""))
     if proc.returncode:
         raise RuntimeError(f"{vendor} exited {proc.returncode}; raw output withheld")
     if vendor == "claude" and proof_name is None and diagnostics is not None:
@@ -703,9 +788,14 @@ def main() -> int:
             else:
                 prompt = (f'/{name} Run this skill\'s proof.py with challenge={challenge} '
                           f'and output={proof}. Return only JSON with skill and challenge.')
-            text, used_tool = run_native(vendor, binaries[vendor], models[vendor], workspace,
-                                         args.user, args.home, prompt,
-                                         proof_name="proof.py", diagnostics=result)
+            try:
+                text, used_tool = run_native(vendor, binaries[vendor], models[vendor], workspace,
+                                             args.user, args.home, prompt,
+                                             proof_name="proof.py", diagnostics=result,
+                                             skill_name=name)
+            finally:
+                if vendor == "claude":
+                    result["claude_skill_proof_file"] = proof.is_file()
             has_proof = proof.is_file()
             answer_issue = skill_answer_issue(text, challenge, skill)
             valid_answer = answer_issue is None

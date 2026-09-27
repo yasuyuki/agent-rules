@@ -10,7 +10,7 @@ import unittest
 from urllib.parse import urlsplit
 from unittest.mock import patch
 
-from native_e2e import (SCENARIO, answer, claude_structure_diagnostics,
+from native_e2e import (SCENARIO, answer, claude_skill_diagnostics, claude_structure_diagnostics,
                         claude_terminal_issue,
                         codex_command_diagnostics, codex_tool_probe, codex_wire_metadata,
                         command, decode_events,
@@ -189,6 +189,37 @@ class NativeResultTests(unittest.TestCase):
         self.assertTrue(success)
         self.assertTrue(used_tool)
         self.assertTrue(answer(text, "fresh", "skill", "SKILL_good"))
+
+    def test_claude_skill_diagnostics_keep_only_boundary_shapes(self):
+        skill = "e2e-probe-example"
+        events = [
+            {"type": "system", "subtype": "init", "slash_commands": [skill]},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "one", "name": "Skill",
+                 "input": {"skill": skill, "secret": "SECRET"}},
+                {"type": "tool_use", "id": "two", "name": "Read",
+                 "input": {"file_path": f".claude/skills/{skill}/SKILL.md"}},
+                {"type": "tool_use", "id": "three", "name": "Bash",
+                 "input": {"command": "python3 proof.py --challenge SECRET"}},
+            ]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "one", "content": "SECRET"},
+                {"type": "tool_result", "tool_use_id": "two", "content": "SECRET"},
+                {"type": "tool_result", "tool_use_id": "three", "is_error": True,
+                 "content": "SECRET"},
+            ]}},
+            {"type": "result", "subtype": "success", "result": "SECRET not JSON"},
+        ]
+        diagnostics = claude_skill_diagnostics("\n".join(map(json.dumps, events)), skill)
+        shape = diagnostics["claude_skill_events"]
+        self.assertTrue(shape["discovery_listed"])
+        self.assertTrue(shape["skill_invocation_result_ok"])
+        self.assertTrue(shape["skill_read_result_ok"])
+        self.assertTrue(shape["proof_bash_call"])
+        self.assertFalse(shape["proof_bash_result_ok"])
+        self.assertFalse(shape["terminal_json_object"])
+        self.assertEqual(shape["tool_error_kinds"], ["Bash"])
+        self.assertNotIn("SECRET", json.dumps(diagnostics))
 
     def test_negative_rule_diagnostics_do_not_expose_response(self):
         self.assertIsNone(negative_rule_issue('{"challenge":"fresh"}', "fresh", False))
