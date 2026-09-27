@@ -61,6 +61,10 @@ exact file contents without retaining the raw transcript. A failure stops the
 cell before placement. Earlier probes with the bundled Lite/code-mode catalog
 and standard Responses with `tool_mode=null` completed without command events;
 their failed run artifacts remain the evidence for those configurations.
+If the CLI probe fails, the same isolated test user makes a separate bounded
+Responses API function-call diagnostic with the dedicated key. Only HTTP status,
+response status, and whether the declared function was called are retained.
+That API result never counts as native CLI loading or tool completion.
 Recheck the selected mode when updating Codex CLI or the model.
 The setup checks access to both pinned models through the
 [Claude](https://platform.claude.com/docs/en/api/http/models/retrieve) and
