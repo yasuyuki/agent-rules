@@ -52,9 +52,9 @@ class NativeResultTests(unittest.TestCase):
         payload = {"model": "gpt-6-luna", "stream": True,
                    "input": [{"type": "message", "content": "private prompt"},
                              {"type": "function_call_output", "call_id": "private call",
-                              "output": "unsupported call: private result"}], "tools": [
+                              "output": "Chunk ID: private result\nProcess exited with code 1\nOutput:\npython3: cannot write file: not found"}], "tools": [
                        {"type": "function", "name": "exec_command", "description": "private tool body"}]}
-        event = b'event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"function_call","name":"exec_command","namespace":"functions","call_id":"call-1","arguments":"{\\"cmd\\":\\"python3 private output\\"}"}}\n\n'
+        event = b'event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"function_call","name":"exec_command","namespace":"functions","call_id":"call-1","arguments":"{\\"cmd\\":\\"python3 private output\\",\\"workdir\\":\\"/tmp/consumer\\"}"}}\n\n'
 
         class FakeUpstream:
             status = 200
@@ -78,7 +78,7 @@ class NativeResultTests(unittest.TestCase):
 
         with patch.dict(os.environ, {"OPENAI_API_KEY": secret}), \
                 patch("native_e2e.urllib.request.build_opener", return_value=FakeOpener()):
-            with codex_wire_metadata() as (base_url, calls):
+            with codex_wire_metadata(Path("/tmp/consumer")) as (base_url, calls):
                 parsed = urlsplit(base_url)
                 connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=3)
                 connection.request("POST", "/v1/responses", body=json.dumps(payload),
@@ -92,12 +92,16 @@ class NativeResultTests(unittest.TestCase):
         self.assertEqual(calls[0]["response_tool_names"], ["exec_command"])
         self.assertEqual(calls[0]["input_item_types"], ["function_call_output", "message"])
         self.assertEqual(calls[0]["input_function_call_output_count"], 1)
-        self.assertEqual(calls[0]["input_function_call_output_classes"], ["unsupported_call"])
-        self.assertEqual(calls[0]["input_function_call_output_signals"], [["unsupported", "call"]])
+        self.assertEqual(calls[0]["input_function_call_output_classes"], ["process_output"])
+        self.assertEqual(calls[0]["input_function_call_exit_codes"], [1])
+        self.assertEqual(calls[0]["input_function_call_output_signals"],
+                         [["process", "output", "python3", "cannot", "write", "file", "not", "found"]])
         self.assertEqual(calls[0]["response_call_shapes"], [{
             "name": "exec_command", "namespace": "functions", "call_id_present": True,
-            "arguments_json_object": True, "argument_keys": ["cmd"],
-            "cmd_is_string": True, "cmd_mentions_python3": True}])
+            "arguments_json_object": True, "argument_keys": ["cmd", "workdir"],
+            "cmd_is_string": True, "cmd_mentions_python3": True,
+            "cmd_starts_python3_c": False, "cmd_has_write_text": False,
+            "workdir_matches_workspace": True}])
         self.assertTrue(calls[0]["auth_matches_test_key"])
         for sensitive in (secret, "private prompt", "private result", "private call", "private tool body", "private output"):
             self.assertNotIn(sensitive, json.dumps(calls))
