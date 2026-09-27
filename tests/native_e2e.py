@@ -47,9 +47,59 @@ def codex_wire_metadata():
         def log_message(self, *_args):
             pass  # Never log a URL, header, request body, or model output.
 
+        def do_GET(self):
+            self._forward_auxiliary("GET")
+
+        def _forward_auxiliary(self, method: str):
+            path_kind = ("responses_child" if self.path.startswith("/v1/responses/")
+                         else "models" if self.path.startswith("/v1/models/") else "other")
+            metadata = {"auxiliary_method": method, "path_kind": path_kind,
+                        "response_http_status": None}
+            calls.append(metadata)
+            if path_kind == "other":
+                metadata["response_http_status"] = 404
+                self.send_error(404)
+                return
+            if not hmac.compare_digest(self.headers.get("Authorization", ""),
+                                       "Bearer " + os.environ.get("OPENAI_API_KEY", "")):
+                metadata["response_http_status"] = 403
+                self.send_error(403)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length < 0 or length > 2_000_000:
+                    raise ValueError("invalid auxiliary request length")
+                body = self.rfile.read(length) if length else None
+                headers = {key: value for key, value in self.headers.items()
+                           if key.lower() not in ("host", "content-length", "accept-encoding",
+                                                   "connection", "transfer-encoding")}
+                headers["Accept-Encoding"] = "identity"
+                request = urllib.request.Request("https://api.openai.com" + self.path,
+                                                 data=body, headers=headers, method=method)
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with opener.open(request, timeout=150) as upstream:
+                    metadata["response_http_status"] = upstream.status
+                    self.send_response(upstream.status)
+                    self.send_header("Content-Type", upstream.headers.get("Content-Type", "application/json"))
+                    self.send_header("Transfer-Encoding", "chunked")
+                    self.end_headers()
+                    while chunk := upstream.read(8192):
+                        self.wfile.write(f"{len(chunk):x}\r\n".encode("ascii") + chunk + b"\r\n")
+                    self.wfile.write(b"0\r\n\r\n")
+            except urllib.error.HTTPError as exc:
+                metadata["response_http_status"] = exc.code
+                body = exc.read()
+                self.send_response(exc.code)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as exc:
+                metadata["relay_error_class"] = type(exc).__name__
+                self.send_error(502)
+
         def do_POST(self):
             if self.path != "/v1/responses":
-                self.send_error(404)
+                self._forward_auxiliary("POST")
                 return
             try:
                 length = int(self.headers.get("Content-Length", ""))
