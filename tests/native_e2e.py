@@ -60,6 +60,9 @@ def codex_wire_metadata():
                 tools = request.get("tools", [])
                 if not isinstance(tools, list):
                     raise ValueError("invalid tools")
+                input_items = request.get("input", [])
+                if not isinstance(input_items, list):
+                    raise ValueError("invalid input")
                 authorized = hmac.compare_digest(
                     self.headers.get("Authorization", ""),
                     "Bearer " + os.environ.get("OPENAI_API_KEY", ""))
@@ -71,6 +74,11 @@ def codex_wire_metadata():
                                       _safe_wire_name(item.get("name")))
                                      for item in tools if isinstance(item, dict)}),
                     "tool_choice": _safe_wire_name(request.get("tool_choice")),
+                    "input_item_types": sorted({_safe_wire_name(item.get("type"))
+                                                for item in input_items if isinstance(item, dict)}),
+                    "input_function_call_output_count": sum(
+                        item.get("type") == "function_call_output"
+                        for item in input_items if isinstance(item, dict)),
                     "stream": request.get("stream") is True,
                     "response_http_status": None,
                     "response_event_types": [],
@@ -127,6 +135,8 @@ def codex_wire_metadata():
                                                     parsed = None
                                                 call_shapes.append({
                                                     "name": _safe_wire_name(item.get("name")),
+                                                    "namespace": _safe_wire_name(item.get("namespace"))
+                                                    if item.get("namespace") is not None else None,
                                                     "call_id_present": isinstance(item.get("call_id"), str),
                                                     "arguments_json_object": isinstance(parsed, dict),
                                                     "argument_keys": sorted(_safe_wire_name(key)
