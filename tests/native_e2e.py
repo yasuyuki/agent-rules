@@ -24,6 +24,7 @@ import time
 import threading
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 
 
 FIXTURE = Path(__file__).parent / "fixtures/native-e2e"
@@ -51,9 +52,13 @@ def codex_wire_metadata():
             self._forward_auxiliary("GET")
 
         def _forward_auxiliary(self, method: str):
-            path_kind = ("responses_child" if self.path.startswith("/v1/responses/")
-                         else "models" if self.path.startswith("/v1/models/") else "other")
+            path = urlsplit(self.path).path
+            resource = path.split("/")[2] if len(path.split("/")) > 2 else ""
+            path_kind = ("responses" if path == "/v1/responses" or path.startswith("/v1/responses/")
+                         else "models" if path == "/v1/models" or path.startswith("/v1/models/")
+                         else "other")
             metadata = {"auxiliary_method": method, "path_kind": path_kind,
+                        "known_resource": resource if resource in ("responses", "models", "files", "threads") else "other",
                         "response_http_status": None}
             calls.append(metadata)
             if path_kind == "other":
