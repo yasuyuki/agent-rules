@@ -419,7 +419,13 @@ def main() -> int:
             result["phase"] = "preplacement-tool-codex"
             catalog_config = args.home / ".codex" / "config.toml"
             catalog_path = args.home / ".codex" / "native-e2e-models.json"
-            if catalog_config.exists() or not catalog_path.is_file():
+            profile_check = subprocess.run(
+                ["sudo", "-n", "-u", args.user, "test", "!", "-e", str(catalog_config)],
+                capture_output=True)
+            catalog_check = subprocess.run(
+                ["sudo", "-n", "-u", args.user, "test", "-f", str(catalog_path)],
+                capture_output=True)
+            if profile_check.returncode or catalog_check.returncode:
                 raise RuntimeError("Codex isolated catalog setup changed")
             probes = result["codex_tool_probes"] = {}
             result["codex_catalog_configs"] = {
@@ -427,7 +433,12 @@ def main() -> int:
                 "standard_responses": {"use_responses_lite": False, "tool_mode": None}}
             probes["bundled"] = codex_tool_probe(
                 binaries["codex"], models["codex"], workspace, args.user, args.home)
-            catalog_config.write_text(f'model_catalog_json = "{catalog_path}"\n')
+            configured = subprocess.run(
+                ["sudo", "-n", "-u", args.user, "tee", str(catalog_config)],
+                input=f'model_catalog_json = "{catalog_path}"\n',
+                capture_output=True, text=True)
+            if configured.returncode:
+                raise RuntimeError("could not select isolated Codex catalog override")
             probes["standard_responses"] = codex_tool_probe(
                 binaries["codex"], models["codex"], workspace, args.user, args.home)
             if not any(probe["passed"] for probe in probes.values()):
@@ -435,7 +446,11 @@ def main() -> int:
             selected = "bundled" if probes["bundled"]["passed"] else "standard_responses"
             result["codex_catalog_selected"] = selected
             if selected == "bundled":
-                catalog_config.unlink()
+                removed = subprocess.run(
+                    ["sudo", "-n", "-u", args.user, "rm", "--", str(catalog_config)],
+                    capture_output=True)
+                if removed.returncode:
+                    raise RuntimeError("could not restore bundled Codex catalog")
         rule_dir = source / "rules"
         skill_dir = source / "skills" / name
         rule_dir.mkdir(parents=True)
