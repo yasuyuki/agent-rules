@@ -7,6 +7,9 @@ This is intentionally separate from the authentication-free package gate.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import hmac
 import json
 import os
 from pathlib import Path
@@ -18,12 +21,123 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
+import urllib.error
+import urllib.request
 
 
 FIXTURE = Path(__file__).parent / "fixtures/native-e2e"
 TARGET = {"claude": "claudecode", "codex": "codexcli", "agy": "codexcli", "cursor": "cursor"}
 SECRET = {"claude": "ANTHROPIC_API_KEY", "codex": "OPENAI_API_KEY", "agy": "GEMINI_API_KEY", "cursor": "CURSOR_API_KEY"}
 SCENARIO = {"pair": ("claude", "codex"), "all": tuple(TARGET)}
+
+
+def _safe_wire_name(value: object) -> str:
+    return value if isinstance(value, str) and re.fullmatch(r"[a-z_]{1,48}", value) else "other"
+
+
+@contextmanager
+def codex_wire_metadata():
+    """Forward a real authenticated Responses call; retain only fixed-shape metadata."""
+    calls: list[dict[str, object]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass  # Never log a URL, header, request body, or model output.
+
+        def do_POST(self):
+            if self.path != "/v1/responses":
+                self.send_error(404)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", ""))
+                if length <= 0 or length > 2_000_000:
+                    raise ValueError("invalid request length")
+                body = self.rfile.read(length)
+                request = json.loads(body)
+                tools = request.get("tools", [])
+                if not isinstance(tools, list):
+                    raise ValueError("invalid tools")
+                authorized = hmac.compare_digest(
+                    self.headers.get("Authorization", ""),
+                    "Bearer " + os.environ.get("OPENAI_API_KEY", ""))
+                metadata = {
+                    "auth_matches_test_key": authorized,
+                    "model_is_pinned": request.get("model") == "gpt-6-luna",
+                    "tool_count": len(tools),
+                    "tools": sorted({(_safe_wire_name(item.get("type")),
+                                      _safe_wire_name(item.get("name")))
+                                     for item in tools if isinstance(item, dict)}),
+                    "tool_choice": _safe_wire_name(request.get("tool_choice")),
+                    "stream": request.get("stream") is True,
+                    "response_http_status": None,
+                    "response_event_types": [],
+                    "response_item_types": [],
+                    "response_tool_names": [],
+                }
+                calls.append(metadata)
+                if not authorized:
+                    metadata["response_http_status"] = 403
+                    self.send_error(403)
+                    return
+                headers = {key: value for key, value in self.headers.items()
+                           if key.lower() not in ("host", "content-length", "accept-encoding",
+                                                   "connection", "transfer-encoding")}
+                headers["Accept-Encoding"] = "identity"
+                upstream_request = urllib.request.Request(
+                    "https://api.openai.com/v1/responses", data=body, headers=headers, method="POST")
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with opener.open(upstream_request, timeout=150) as upstream:
+                    metadata["response_http_status"] = upstream.status
+                    self.send_response(upstream.status)
+                    self.send_header("Content-Type", upstream.headers.get("Content-Type", "text/event-stream"))
+                    self.end_headers()
+                    event_types, item_types, tool_names = set(), set(), set()
+                    try:
+                        for line in upstream:
+                            if line.startswith(b"event: "):
+                                event_types.add(_safe_wire_name(line[7:].strip().decode("ascii", "ignore").replace(".", "_")))
+                            elif line.startswith(b"data: "):
+                                try:
+                                    event = json.loads(line[6:])
+                                    item = event.get("item", {})
+                                    if isinstance(item, dict):
+                                        item_types.add(_safe_wire_name(item.get("type")))
+                                        if item.get("type") in ("function_call", "custom_tool_call"):
+                                            tool_names.add(_safe_wire_name(item.get("name")))
+                                except (ValueError, TypeError):
+                                    pass
+                            self.wfile.write(line)
+                    finally:
+                        metadata["response_event_types"] = sorted(event_types)
+                        metadata["response_item_types"] = sorted(item_types)
+                        metadata["response_tool_names"] = sorted(tool_names)
+            except urllib.error.HTTPError as exc:
+                if calls:
+                    calls[-1]["response_http_status"] = exc.code
+                try:
+                    self.send_response(exc.code)
+                    self.end_headers()
+                    self.wfile.write(exc.read())
+                except OSError:
+                    pass
+            except Exception as exc:
+                # The exception can contain a request URL or headers. Keep only its class.
+                calls.append({"relay_error_class": type(exc).__name__})
+                try:
+                    self.send_error(502)
+                except OSError:
+                    pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/v1", calls
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 class EvidenceUnavailable(RuntimeError):
@@ -254,7 +368,7 @@ def codex_command_diagnostics(stdout: str, proof_name: str) -> dict[str, object]
 
 
 def command(vendor: str, cli: Path, model: str, workspace: Path, prompt: str,
-            proof_name: str | None = None) -> list[str]:
+            proof_name: str | None = None, api_base_url: str | None = None) -> list[str]:
     if vendor == "claude":
         base = [str(cli), "-p", "--output-format", "stream-json", "--verbose", "--model", model,
                 "--max-turns", "5"]
@@ -265,7 +379,10 @@ def command(vendor: str, cli: Path, model: str, workspace: Path, prompt: str,
         return [*base, prompt, "--tools", "Skill,Read,Bash",
                 "--allowedTools", "Skill,Read,Bash(python3 *)"]
     if vendor == "codex":
-        argv = [str(cli), "--ask-for-approval", "never", "exec", "--json", "--ephemeral",
+        argv = [str(cli), "--ask-for-approval", "never"]
+        if api_base_url is not None:
+            argv += ["-c", f'openai_base_url="{api_base_url}"']
+        argv += ["exec", "--json", "--ephemeral",
                 "--sandbox", "workspace-write", "-C", str(workspace),
                 "-m", model]
         return [*argv, prompt]
@@ -281,7 +398,8 @@ def command(vendor: str, cli: Path, model: str, workspace: Path, prompt: str,
 def run_native(vendor: str, cli: Path, model: str, workspace: Path, user: str,
                home: Path, prompt: str, timeout: int = 150,
                proof_name: str | None = None,
-               diagnostics: dict | None = None) -> tuple[str, bool]:
+               diagnostics: dict | None = None,
+               api_base_url: str | None = None) -> tuple[str, bool]:
     node = shutil.which("node")
     if not node:
         raise RuntimeError("Node.js is required for native CLI execution")
@@ -291,7 +409,7 @@ def run_native(vendor: str, cli: Path, model: str, workspace: Path, user: str,
         env["AGY_CLI_DISABLE_AUTO_UPDATE"] = "true"
     argv = ["sudo", "-n", f"--preserve-env={SECRET[vendor]}", "-u", user, "env",
             *[f"{key}={value}" for key, value in env.items()],
-            *command(vendor, cli, model, workspace, prompt, proof_name)]
+            *command(vendor, cli, model, workspace, prompt, proof_name, api_base_url)]
     proc = subprocess.Popen(argv, cwd=workspace, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, start_new_session=True)
@@ -337,7 +455,7 @@ def codex_skill_listed(cli: Path, workspace: Path, user: str, home: Path, name: 
 
 
 def codex_tool_probe(cli: Path, model: str, workspace: Path, user: str,
-                     home: Path) -> dict[str, object]:
+                     home: Path, api_base_url: str | None = None) -> dict[str, object]:
     """Prove a fresh, pre-placement CLI turn executed Python and wrote a file."""
     challenge = secrets.token_hex(16)
     proof = workspace / f"tool-probe-{secrets.token_hex(8)}.txt"
@@ -351,7 +469,8 @@ def codex_tool_probe(cli: Path, model: str, workspace: Path, user: str,
     diagnostics: dict[str, object] = {}
     try:
         run_native("codex", cli, model, workspace, user, home, prompt,
-                   proof_name=proof.name, diagnostics=diagnostics)
+                   proof_name=proof.name, diagnostics=diagnostics,
+                   api_base_url=api_base_url)
     except (RuntimeError, EvidenceUnavailable, ValueError) as exc:
         diagnostics["probe_exception"] = type(exc).__name__
     diagnostics["file_matches"] = (
@@ -451,8 +570,11 @@ def main() -> int:
                 raise RuntimeError("could not select isolated Codex catalog override")
             result["codex_catalog_configs"] = {
                 "standard_responses": {"use_responses_lite": False, "tool_mode": None}}
-            probe = codex_tool_probe(
-                binaries["codex"], models["codex"], workspace, args.user, args.home)
+            with codex_wire_metadata() as (api_base_url, wire_calls):
+                probe = codex_tool_probe(
+                    binaries["codex"], models["codex"], workspace, args.user, args.home,
+                    api_base_url=api_base_url)
+            result["codex_wire_metadata"] = wire_calls
             result["codex_tool_probes"] = {"standard_responses": probe}
             if not probe["passed"]:
                 raise RuntimeError("Codex pre-placement Python tool execution failed with standard Responses")
