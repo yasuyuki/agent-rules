@@ -221,7 +221,8 @@ def _allowed(target: str, rel: str, global_mode: bool = False) -> bool:
         return rel.startswith(".cursor/skills/") or (not global_mode and rel.startswith(".cursor/rules/"))
     if target == "antigravity-cli":
         if global_mode:
-            return rel == ".gemini/GEMINI.md" or rel.startswith(".gemini/antigravity-cli/skills/")
+            # GEMINI.md stays listed only so earlier manifests can retire it.
+            return rel == ".gemini/GEMINI.md" or rel.startswith(".gemini/config/rules/") or rel.startswith(".gemini/antigravity-cli/skills/")
         return rel == "AGENTS.md" or rel.startswith(".agents/skills/")
     if target == "codexcli":
         rule = ".codex/AGENTS.md" if global_mode else "AGENTS.md"
@@ -244,16 +245,71 @@ def _combine(combined: dict[str, tuple[bytes, int]], rel: str, value: tuple[byte
     combined[rel] = value
 
 
+def _rule_targets(text: str) -> list[str]:
+    """Read `targets` from Rulesync rule frontmatter; absent means every target."""
+    if not text.startswith("---\n") or "\n---\n" not in text:
+        return ["*"]
+    header = text[4:text.index("\n---\n")].split("\n")
+    for index, line in enumerate(header):
+        if not line.startswith("targets:"):
+            continue
+        value = line[len("targets:"):].strip()
+        if value.startswith("[") and value.endswith("]"):
+            return [item.strip().strip("\"'") for item in value[1:-1].split(",") if item.strip()]
+        if value:
+            return [value.strip("\"'")]
+        items = []
+        for item in header[index + 1:]:
+            if not item.lstrip().startswith("- "):
+                break
+            items.append(item.lstrip()[2:].strip().strip("\"'"))
+        return items
+    return ["*"]
+
+
+def _antigravity_global_rules(config: dict) -> dict[str, tuple[bytes, int]]:
+    """Place agy user rules as separate always-on files.
+
+    agy keeps only the first 24,000 bytes of ~/.gemini/GEMINI.md, the single
+    global rule file Rulesync 16.39.1 writes, but loads each always-on file in
+    ~/.gemini/config/rules/ separately.
+    """
+    placed: dict[str, tuple[bytes, int]] = {}
+    for root in config["_roots"]:
+        rules = root / "rules"
+        if not rules.is_dir():
+            continue
+        for source in sorted(rules.glob("*.md")):
+            text = source.read_text(encoding="utf-8").replace("\r\n", "\n")
+            targets = _rule_targets(text)
+            if "antigravity-cli" not in targets and "*" not in targets:
+                continue
+            body = text.split("\n---\n", 1)[1] if text.startswith("---\n") and "\n---\n" in text else text
+            rel = ".gemini/config/rules/" + source.name
+            if rel in placed:
+                raise BackendError(f"duplicate agy global rule name: {source.name}")
+            data = ("---\ntrigger: always_on\n---\n" + body.lstrip("\n")).encode("utf-8")
+            placed[rel] = (data, stat.S_IMODE(source.stat().st_mode) & 0o777)
+    return placed
+
+
 def _generate(config: dict, executable: str) -> dict[str, tuple[bytes, int]]:
     combined: dict[str, tuple[bytes, int]] = {}
     with tempfile.TemporaryDirectory(prefix="rulesync-backend-") as temp:
         temp_root = Path(temp)
         for target in config["targets"]:
+            features = config["features"]
+            if target == "antigravity-cli" and config["global"] and "rules" in features:
+                for rel, value in _antigravity_global_rules(config).items():
+                    _combine(combined, rel, value)
+                features = [feature for feature in features if feature != "rules"]
+                if not features:
+                    continue
             stage = temp_root / target / "out"
             home = temp_root / target / "home"
             stage.mkdir(parents=True)
             home.mkdir()
-            cmd = ["generate", "--targets", target, "--features", ",".join(config["features"]), "--input-roots", *map(str, config["_roots"]), "--output-roots", str(stage), "--silent"]
+            cmd = ["generate", "--targets", target, "--features", ",".join(features), "--input-roots", *map(str, config["_roots"]), "--output-roots", str(stage), "--silent"]
             if config["global"]:
                 cmd.append("--global")
             # Preserve only process essentials; redirect every known tool home so

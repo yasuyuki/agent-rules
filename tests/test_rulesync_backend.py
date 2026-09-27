@@ -116,7 +116,7 @@ class RulesyncBackendTest(unittest.TestCase):
         self.assertTrue((self.root / 'global-out/.cursor/skills/demo/SKILL.md').is_file())
         self.assertFalse((self.root / 'global-out/.cursor/rules').exists())
 
-    def test_antigravity_project_shares_codex_output_and_global_uses_gemini_home(self):
+    def test_antigravity_project_shares_codex_output_and_global_uses_config_rules(self):
         data = json.loads(self.config.read_text())
         data['targets'] = ['codexcli', 'antigravity-cli']
         self.config.write_text(json.dumps(data))
@@ -128,11 +128,23 @@ class RulesyncBackendTest(unittest.TestCase):
         self.assertFalse((out / '.gemini').exists())
         self.assertTrue(backend.check(self.config, str(RULESYNC)))
         (self.src / 'rules/a.md').write_text('---\nroot: true\ntargets: ["antigravity-cli"]\n---\n# Global\n')
+        (self.src / 'rules/b.md').write_text('---\nroot: true\ntargets: ["codexcli"]\n---\n# Codex only\n')
+        (self.src / 'rules/c.md').write_text('---\nroot: true\ntargets:\n  - codexcli\n  - antigravity-cli\n---\n# Listed\n')
         data.update(targets=['antigravity-cli'], output_root='global-out', **{'global': True})
         self.config.write_text(json.dumps(data))
-        self.assertTrue(self.apply())
         home = self.root / 'global-out'
-        self.assertIn('Global', (home / '.gemini/GEMINI.md').read_text())
+        # A manifest from the single-file layout owns GEMINI.md; apply retires it.
+        gemini = home / '.gemini/GEMINI.md'
+        gemini.parent.mkdir(parents=True)
+        gemini.write_text('# Old\n')
+        (home / backend.MANIFEST).write_text(json.dumps({'version': 1, 'files': [{
+            'path': '.gemini/GEMINI.md', 'sha256': backend._digest(gemini.read_bytes()),
+            'mode': gemini.stat().st_mode & 0o777}]}))
+        self.assertTrue(self.apply())
+        self.assertFalse(gemini.exists())
+        self.assertEqual((home / '.gemini/config/rules/a.md').read_text(), '---\ntrigger: always_on\n---\n# Global\n')
+        self.assertIn('# Listed', (home / '.gemini/config/rules/c.md').read_text())
+        self.assertFalse((home / '.gemini/config/rules/b.md').exists())
         self.assertTrue((home / '.gemini/antigravity-cli/skills/demo/reference.md').is_file())
         self.assertFalse(self.apply())
         self.assertTrue(backend.check(self.config, str(RULESYNC)))

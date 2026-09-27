@@ -57,9 +57,12 @@ Use `cursor: {alwaysApply: true}` in native rule frontmatter for always-on rules
 the canonical-policy exporter preserves that behavior and the policy summary.
 Cursor user scope supports skills only, not rules. In project scope agy reads
 shared `AGENTS.md` and `.agents/skills/`, so the existing `codexcli` output is
-enough. agy user scope needs the `antigravity-cli` target, limited to
-`.gemini/GEMINI.md` and `.gemini/antigravity-cli/skills/`; the exporter gives it
-root rules as it does for OpenCode. Combine all selected targets in one
+enough. agy user scope needs the `antigravity-cli` target. agy keeps only the
+first 24,000 bytes of `~/.gemini/GEMINI.md`, so the adapter does not use
+Rulesync's single global rule file: it places each input rule targeting
+`antigravity-cli` as its own always-on file in `.gemini/config/rules/`, and
+Rulesync generates only the skills in `.gemini/antigravity-cli/skills/`. An
+earlier owned `.gemini/GEMINI.md` is removed on the next apply. Combine all selected targets in one
 config per output root: that root has one ownership manifest.
 
 Rulesync generates each target in an isolated staging directory. Shared output
