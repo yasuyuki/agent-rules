@@ -78,6 +78,8 @@ for vendor in "${vendors[@]}"; do
       model=$claude_model
       ;;
     codex)
+      sudo apt-get update -qq
+      sudo apt-get install -y -qq bubblewrap
       npm install --global --prefix "$tools_root/npm" @openai/codex@0.157.1
       cli="$tools_root/npm/bin/codex"
       expected='codex-cli 0.157.1'
