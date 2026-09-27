@@ -370,64 +370,6 @@ def codex_tool_probe(cli: Path, model: str, workspace: Path, user: str,
     return diagnostics
 
 
-CODEX_API_FUNCTION_SCRIPT = r"""
-import json
-import os
-import sys
-import urllib.error
-import urllib.request
-
-model = sys.argv[1]
-tool = {"type": "function", "name": "write_probe",
-        "description": "Record a diagnostic integer.",
-        "parameters": {"type": "object", "properties": {"value": {"type": "integer"}},
-                       "required": ["value"], "additionalProperties": False},
-        "strict": True}
-
-def call(choice):
-    payload = {"model": model, "input": "Call write_probe with value 7.",
-               "tools": [tool], "tool_choice": choice, "max_output_tokens": 512}
-    request = urllib.request.Request(
-        "https://api.openai.com/v1/responses", data=json.dumps(payload).encode(),
-        headers={"Authorization": "Bearer " + os.environ["OPENAI_API_KEY"],
-                 "Content-Type": "application/json"}, method="POST")
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            data = json.load(response)
-            status = response.status
-    except urllib.error.HTTPError as error:
-        return {"http_status": error.code}
-    except (urllib.error.URLError, TimeoutError):
-        return {"transport": "failed"}
-    output = data.get("output", [])
-    return {"http_status": status,
-            "response_status": data.get("status") if data.get("status") in
-                               ("completed", "incomplete", "failed") else "other",
-            "function_called": any(isinstance(item, dict) and
-                                   item.get("type") == "function_call" and
-                                   item.get("name") == "write_probe" for item in output)}
-
-print(json.dumps({"auto": call("auto"), "required": call("required")}))
-"""
-
-
-def codex_api_function_probe(model: str, user: str) -> dict[str, object]:
-    """Separate API diagnostic; never substitute it for native CLI tool evidence."""
-    try:
-        process = subprocess.run(
-            ["sudo", "-n", "--preserve-env=OPENAI_API_KEY", "-u", user,
-             "python3", "-c", CODEX_API_FUNCTION_SCRIPT, model],
-            capture_output=True, text=True, timeout=75)
-        if process.returncode:
-            return {"status": "unavailable", "exit_code": process.returncode}
-        value = json.loads(process.stdout)
-        if not isinstance(value, dict) or set(value) != {"auto", "required"}:
-            return {"status": "unavailable", "reason": "unexpected_shape"}
-        return value
-    except (subprocess.TimeoutExpired, ValueError):
-        return {"status": "unavailable", "reason": "timeout_or_parse"}
-
-
 def main() -> int:
     started = time.monotonic()
     parser = argparse.ArgumentParser()
@@ -492,7 +434,7 @@ def main() -> int:
         if "codex" in vendors:
             result["phase"] = "preplacement-tool-codex"
             catalog_config = args.home / ".codex" / "config.toml"
-            catalog_path = args.home / ".codex" / "native-e2e-direct-models.json"
+            catalog_path = args.home / ".codex" / "native-e2e-models.json"
             profile_check = subprocess.run(
                 ["sudo", "-n", "-u", args.user, "test", "!", "-e", str(catalog_config)],
                 capture_output=True)
@@ -508,15 +450,13 @@ def main() -> int:
             if configured.returncode:
                 raise RuntimeError("could not select isolated Codex catalog override")
             result["codex_catalog_configs"] = {
-                "explicit_direct": {"use_responses_lite": False, "tool_mode": "direct"}}
+                "standard_responses": {"use_responses_lite": False, "tool_mode": None}}
             probe = codex_tool_probe(
                 binaries["codex"], models["codex"], workspace, args.user, args.home)
-            result["codex_tool_probes"] = {"explicit_direct": probe}
+            result["codex_tool_probes"] = {"standard_responses": probe}
             if not probe["passed"]:
-                result["codex_api_function_probe"] = codex_api_function_probe(
-                    models["codex"], args.user)
-                raise RuntimeError("Codex pre-placement Python tool execution failed with explicit direct tools")
-            result["codex_catalog_selected"] = "explicit_direct"
+                raise RuntimeError("Codex pre-placement Python tool execution failed with standard Responses")
+            result["codex_catalog_selected"] = "standard_responses"
         rule_dir = source / "rules"
         skill_dir = source / "skills" / name
         rule_dir.mkdir(parents=True)

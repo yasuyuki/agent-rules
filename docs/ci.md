@@ -53,18 +53,14 @@ Claude consumes its key from the environment; Codex performs noninteractive
 API-key login in the isolated profile. The environment and branch policy are
 already created, and both key names are registered as environment secrets.
 For the pinned `gpt-6-luna` CLI probe, setup derives a test-only model catalog
-from the installed Codex binary with standard Responses and explicit `direct`
-tool mode. Before placing a rule or skill, a fresh Codex session in the
+from the installed Codex binary with standard Responses and `tool_mode=null`.
+Before placing a rule or skill, a fresh Codex session in the
 isolated user, profile, workspace, and sandbox must run Python to write a
 challenge file. The result records completed command events, exit codes, and
 exact file contents without retaining the raw transcript. A failure stops the
 cell before placement. Earlier probes with the bundled Lite/code-mode catalog
-and standard Responses with `tool_mode=null` completed without command events;
-their failed run artifacts remain the evidence for those configurations.
-If the CLI probe fails, the same isolated test user makes a separate bounded
-Responses API function-call diagnostic with the dedicated key. Only HTTP status,
-response status, and whether the declared function was called are retained.
-That API result never counts as native CLI loading or tool completion.
+and explicit `tool_mode=direct` also completed without command events; their
+failed run artifacts remain the evidence for those configurations.
 Recheck the selected mode when updating Codex CLI or the model.
 The setup checks access to both pinned models through the
 [Claude](https://platform.claude.com/docs/en/api/http/models/retrieve) and

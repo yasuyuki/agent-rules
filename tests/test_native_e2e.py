@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from native_e2e import (CODEX_API_FUNCTION_SCRIPT, SCENARIO, answer, claude_structure_diagnostics,
+from native_e2e import (SCENARIO, answer, claude_structure_diagnostics,
                         claude_terminal_issue,
                         codex_command_diagnostics, codex_tool_probe, command, decode_events,
                         negative_rule_issue, skill_answer_issue)
@@ -247,9 +247,6 @@ class NativeResultTests(unittest.TestCase):
                 result = codex_tool_probe(Path("/codex"), "gpt-6-luna", workspace,
                                           "native-e2e", Path("/home/native-e2e"))
             self.assertFalse(result["passed"])
-
-    def test_separate_api_diagnostic_script_is_valid_python(self):
-        compile(CODEX_API_FUNCTION_SCRIPT, "<api-function-probe>", "exec")
 
     def test_agy_requires_successful_terminal_and_matching_tool(self):
         events = [
