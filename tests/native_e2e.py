@@ -36,51 +36,8 @@ def _safe_wire_name(value: object) -> str:
     return value if isinstance(value, str) and re.fullmatch(r"[a-z_]{1,48}", value) else "other"
 
 
-def _tool_output_class(value: object) -> str:
-    """Classify a CLI tool result without retaining its text or arguments."""
-    if not isinstance(value, str):
-        return "non_text"
-    prefixes = (
-        ("unsupported call:", "unsupported_call"),
-        ("failed to parse function arguments:", "invalid_arguments"),
-        ("unified exec is unavailable in this session", "unified_exec_unavailable"),
-        ("TTY execution is disabled by config", "tty_disabled"),
-        ("exec_command failed:", "exec_failed"),
-        ("approval policy is", "approval_rejected"),
-        ("tool exec_command invoked with incompatible payload", "incompatible_payload"),
-    )
-    if value.startswith("Chunk ID: ") and "\nProcess exited with code " in value:
-        return "process_output"
-    return next((kind for prefix, kind in prefixes if value.startswith(prefix)), "other")
-
-
-def _tool_output_exit_code(value: object) -> int | None:
-    if not isinstance(value, str) or not value.startswith("Chunk ID: "):
-        return None
-    match = re.search(r"^Process exited with code ([0-9]{1,3})$", value, re.MULTILINE)
-    return int(match.group(1)) if match else None
-
-
-def _tool_output_signals(value: object) -> list[str]:
-    if not isinstance(value, str):
-        return []
-    allowed = {"error", "failed", "parse", "parsing", "function", "call", "unrecognized",
-               "unsupported", "tool", "name", "exec_command", "response", "output",
-               "command", "execution", "execute", "unavailable", "permission", "sandbox",
-               "policy", "rejected", "invalid", "arguments", "argument", "missing",
-               "required", "unexpected", "session", "environment", "file", "directory",
-               "path", "process", "spawn", "timed", "out", "status", "not", "found",
-               "read", "write", "model", "provider", "event", "python3", "python",
-               "syntax", "traceback", "nameerror", "filenotfounderror", "errno", "no",
-               "such", "could", "cannot", "open", "module", "import", "relative",
-               "parent", "cwd", "workdir", "shell", "bash", "sh", "write_text",
-               "oserror", "denied", "permitted", "readonly", "only", "git",
-               "repository", "literal", "unmatched", "unterminated"}
-    return [word for word in re.findall(r"[a-z_][a-z_0-9]*", value.lower()) if word in allowed][:20]
-
-
 @contextmanager
-def codex_wire_metadata(workspace: Path):
+def codex_wire_metadata():
     """Forward a real authenticated Responses call; retain only fixed-shape metadata."""
     calls: list[dict[str, object]] = []
 
@@ -103,9 +60,6 @@ def codex_wire_metadata(workspace: Path):
                 tools = request.get("tools", [])
                 if not isinstance(tools, list):
                     raise ValueError("invalid tools")
-                input_items = request.get("input", [])
-                if not isinstance(input_items, list):
-                    raise ValueError("invalid input")
                 authorized = hmac.compare_digest(
                     self.headers.get("Authorization", ""),
                     "Bearer " + os.environ.get("OPENAI_API_KEY", ""))
@@ -117,20 +71,6 @@ def codex_wire_metadata(workspace: Path):
                                       _safe_wire_name(item.get("name")))
                                      for item in tools if isinstance(item, dict)}),
                     "tool_choice": _safe_wire_name(request.get("tool_choice")),
-                    "input_item_types": sorted({_safe_wire_name(item.get("type"))
-                                                for item in input_items if isinstance(item, dict)}),
-                    "input_function_call_output_count": sum(
-                        item.get("type") == "function_call_output"
-                        for item in input_items if isinstance(item, dict)),
-                    "input_function_call_output_classes": [
-                        _tool_output_class(item.get("output")) for item in input_items
-                        if isinstance(item, dict) and item.get("type") == "function_call_output"],
-                    "input_function_call_exit_codes": [
-                        _tool_output_exit_code(item.get("output")) for item in input_items
-                        if isinstance(item, dict) and item.get("type") == "function_call_output"],
-                    "input_function_call_output_signals": [
-                        _tool_output_signals(item.get("output")) for item in input_items
-                        if isinstance(item, dict) and item.get("type") == "function_call_output"],
                     "stream": request.get("stream") is True,
                     "response_http_status": None,
                     "response_event_types": [],
@@ -187,8 +127,6 @@ def codex_wire_metadata(workspace: Path):
                                                     parsed = None
                                                 call_shapes.append({
                                                     "name": _safe_wire_name(item.get("name")),
-                                                    "namespace": _safe_wire_name(item.get("namespace"))
-                                                    if item.get("namespace") is not None else None,
                                                     "call_id_present": isinstance(item.get("call_id"), str),
                                                     "arguments_json_object": isinstance(parsed, dict),
                                                     "argument_keys": sorted(_safe_wire_name(key)
@@ -198,14 +136,6 @@ def codex_wire_metadata(workspace: Path):
                                                     "cmd_mentions_python3": "python3" in parsed.get("cmd", "")
                                                     if isinstance(parsed, dict) and isinstance(parsed.get("cmd"), str)
                                                     else False,
-                                                    "cmd_starts_python3_c": parsed.get("cmd", "").startswith("python3 -c ")
-                                                    if isinstance(parsed, dict) and isinstance(parsed.get("cmd"), str)
-                                                    else False,
-                                                    "cmd_has_write_text": ".write_text(" in parsed.get("cmd", "")
-                                                    if isinstance(parsed, dict) and isinstance(parsed.get("cmd"), str)
-                                                    else False,
-                                                    "workdir_matches_workspace": parsed.get("workdir") == str(workspace)
-                                                    if isinstance(parsed, dict) else False,
                                                 })
                                 except (ValueError, TypeError):
                                     pass
@@ -701,7 +631,7 @@ def main() -> int:
                 raise RuntimeError("could not select isolated Codex catalog override")
             result["codex_catalog_configs"] = {
                 "standard_responses": {"use_responses_lite": False, "tool_mode": None}}
-            with codex_wire_metadata(workspace) as (api_base_url, wire_calls):
+            with codex_wire_metadata() as (api_base_url, wire_calls):
                 probe = codex_tool_probe(
                     binaries["codex"], models["codex"], workspace, args.user, args.home,
                     api_base_url=api_base_url)
