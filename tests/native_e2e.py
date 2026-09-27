@@ -324,6 +324,36 @@ def codex_skill_listed(cli: Path, workspace: Path, user: str, home: Path, name: 
     return f"- {name}:" in proc.stdout
 
 
+def codex_tool_probe(cli: Path, model: str, workspace: Path, user: str,
+                     home: Path) -> dict[str, object]:
+    """Prove a fresh, pre-placement CLI turn executed Python and wrote a file."""
+    challenge = secrets.token_hex(16)
+    proof = workspace / f"tool-probe-{secrets.token_hex(8)}.txt"
+    prompt = ("Use an available shell tool to run Python 3 in this workspace. "
+              f"Create {proof.name} containing exactly {challenge} followed by a newline. "
+              "Report completion after the command finishes.")
+    diagnostics: dict[str, object] = {}
+    try:
+        run_native("codex", cli, model, workspace, user, home, prompt,
+                   proof_name=proof.name, diagnostics=diagnostics)
+    except (RuntimeError, EvidenceUnavailable, ValueError) as exc:
+        diagnostics["probe_exception"] = type(exc).__name__
+    diagnostics["file_matches"] = (
+        not proof.is_symlink() and proof.is_file()
+        and proof.stat().st_size == len(challenge) + 1
+        and proof.read_text() == challenge + "\n")
+    diagnostics["tool_completed"] = (
+        diagnostics.get("codex_proof_exit_codes") == [0]
+        and diagnostics.get("codex_proof_command_attempted") is True
+        and diagnostics.get("codex_proof_command_failed") is False
+        and diagnostics.get("codex_proof_command_shape", {}).get("python3") is True
+        and diagnostics.get("codex_turn_completed") is True)
+    diagnostics["passed"] = diagnostics["tool_completed"] and diagnostics["file_matches"]
+    if proof.exists():
+        proof.unlink()
+    return diagnostics
+
+
 def main() -> int:
     started = time.monotonic()
     parser = argparse.ArgumentParser()
@@ -385,6 +415,27 @@ def main() -> int:
         if subprocess.run(["sudo", "-n", "-u", args.user, "sudo", "-n", "true"],
                           capture_output=True).returncode == 0:
             raise RuntimeError("probe user has sudo access")
+        if "codex" in vendors:
+            result["phase"] = "preplacement-tool-codex"
+            catalog_config = args.home / ".codex" / "config.toml"
+            catalog_path = args.home / ".codex" / "native-e2e-models.json"
+            if catalog_config.exists() or not catalog_path.is_file():
+                raise RuntimeError("Codex isolated catalog setup changed")
+            probes = result["codex_tool_probes"] = {}
+            result["codex_catalog_configs"] = {
+                "bundled": {"use_responses_lite": True, "tool_mode": "code_mode_only"},
+                "standard_responses": {"use_responses_lite": False, "tool_mode": None}}
+            probes["bundled"] = codex_tool_probe(
+                binaries["codex"], models["codex"], workspace, args.user, args.home)
+            catalog_config.write_text(f'model_catalog_json = "{catalog_path}"\n')
+            probes["standard_responses"] = codex_tool_probe(
+                binaries["codex"], models["codex"], workspace, args.user, args.home)
+            if not any(probe["passed"] for probe in probes.values()):
+                raise RuntimeError("Codex pre-placement Python tool execution failed in both catalogs")
+            selected = "bundled" if probes["bundled"]["passed"] else "standard_responses"
+            result["codex_catalog_selected"] = selected
+            if selected == "bundled":
+                catalog_config.unlink()
         rule_dir = source / "rules"
         skill_dir = source / "skills" / name
         rule_dir.mkdir(parents=True)
@@ -457,16 +508,6 @@ def main() -> int:
             if has_proof and valid_answer and not used_tool:
                 raise EvidenceUnavailable(f"{vendor} helper tool completion is not observable")
             if not used_tool or not has_proof or not valid_answer:
-                if vendor == "codex" and not result.get("codex_command_attempted"):
-                    try:
-                        _, smoke_tool = run_native(vendor, binaries[vendor], models[vendor],
-                                                   workspace, args.user, args.home,
-                                                   'Call the exec_command shell tool with command '
-                                                   'python3 --version before replying.',
-                                                   proof_name="python3")
-                        result["codex_shell_probe"] = "tool_ok" if smoke_tool else "no_tool"
-                    except Exception:
-                        result["codex_shell_probe"] = "error"
                 raise RuntimeError(f"{vendor} skill evidence: tool={used_tool}, "
                                    f"proof={has_proof}, terminal={valid_answer}, "
                                    f"terminal_issue={answer_issue}")

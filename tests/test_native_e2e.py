@@ -1,11 +1,14 @@
 """Negative controls for the structured native-result verifier (no model calls)."""
 import json
 from pathlib import Path
+import re
+import tempfile
 import unittest
+from unittest.mock import patch
 
 from native_e2e import (SCENARIO, answer, claude_structure_diagnostics,
                         claude_terminal_issue,
-                        codex_command_diagnostics, command, decode_events,
+                        codex_command_diagnostics, codex_tool_probe, command, decode_events,
                         negative_rule_issue, skill_answer_issue)
 
 
@@ -200,6 +203,36 @@ class NativeResultTests(unittest.TestCase):
         self.assertEqual(result["codex_proof_exit_codes"], [2])
         self.assertEqual(result["codex_proof_error_class"], "missing_path")
         self.assertNotIn("SECRET", str(result))
+
+    def test_codex_preplacement_probe_needs_command_completion_and_exact_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+
+            def native(_vendor, _cli, _model, _workspace, _user, _home, prompt,
+                       proof_name=None, diagnostics=None):
+                challenge = re.search(r"exactly ([0-9a-f]{32})", prompt).group(1)
+                (workspace / proof_name).write_text(challenge + "\n")
+                diagnostics.update(codex_proof_command_attempted=True,
+                                   codex_proof_command_failed=False,
+                                   codex_proof_command_shape={"python3": True},
+                                   codex_proof_exit_codes=[0], codex_turn_completed=True)
+                return "done", True
+
+            with patch("native_e2e.run_native", side_effect=native):
+                result = codex_tool_probe(Path("/codex"), "gpt-6-luna", workspace,
+                                          "native-e2e", Path("/home/native-e2e"))
+            self.assertTrue(result["passed"])
+            self.assertNotIn("challenge", str(result))
+
+            def no_tool(*args, **kwargs):
+                native(*args, **kwargs)
+                kwargs["diagnostics"]["codex_proof_command_attempted"] = False
+                return "done", False
+
+            with patch("native_e2e.run_native", side_effect=no_tool):
+                result = codex_tool_probe(Path("/codex"), "gpt-6-luna", workspace,
+                                          "native-e2e", Path("/home/native-e2e"))
+            self.assertFalse(result["passed"])
 
     def test_agy_requires_successful_terminal_and_matching_tool(self):
         events = [
