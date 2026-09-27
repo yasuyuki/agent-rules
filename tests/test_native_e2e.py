@@ -181,6 +181,10 @@ class NativeResultTests(unittest.TestCase):
         self.assertEqual(codex_command_diagnostics("\n".join(map(json.dumps, events)), "proof.py"),
                          {"codex_command_attempted": True,
                           "codex_item_types": ["agent_message", "command_execution"],
+                          "codex_file_change_started": False,
+                          "codex_file_change_completed": False,
+                          "codex_file_change_statuses": [],
+                          "codex_file_change_probe_path": False,
                           "codex_proof_command_attempted": True,
                           "codex_proof_command_failed": False,
                           "codex_proof_exit_codes": [0],
@@ -202,6 +206,16 @@ class NativeResultTests(unittest.TestCase):
         self.assertTrue(result["codex_proof_command_failed"])
         self.assertEqual(result["codex_proof_exit_codes"], [2])
         self.assertEqual(result["codex_proof_error_class"], "missing_path")
+        self.assertNotIn("SECRET", str(result))
+
+    def test_codex_file_change_diagnostics_hide_paths_and_content(self):
+        event = {"type": "item.completed", "item": {"type": "file_change",
+                 "status": "failed", "changes": [{"path": "/tmp/SECRET/probe.txt",
+                                                 "kind": "add", "diff": "SECRET"}]}}
+        result = codex_command_diagnostics(json.dumps(event), "probe.txt")
+        self.assertTrue(result["codex_file_change_completed"])
+        self.assertEqual(result["codex_file_change_statuses"], ["failed"])
+        self.assertTrue(result["codex_file_change_probe_path"])
         self.assertNotIn("SECRET", str(result))
 
     def test_codex_preplacement_probe_needs_command_completion_and_exact_file(self):
