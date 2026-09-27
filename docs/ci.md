@@ -38,7 +38,8 @@ The VM creates an unprivileged `native-e2e` account for the actual vendor CLI,
 keeps the fixture controller/source checkout unreadable to it, and retains the
 same consumer workspace and profile across fresh native processes. The job
 installs Claude Code and Codex CLI together for the daily `pair` cell; the
-weekly cron also runs each CLI-only cell. Antigravity and Cursor remain in the
+weekly cron also runs each CLI-only cell. Manual dispatch accepts `codex` for
+the Codex-only cell. Antigravity and Cursor remain in the
 full Issue #19 acceptance backlog, but are not installed or authenticated by
 this two-vendor pilot. It records sanitized JSON per cell.
 `tests/native_e2e.py` requires a successful structured terminal event, a
@@ -52,6 +53,9 @@ keys as *environment* secrets in GitHub, never in a repository file or a chat.
 Claude consumes its key from the environment; Codex performs noninteractive
 API-key login in the isolated profile. The environment and branch policy are
 already created, and both key names are registered as environment secrets.
+The Ubuntu 24.04 runner installs distribution `bubblewrap`, loads its AppArmor
+user-namespace profile, and checks sandbox startup as the isolated user before
+the authenticated Codex probe. It does not disable the host-wide restriction.
 For the pinned `gpt-6-luna` CLI probe, setup derives a test-only model catalog
 from the installed Codex binary with standard Responses and `tool_mode=null`.
 Before placing a rule or skill, a fresh Codex session in the

@@ -22,7 +22,7 @@ on:
         type: choice
         required: true
         default: daily
-        options: [daily, weekly]
+        options: [daily, weekly, codex]
 
 permissions:
   contents: read
@@ -41,7 +41,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        vendor: ${{ fromJSON((github.event.schedule == '47 19 * * 0' || inputs.matrix == 'weekly') && '["pair","claude","codex"]' || '["pair"]') }}
+        vendor: ${{ fromJSON(inputs.matrix == 'codex' && '["codex"]' || (github.event.schedule == '47 19 * * 0' || inputs.matrix == 'weekly') && '["pair","claude","codex"]' || '["pair"]') }}
     env:
       NATIVE_VENDOR: ${{ matrix.vendor }}
     steps:
