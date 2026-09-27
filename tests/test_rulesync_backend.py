@@ -116,6 +116,27 @@ class RulesyncBackendTest(unittest.TestCase):
         self.assertTrue((self.root / 'global-out/.cursor/skills/demo/SKILL.md').is_file())
         self.assertFalse((self.root / 'global-out/.cursor/rules').exists())
 
+    def test_antigravity_project_shares_codex_output_and_global_uses_gemini_home(self):
+        data = json.loads(self.config.read_text())
+        data['targets'] = ['codexcli', 'antigravity-cli']
+        self.config.write_text(json.dumps(data))
+        (self.src / 'rules/a.md').write_text('---\nroot: false\ntargets: ["codexcli"]\n---\n# Hello\n')
+        self.assertTrue(self.apply())
+        out = self.root / 'out'
+        self.assertIn('Hello', (out / 'AGENTS.md').read_text())
+        self.assertTrue((out / '.agents/skills/demo/SKILL.md').is_file())
+        self.assertFalse((out / '.gemini').exists())
+        self.assertTrue(backend.check(self.config, str(RULESYNC)))
+        (self.src / 'rules/a.md').write_text('---\nroot: true\ntargets: ["antigravity-cli"]\n---\n# Global\n')
+        data.update(targets=['antigravity-cli'], output_root='global-out', **{'global': True})
+        self.config.write_text(json.dumps(data))
+        self.assertTrue(self.apply())
+        home = self.root / 'global-out'
+        self.assertIn('Global', (home / '.gemini/GEMINI.md').read_text())
+        self.assertTrue((home / '.gemini/antigravity-cli/skills/demo/reference.md').is_file())
+        self.assertFalse(self.apply())
+        self.assertTrue(backend.check(self.config, str(RULESYNC)))
+
     def test_rejects_unowned_file_and_same_name_skill(self):
         out = self.root / "out"
         (out / "AGENTS.md").parent.mkdir(parents=True)

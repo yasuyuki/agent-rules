@@ -55,16 +55,18 @@ Only rules and skills are managed; permissions, hooks, MCP and ignores are not.
 Cursor project output is limited to `.cursor/rules/` and `.cursor/skills/`.
 Use `cursor: {alwaysApply: true}` in native rule frontmatter for always-on rules;
 the canonical-policy exporter preserves that behavior and the policy summary.
-Cursor user scope supports skills only, not rules. Consumers of shared project
-`AGENTS.md` and `.agents/skills/`, such as agy, can use the existing `codexcli`
-output without a second target or writer. Combine all selected targets in one
+Cursor user scope supports skills only, not rules. In project scope agy reads
+shared `AGENTS.md` and `.agents/skills/`, so the existing `codexcli` output is
+enough. agy user scope needs the `antigravity-cli` target, limited to
+`.gemini/GEMINI.md` and `.gemini/antigravity-cli/skills/`; the exporter gives it
+root rules as it does for OpenCode. Combine all selected targets in one
 config per output root: that root has one ownership manifest.
 
 Rulesync generates each target in an isolated staging directory. Shared output
 paths must have identical contents across targets; conflicting `AGENTS.md`
 content is rejected rather than resolved by target order. Use identical shared
 policy for Codex, Grok, and OpenCode, with Claude-specific fragments separately targeted.
-For a collocated project, only one target generates shared `AGENTS.md` (Codex, then Grok, then OpenCode); the others read it and generate their own skills. OpenCode input rules must use `root: true`: its managed project surface is only `AGENTS.md` and `.opencode/skills/`, while user scope is only `.config/opencode/AGENTS.md` and `.config/opencode/skills/`. The adapter rejects `opencode.json`, `opencode.jsonc`, memories, and all other OpenCode settings, which remain owned by the machine configuration. Claude uses `.claude/rules/`. A root
+For a collocated project, only one target generates shared `AGENTS.md` (Codex, then Grok, then OpenCode, then agy); the others read it and generate their own skills. OpenCode input rules must use `root: true`: its managed project surface is only `AGENTS.md` and `.opencode/skills/`, while user scope is only `.config/opencode/AGENTS.md` and `.config/opencode/skills/`. The adapter rejects `opencode.json`, `opencode.jsonc`, memories, and all other OpenCode settings, which remain owned by the machine configuration. Claude uses `.claude/rules/`. A root
 `CLAUDE.md` would also be read by Grok and duplicate common policy, so do not
 select that shape for this collocated consumer set. Grok also discovers
 `.claude/rules/` by default. Its machine configuration owner must explicitly
