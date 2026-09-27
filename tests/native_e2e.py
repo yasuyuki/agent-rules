@@ -192,6 +192,9 @@ def codex_command_diagnostics(stdout: str, proof_name: str) -> dict[str, object]
     items = [event.get("item", {}) for event in events
              if event.get("type") in ("item.started", "item.completed")]
     commands = [item for item in items if item.get("type") == "command_execution"]
+    file_changes = [(event.get("type"), event.get("item", {})) for event in events
+                    if event.get("type") in ("item.started", "item.completed")
+                    and event.get("item", {}).get("type") == "file_change"]
     proof_commands = [item for item in commands if proof_name in str(item.get("command", ""))]
     completed_proof = [item for item in proof_commands if isinstance(item.get("exit_code"), int)]
     command_text = "\n".join(str(item.get("command", "")) for item in proof_commands)
@@ -219,6 +222,15 @@ def codex_command_diagnostics(stdout: str, proof_name: str) -> dict[str, object]
         terminal_is_json = False
     return {"codex_command_attempted": bool(commands),
             "codex_item_types": safe_types,
+            "codex_file_change_started": any(phase == "item.started" for phase, _ in file_changes),
+            "codex_file_change_completed": any(phase == "item.completed" for phase, _ in file_changes),
+            "codex_file_change_statuses": sorted({
+                item.get("status") if item.get("status") in ("completed", "failed", "in_progress")
+                else "other" for _, item in file_changes}),
+            "codex_file_change_probe_path": any(
+                proof_name == Path(change.get("path", "")).name
+                for _, item in file_changes for change in item.get("changes", [])
+                if isinstance(change, dict) and isinstance(change.get("path"), str)),
             "codex_proof_command_attempted": bool(proof_commands),
             "codex_proof_command_failed": any(
                 item.get("status") == "failed" or
@@ -329,9 +341,13 @@ def codex_tool_probe(cli: Path, model: str, workspace: Path, user: str,
     """Prove a fresh, pre-placement CLI turn executed Python and wrote a file."""
     challenge = secrets.token_hex(16)
     proof = workspace / f"tool-probe-{secrets.token_hex(8)}.txt"
-    prompt = ("Use an available shell tool to run Python 3 in this workspace. "
-              f"Create {proof.name} containing exactly {challenge} followed by a newline. "
-              "Report completion after the command finishes.")
+    python_command = ("python3 -c 'from pathlib import Path; "
+                      f'Path("{proof.name}").write_text({json.dumps(challenge + chr(10))})' + "'")
+    prompt = ("This checks execution, so use an available shell-capable tool to run "
+              "the following Python 3 command. A patch or file-editing tool alone "
+              "does not satisfy this check. "
+              f"{python_command}\nThe file must contain exactly {challenge} followed "
+              "by a newline. Wait for command completion before replying.")
     diagnostics: dict[str, object] = {}
     try:
         run_native("codex", cli, model, workspace, user, home, prompt,
