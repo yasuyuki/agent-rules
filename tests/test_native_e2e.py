@@ -52,7 +52,7 @@ class NativeResultTests(unittest.TestCase):
         payload = {"model": "gpt-6-luna", "stream": True,
                    "input": "private prompt", "tools": [
                        {"type": "function", "name": "exec_command", "description": "private tool body"}]}
-        event = b'event: response.output_item.added\ndata: {"item":{"type":"function_call","name":"exec_command","arguments":"private output"}}\n\n'
+        event = b'event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"function_call","name":"exec_command","call_id":"call-1","arguments":"{\\"cmd\\":\\"python3 private output\\"}"}}\n\n'
 
         class FakeUpstream:
             status = 200
@@ -88,6 +88,10 @@ class NativeResultTests(unittest.TestCase):
         self.assertEqual(calls[0]["tool_count"], 1)
         self.assertEqual(calls[0]["tools"], [("function", "exec_command")])
         self.assertEqual(calls[0]["response_tool_names"], ["exec_command"])
+        self.assertEqual(calls[0]["response_call_shapes"], [{
+            "name": "exec_command", "call_id_present": True,
+            "arguments_json_object": True, "argument_keys": ["cmd"],
+            "cmd_is_string": True, "cmd_mentions_python3": True}])
         self.assertTrue(calls[0]["auth_matches_test_key"])
         for sensitive in (secret, "private prompt", "private tool body", "private output"):
             self.assertNotIn(sensitive, json.dumps(calls))
@@ -234,6 +238,9 @@ class NativeResultTests(unittest.TestCase):
         self.assertEqual(codex_command_diagnostics("\n".join(map(json.dumps, events)), "proof.py"),
                          {"codex_command_attempted": True,
                           "codex_item_types": ["agent_message", "command_execution"],
+                          "codex_error_event_count": 0,
+                          "codex_error_signals": [],
+                          "codex_stderr_signals": [],
                           "codex_file_change_started": False,
                           "codex_file_change_completed": False,
                           "codex_file_change_statuses": [],
