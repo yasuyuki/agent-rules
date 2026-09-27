@@ -50,9 +50,11 @@ class NativeResultTests(unittest.TestCase):
     def test_codex_wire_relay_keeps_only_safe_tool_metadata(self):
         secret = "secret-test-token"
         payload = {"model": "gpt-6-luna", "stream": True,
-                   "input": "private prompt", "tools": [
+                   "input": [{"type": "message", "content": "private prompt"},
+                             {"type": "function_call_output", "call_id": "private call",
+                              "output": "private result"}], "tools": [
                        {"type": "function", "name": "exec_command", "description": "private tool body"}]}
-        event = b'event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"function_call","name":"exec_command","call_id":"call-1","arguments":"{\\"cmd\\":\\"python3 private output\\"}"}}\n\n'
+        event = b'event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"function_call","name":"exec_command","namespace":"functions","call_id":"call-1","arguments":"{\\"cmd\\":\\"python3 private output\\"}"}}\n\n'
 
         class FakeUpstream:
             status = 200
@@ -70,7 +72,7 @@ class NativeResultTests(unittest.TestCase):
         class FakeOpener:
             def open(self, request, timeout):
                 self_request = json.loads(request.data)
-                assert self_request["input"] == "private prompt"
+                assert self_request["input"] == payload["input"]
                 assert request.get_header("Authorization") == "Bearer " + secret
                 return FakeUpstream()
 
@@ -88,12 +90,14 @@ class NativeResultTests(unittest.TestCase):
         self.assertEqual(calls[0]["tool_count"], 1)
         self.assertEqual(calls[0]["tools"], [("function", "exec_command")])
         self.assertEqual(calls[0]["response_tool_names"], ["exec_command"])
+        self.assertEqual(calls[0]["input_item_types"], ["function_call_output", "message"])
+        self.assertEqual(calls[0]["input_function_call_output_count"], 1)
         self.assertEqual(calls[0]["response_call_shapes"], [{
-            "name": "exec_command", "call_id_present": True,
+            "name": "exec_command", "namespace": "functions", "call_id_present": True,
             "arguments_json_object": True, "argument_keys": ["cmd"],
             "cmd_is_string": True, "cmd_mentions_python3": True}])
         self.assertTrue(calls[0]["auth_matches_test_key"])
-        for sensitive in (secret, "private prompt", "private tool body", "private output"):
+        for sensitive in (secret, "private prompt", "private result", "private call", "private tool body", "private output"):
             self.assertNotIn(sensitive, json.dumps(calls))
         argv = command("codex", Path("/tmp/codex"), "gpt-6-luna",
                        Path("/tmp/consumer"), "probe", api_base_url=base_url)
