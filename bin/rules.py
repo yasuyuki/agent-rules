@@ -289,7 +289,7 @@ def export_sources(sources, destination, targets, exclude_ids=(), global_mode=Fa
                       "grokcli" if "grokcli" in shared_targets else
                       "opencode" if "opencode" in shared_targets else
                       "antigravity-cli" if "antigravity-cli" in shared_targets else None)
-            common_targets = [target for target in active if target in ("codexcli", "claudecode", "cursor")]
+            common_targets = [target for target in active if target in (("codexcli", "claudecode", "cursor", "antigravity-cli") if not global_mode else ("codexcli", "claudecode", "cursor"))]
             body = "# " + meta["title"] + "\n\n" + common.strip()
             if common_targets:
                 emit("-00", common_targets, body)
@@ -297,7 +297,7 @@ def export_sources(sources, destination, targets, exclude_ids=(), global_mode=Fa
                 emit("-00-grok", ["grokcli"], body, root_rule=True)
             if "opencode" in shared_targets and (global_mode or writer == "opencode"):
                 emit("-00-opencode", ["opencode"], body, root_rule=True)
-            if "antigravity-cli" in shared_targets and (global_mode or writer == "antigravity-cli"):
+            if "antigravity-cli" in shared_targets and global_mode:
                 emit("-00-agy", ["antigravity-cli"], body, root_rule=True)
             shared_body = "\n\n".join(bindings[tool].strip() for tool in shared if tool in bindings)
             if writer and shared_body:

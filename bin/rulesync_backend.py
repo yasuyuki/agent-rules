@@ -222,7 +222,7 @@ def _allowed(target: str, rel: str, global_mode: bool = False) -> bool:
     if target == "antigravity-cli":
         if global_mode:
             return rel == ".gemini/GEMINI.md" or rel.startswith(".gemini/antigravity-cli/skills/")
-        return rel == "AGENTS.md" or rel.startswith(".agents/skills/")
+        return rel == "AGENTS.md" or rel.startswith(".agents/rules/") or rel.startswith(".agents/skills/")
     if target == "codexcli":
         rule = ".codex/AGENTS.md" if global_mode else "AGENTS.md"
         return rel == rule or rel.startswith(".agents/skills/")

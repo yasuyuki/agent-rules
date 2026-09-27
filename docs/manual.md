@@ -55,12 +55,13 @@ Only rules and skills are managed; permissions, hooks, MCP and ignores are not.
 Cursor project output is limited to `.cursor/rules/` and `.cursor/skills/`.
 Use `cursor: {alwaysApply: true}` in native rule frontmatter for always-on rules;
 the canonical-policy exporter preserves that behavior and the policy summary.
-Cursor user scope supports skills only, not rules. In project scope agy reads
-shared `AGENTS.md` and `.agents/skills/`, so the existing `codexcli` output is
-enough. agy user scope needs the `antigravity-cli` target, limited to
-`.gemini/GEMINI.md` and `.gemini/antigravity-cli/skills/`; the exporter gives it
-root rules as it does for OpenCode. Combine all selected targets in one
-config per output root: that root has one ownership manifest.
+Cursor user scope supports skills only, not rules. In project scope agy
+supports non-root rules in `.agents/rules/` alongside `.agents/skills/` and
+`AGENTS.md`, avoiding the 24,000-byte single-file truncation limit; the exporter
+targets `antigravity-cli` for non-root rules with TOON pointers in `AGENTS.md`.
+agy user scope uses `.gemini/GEMINI.md` and `.gemini/antigravity-cli/skills/`.
+Combine all selected targets in one config per output root: that root has one
+ownership manifest.
 
 Rulesync generates each target in an isolated staging directory. Shared output
 paths must have identical contents across targets; conflicting `AGENTS.md`

@@ -75,7 +75,7 @@ class ExportTests(unittest.TestCase):
             self.assertEqual(names,['example-00-grok.md','example-00-opencode.md','example-00.md','example-01-grok.md','example-01-opencode.md','example-01-shared.md'])
             self.assertTrue(all('root: true' in (global_dest/'rules'/name).read_text() for name in ['example-00-grok.md','example-00-opencode.md','example-01-grok.md','example-01-opencode.md']))
 
-    def test_antigravity_uses_shared_writer_in_project_and_own_root_rules_globally(self):
+    def test_antigravity_exports_non_root_rules_in_project_and_own_root_rules_globally(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary); source=root/'input'; source.mkdir()
             payload='---\nid: example\ntitle: Example\nsummary: Example\n---\nCOMMON\n<!-- binding: codex -->\nCODEX\n<!-- binding: agy -->\nAGY\n'
@@ -83,12 +83,14 @@ class ExportTests(unittest.TestCase):
             project=root/'project'
             rules.export_sources([source],project,['codexcli','antigravity-cli'])
             self.assertEqual(sorted(p.name for p in (project/'rules').iterdir()),['example-00.md','example-01-shared.md'])
-            self.assertFalse(any('antigravity-cli' in p.read_text() for p in (project/'rules').iterdir()))
+            self.assertIn('antigravity-cli', (project/'rules'/'example-00.md').read_text())
+            self.assertIn('root: false', (project/'rules'/'example-00.md').read_text())
             only=root/'agy-only'
             rules.export_sources([source],only,['antigravity-cli'])
             only_rules=sorted((only/'rules').iterdir())
-            self.assertEqual([p.name for p in only_rules],['example-00-agy.md','example-01-shared.md'])
-            self.assertTrue(all('root: true' in p.read_text() and '["antigravity-cli"]' in p.read_text() for p in only_rules))
+            self.assertEqual([p.name for p in only_rules],['example-00.md','example-01-shared.md'])
+            self.assertIn('root: false', (only/'rules'/'example-00.md').read_text())
+            self.assertIn('root: true', (only/'rules'/'example-01-shared.md').read_text())
             global_dest=root/'global'
             rules.export_sources([source],global_dest,['codexcli','antigravity-cli'],global_mode=True)
             agy=[(global_dest/'rules'/name).read_text() for name in ['example-00-agy.md','example-01-agy.md']]

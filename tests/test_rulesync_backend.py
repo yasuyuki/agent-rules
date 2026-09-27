@@ -137,6 +137,21 @@ class RulesyncBackendTest(unittest.TestCase):
         self.assertFalse(self.apply())
         self.assertTrue(backend.check(self.config, str(RULESYNC)))
 
+    def test_antigravity_project_emits_non_root_rules(self):
+        data = json.loads(self.config.read_text())
+        data['targets'] = ['antigravity-cli']
+        self.config.write_text(json.dumps(data))
+        (self.src / 'rules/a.md').write_text('---\nroot: false\ntargets: ["antigravity-cli"]\n---\n# Rule A\n')
+        (self.src / 'rules/shared.md').write_text('---\nroot: true\ntargets: ["antigravity-cli"]\n---\n# Shared Root\n')
+        self.assertTrue(self.apply())
+        out = self.root / 'out'
+        self.assertTrue((out / '.agents/rules/a.md').is_file())
+        self.assertIn('Rule A', (out / '.agents/rules/a.md').read_text())
+        self.assertTrue((out / 'AGENTS.md').is_file())
+        self.assertIn('@.agents/rules/a.md', (out / 'AGENTS.md').read_text())
+        self.assertTrue((out / '.agents/skills/demo/SKILL.md').is_file())
+        self.assertTrue(backend.check(self.config, str(RULESYNC)))
+
     def test_rejects_unowned_file_and_same_name_skill(self):
         out = self.root / "out"
         (out / "AGENTS.md").parent.mkdir(parents=True)
