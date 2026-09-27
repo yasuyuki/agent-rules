@@ -434,7 +434,7 @@ def main() -> int:
         if "codex" in vendors:
             result["phase"] = "preplacement-tool-codex"
             catalog_config = args.home / ".codex" / "config.toml"
-            catalog_path = args.home / ".codex" / "native-e2e-models.json"
+            catalog_path = args.home / ".codex" / "native-e2e-direct-models.json"
             profile_check = subprocess.run(
                 ["sudo", "-n", "-u", args.user, "test", "!", "-e", str(catalog_config)],
                 capture_output=True)
@@ -443,30 +443,20 @@ def main() -> int:
                 capture_output=True)
             if profile_check.returncode or catalog_check.returncode:
                 raise RuntimeError("Codex isolated catalog setup changed")
-            probes = result["codex_tool_probes"] = {}
-            result["codex_catalog_configs"] = {
-                "bundled": {"use_responses_lite": True, "tool_mode": "code_mode_only"},
-                "standard_responses": {"use_responses_lite": False, "tool_mode": None}}
-            probes["bundled"] = codex_tool_probe(
-                binaries["codex"], models["codex"], workspace, args.user, args.home)
             configured = subprocess.run(
                 ["sudo", "-n", "-u", args.user, "tee", str(catalog_config)],
                 input=f'model_catalog_json = "{catalog_path}"\n',
                 capture_output=True, text=True)
             if configured.returncode:
                 raise RuntimeError("could not select isolated Codex catalog override")
-            probes["standard_responses"] = codex_tool_probe(
+            result["codex_catalog_configs"] = {
+                "explicit_direct": {"use_responses_lite": False, "tool_mode": "direct"}}
+            probe = codex_tool_probe(
                 binaries["codex"], models["codex"], workspace, args.user, args.home)
-            if not any(probe["passed"] for probe in probes.values()):
-                raise RuntimeError("Codex pre-placement Python tool execution failed in both catalogs")
-            selected = "bundled" if probes["bundled"]["passed"] else "standard_responses"
-            result["codex_catalog_selected"] = selected
-            if selected == "bundled":
-                removed = subprocess.run(
-                    ["sudo", "-n", "-u", args.user, "rm", "--", str(catalog_config)],
-                    capture_output=True)
-                if removed.returncode:
-                    raise RuntimeError("could not restore bundled Codex catalog")
+            result["codex_tool_probes"] = {"explicit_direct": probe}
+            if not probe["passed"]:
+                raise RuntimeError("Codex pre-placement Python tool execution failed with explicit direct tools")
+            result["codex_catalog_selected"] = "explicit_direct"
         rule_dir = source / "rules"
         skill_dir = source / "skills" / name
         rule_dir.mkdir(parents=True)
