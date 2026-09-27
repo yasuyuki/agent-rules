@@ -74,6 +74,7 @@ def codex_wire_metadata():
                     "response_event_types": [],
                     "response_item_types": [],
                     "response_tool_names": [],
+                    "response_call_shapes": [],
                 }
                 calls.append(metadata)
                 if not authorized:
@@ -93,6 +94,7 @@ def codex_wire_metadata():
                     self.send_header("Content-Type", upstream.headers.get("Content-Type", "text/event-stream"))
                     self.end_headers()
                     event_types, item_types, tool_names = set(), set(), set()
+                    call_shapes = []
                     try:
                         for line in upstream:
                             if line.startswith(b"event: "):
@@ -105,6 +107,24 @@ def codex_wire_metadata():
                                         item_types.add(_safe_wire_name(item.get("type")))
                                         if item.get("type") in ("function_call", "custom_tool_call"):
                                             tool_names.add(_safe_wire_name(item.get("name")))
+                                            if event.get("type") == "response.output_item.done":
+                                                arguments = item.get("arguments")
+                                                try:
+                                                    parsed = json.loads(arguments)
+                                                except (TypeError, ValueError):
+                                                    parsed = None
+                                                call_shapes.append({
+                                                    "name": _safe_wire_name(item.get("name")),
+                                                    "call_id_present": isinstance(item.get("call_id"), str),
+                                                    "arguments_json_object": isinstance(parsed, dict),
+                                                    "argument_keys": sorted(_safe_wire_name(key)
+                                                                            for key in parsed) if isinstance(parsed, dict) else [],
+                                                    "cmd_is_string": isinstance(parsed.get("cmd"), str)
+                                                    if isinstance(parsed, dict) else False,
+                                                    "cmd_mentions_python3": "python3" in parsed.get("cmd", "")
+                                                    if isinstance(parsed, dict) and isinstance(parsed.get("cmd"), str)
+                                                    else False,
+                                                })
                                 except (ValueError, TypeError):
                                     pass
                             self.wfile.write(line)
@@ -112,6 +132,7 @@ def codex_wire_metadata():
                         metadata["response_event_types"] = sorted(event_types)
                         metadata["response_item_types"] = sorted(item_types)
                         metadata["response_tool_names"] = sorted(tool_names)
+                        metadata["response_call_shapes"] = call_shapes
             except urllib.error.HTTPError as exc:
                 if calls:
                     calls[-1]["response_http_status"] = exc.code
@@ -300,7 +321,7 @@ def claude_structure_diagnostics(stdout: str) -> dict[str, bool]:
             "claude_terminal_mentions_challenge": isinstance(raw, str) and "challenge" in raw.lower()}
 
 
-def codex_command_diagnostics(stdout: str, proof_name: str) -> dict[str, object]:
+def codex_command_diagnostics(stdout: str, proof_name: str, stderr: str = "") -> dict[str, object]:
     """Report command activity without retaining commands or their output."""
     events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
     items = [event.get("item", {}) for event in events
@@ -326,6 +347,12 @@ def codex_command_diagnostics(stdout: str, proof_name: str) -> dict[str, object]
     messages = [item.get("text", "") for item in items if item.get("type") == "agent_message"
                 and isinstance(item.get("text"), str)]
     terminal = messages[-1] if messages else ""
+    errors = [event.get("message", "") for event in events if event.get("type") == "error"]
+    error_text = " ".join(value for value in errors if isinstance(value, str)).lower()
+    stderr_text = stderr.lower()
+    signals = ("tool", "function", "parse", "decode", "invalid", "schema", "sandbox",
+               "permission", "network", "connection", "stream", "http", "missing",
+               "unsupported", "timeout", "failed", "call", "api", "response", "request")
     item_types = {item.get("type") for item in items}
     safe_types = sorted({value if isinstance(value, str) and
                          re.fullmatch(r"[a-z_]{1,40}", value) else "other"
@@ -336,6 +363,9 @@ def codex_command_diagnostics(stdout: str, proof_name: str) -> dict[str, object]
         terminal_is_json = False
     return {"codex_command_attempted": bool(commands),
             "codex_item_types": safe_types,
+            "codex_error_event_count": len(errors),
+            "codex_error_signals": sorted(signal for signal in signals if signal in error_text),
+            "codex_stderr_signals": sorted(signal for signal in signals if signal in stderr_text),
             "codex_file_change_started": any(phase == "item.started" for phase, _ in file_changes),
             "codex_file_change_completed": any(phase == "item.completed" for phase, _ in file_changes),
             "codex_file_change_statuses": sorted({
@@ -414,7 +444,7 @@ def run_native(vendor: str, cli: Path, model: str, workspace: Path, user: str,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, start_new_session=True)
     try:
-        stdout, _ = proc.communicate(timeout=timeout)
+        stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         os.killpg(proc.pid, signal.SIGKILL)
         proc.communicate()
@@ -424,7 +454,7 @@ def run_native(vendor: str, cli: Path, model: str, workspace: Path, user: str,
     if vendor == "claude" and proof_name is None and diagnostics is not None:
         diagnostics.update(claude_structure_diagnostics(stdout))
     if vendor == "codex" and proof_name is not None and diagnostics is not None:
-        diagnostics.update(codex_command_diagnostics(stdout, proof_name))
+        diagnostics.update(codex_command_diagnostics(stdout, proof_name, stderr))
     try:
         text, success, used_tool = decode_events(vendor, stdout, proof_name)
     except ValueError as exc:
