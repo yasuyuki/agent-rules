@@ -52,6 +52,19 @@ def _tool_output_class(value: object) -> str:
     return next((kind for prefix, kind in prefixes if value.startswith(prefix)), "other")
 
 
+def _tool_output_signals(value: object) -> list[str]:
+    if not isinstance(value, str):
+        return []
+    allowed = {"error", "failed", "parse", "parsing", "function", "call", "unrecognized",
+               "unsupported", "tool", "name", "exec_command", "response", "output",
+               "command", "execution", "execute", "unavailable", "permission", "sandbox",
+               "policy", "rejected", "invalid", "arguments", "argument", "missing",
+               "required", "unexpected", "session", "environment", "file", "directory",
+               "path", "process", "spawn", "timed", "out", "status", "not", "found",
+               "read", "write", "model", "provider", "event"}
+    return [word for word in re.findall(r"[a-z_]+", value.lower()) if word in allowed][:20]
+
+
 @contextmanager
 def codex_wire_metadata():
     """Forward a real authenticated Responses call; retain only fixed-shape metadata."""
@@ -97,6 +110,9 @@ def codex_wire_metadata():
                         for item in input_items if isinstance(item, dict)),
                     "input_function_call_output_classes": [
                         _tool_output_class(item.get("output")) for item in input_items
+                        if isinstance(item, dict) and item.get("type") == "function_call_output"],
+                    "input_function_call_output_signals": [
+                        _tool_output_signals(item.get("output")) for item in input_items
                         if isinstance(item, dict) and item.get("type") == "function_call_output"],
                     "stream": request.get("stream") is True,
                     "response_http_status": None,

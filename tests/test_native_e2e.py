@@ -93,6 +93,7 @@ class NativeResultTests(unittest.TestCase):
         self.assertEqual(calls[0]["input_item_types"], ["function_call_output", "message"])
         self.assertEqual(calls[0]["input_function_call_output_count"], 1)
         self.assertEqual(calls[0]["input_function_call_output_classes"], ["unsupported_call"])
+        self.assertEqual(calls[0]["input_function_call_output_signals"], [["unsupported", "call"]])
         self.assertEqual(calls[0]["response_call_shapes"], [{
             "name": "exec_command", "namespace": "functions", "call_id_present": True,
             "arguments_json_object": True, "argument_keys": ["cmd"],
