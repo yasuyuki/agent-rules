@@ -23,7 +23,7 @@ VERSION = "16.39.1"
 MANIFEST = ".rulesync-ownership.json"
 JOURNAL = ".rulesync-transaction.json"
 LOCK = ".rulesync-transaction.lock"
-TARGETS = {"codexcli", "claudecode", "grokcli", "opencode", "cursor"}
+TARGETS = {"codexcli", "claudecode", "grokcli", "opencode", "cursor", "antigravity-cli"}
 FEATURES = {"rules", "skills"}
 
 
@@ -126,7 +126,7 @@ def _load_config(config_path: str | Path) -> dict:
     if not isinstance(raw["input_roots"], list) or not raw["input_roots"] or not all(isinstance(x, str) for x in raw["input_roots"]):
         raise BackendError("input_roots must be a non-empty array of paths")
     if not isinstance(raw["targets"], list) or not raw["targets"] or not all(isinstance(x, str) for x in raw["targets"]) or set(raw["targets"]) - TARGETS:
-        raise BackendError("targets must be a non-empty subset of codexcli, claudecode, grokcli, opencode, cursor")
+        raise BackendError("targets must be a non-empty subset of codexcli, claudecode, grokcli, opencode, cursor, antigravity-cli")
     if not isinstance(raw["features"], list) or not raw["features"] or not all(isinstance(x, str) for x in raw["features"]) or set(raw["features"]) - FEATURES:
         raise BackendError("features must be a non-empty subset of rules, skills")
     if not isinstance(raw["output_root"], str) or not isinstance(raw["global"], bool):
@@ -219,6 +219,10 @@ def _tool_command(executable: str, args: list[str]) -> list[str]:
 def _allowed(target: str, rel: str, global_mode: bool = False) -> bool:
     if target == "cursor":
         return rel.startswith(".cursor/skills/") or (not global_mode and rel.startswith(".cursor/rules/"))
+    if target == "antigravity-cli":
+        if global_mode:
+            return rel == ".gemini/GEMINI.md" or rel.startswith(".gemini/antigravity-cli/skills/")
+        return rel == "AGENTS.md" or rel.startswith(".agents/skills/")
     if target == "codexcli":
         rule = ".codex/AGENTS.md" if global_mode else "AGENTS.md"
         return rel == rule or rel.startswith(".agents/skills/")
