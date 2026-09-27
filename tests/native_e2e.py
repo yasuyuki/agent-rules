@@ -36,6 +36,22 @@ def _safe_wire_name(value: object) -> str:
     return value if isinstance(value, str) and re.fullmatch(r"[a-z_]{1,48}", value) else "other"
 
 
+def _tool_output_class(value: object) -> str:
+    """Classify a CLI tool result without retaining its text or arguments."""
+    if not isinstance(value, str):
+        return "non_text"
+    prefixes = (
+        ("unsupported call:", "unsupported_call"),
+        ("failed to parse function arguments:", "invalid_arguments"),
+        ("unified exec is unavailable in this session", "unified_exec_unavailable"),
+        ("TTY execution is disabled by config", "tty_disabled"),
+        ("exec_command failed:", "exec_failed"),
+        ("approval policy is", "approval_rejected"),
+        ("tool exec_command invoked with incompatible payload", "incompatible_payload"),
+    )
+    return next((kind for prefix, kind in prefixes if value.startswith(prefix)), "other")
+
+
 @contextmanager
 def codex_wire_metadata():
     """Forward a real authenticated Responses call; retain only fixed-shape metadata."""
@@ -79,6 +95,9 @@ def codex_wire_metadata():
                     "input_function_call_output_count": sum(
                         item.get("type") == "function_call_output"
                         for item in input_items if isinstance(item, dict)),
+                    "input_function_call_output_classes": [
+                        _tool_output_class(item.get("output")) for item in input_items
+                        if isinstance(item, dict) and item.get("type") == "function_call_output"],
                     "stream": request.get("stream") is True,
                     "response_http_status": None,
                     "response_event_types": [],
