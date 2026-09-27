@@ -120,7 +120,7 @@ class NativeResultTests(unittest.TestCase):
 
         class FakeOpener:
             def open(self, request, timeout):
-                assert request.full_url.endswith("/v1/responses/secret-response-id")
+                assert request.full_url.endswith(("/v1/responses/secret-response-id", "/v1/models"))
                 return FakeUpstream()
 
         with patch.dict(os.environ, {"OPENAI_API_KEY": secret}), \
@@ -133,9 +133,17 @@ class NativeResultTests(unittest.TestCase):
                 response = connection.getresponse()
                 self.assertEqual(response.read(), b'{"private":"response"}')
                 connection.close()
-        self.assertEqual(calls, [{"auxiliary_method": "GET",
-                                  "path_kind": "responses_child",
-                                  "response_http_status": 200}])
+                connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=3)
+                connection.request("GET", "/v1/models",
+                                   headers={"Authorization": "Bearer " + secret})
+                response = connection.getresponse()
+                self.assertEqual(response.read(), b'{"private":"response"}')
+                connection.close()
+        self.assertEqual(calls, [
+            {"auxiliary_method": "GET", "path_kind": "responses",
+             "known_resource": "responses", "response_http_status": 200},
+            {"auxiliary_method": "GET", "path_kind": "models",
+             "known_resource": "models", "response_http_status": 200}])
 
     def test_terminal_result_only(self):
         prompt = '{"rule":"RULE_echoed","challenge":"fresh"}'
