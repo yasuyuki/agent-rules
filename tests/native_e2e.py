@@ -42,6 +42,8 @@ def codex_wire_metadata():
     calls: list[dict[str, object]] = []
 
     class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
         def log_message(self, *_args):
             pass  # Never log a URL, header, request body, or model output.
 
@@ -76,6 +78,8 @@ def codex_wire_metadata():
                     "response_tool_names": [],
                     "response_call_shapes": [],
                     "response_statuses": [],
+                    "upstream_done_marker": False,
+                    "relay_complete": False,
                 }
                 calls.append(metadata)
                 if not authorized:
@@ -93,11 +97,14 @@ def codex_wire_metadata():
                     metadata["response_http_status"] = upstream.status
                     self.send_response(upstream.status)
                     self.send_header("Content-Type", upstream.headers.get("Content-Type", "text/event-stream"))
+                    self.send_header("Transfer-Encoding", "chunked")
                     self.end_headers()
                     event_types, item_types, tool_names = set(), set(), set()
                     call_shapes, response_statuses = [], set()
                     try:
                         for line in upstream:
+                            if line.strip() == b"data: [DONE]":
+                                metadata["upstream_done_marker"] = True
                             if line.startswith(b"event: "):
                                 event_types.add(_safe_wire_name(line[7:].strip().decode("ascii", "ignore").replace(".", "_")))
                             elif line.startswith(b"data: "):
@@ -132,7 +139,9 @@ def codex_wire_metadata():
                                                 })
                                 except (ValueError, TypeError):
                                     pass
-                            self.wfile.write(line)
+                            self.wfile.write(f"{len(line):x}\r\n".encode("ascii") + line + b"\r\n")
+                        self.wfile.write(b"0\r\n\r\n")
+                        metadata["relay_complete"] = True
                     finally:
                         metadata["response_event_types"] = sorted(event_types)
                         metadata["response_item_types"] = sorted(item_types)
@@ -143,9 +152,11 @@ def codex_wire_metadata():
                 if calls:
                     calls[-1]["response_http_status"] = exc.code
                 try:
+                    body = exc.read()
                     self.send_response(exc.code)
+                    self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
-                    self.wfile.write(exc.read())
+                    self.wfile.write(body)
                 except OSError:
                     pass
             except Exception as exc:
