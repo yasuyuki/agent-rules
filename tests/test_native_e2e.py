@@ -52,7 +52,7 @@ class NativeResultTests(unittest.TestCase):
         payload = {"model": "gpt-6-luna", "stream": True,
                    "input": [{"type": "message", "content": "private prompt"},
                              {"type": "function_call_output", "call_id": "private call",
-                              "output": "private result"}], "tools": [
+                              "output": "unsupported call: private result"}], "tools": [
                        {"type": "function", "name": "exec_command", "description": "private tool body"}]}
         event = b'event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"function_call","name":"exec_command","namespace":"functions","call_id":"call-1","arguments":"{\\"cmd\\":\\"python3 private output\\"}"}}\n\n'
 
@@ -92,6 +92,7 @@ class NativeResultTests(unittest.TestCase):
         self.assertEqual(calls[0]["response_tool_names"], ["exec_command"])
         self.assertEqual(calls[0]["input_item_types"], ["function_call_output", "message"])
         self.assertEqual(calls[0]["input_function_call_output_count"], 1)
+        self.assertEqual(calls[0]["input_function_call_output_classes"], ["unsupported_call"])
         self.assertEqual(calls[0]["response_call_shapes"], [{
             "name": "exec_command", "namespace": "functions", "call_id_present": True,
             "arguments_json_object": True, "argument_keys": ["cmd"],
