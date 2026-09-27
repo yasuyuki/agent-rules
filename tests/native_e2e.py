@@ -75,6 +75,7 @@ def codex_wire_metadata():
                     "response_item_types": [],
                     "response_tool_names": [],
                     "response_call_shapes": [],
+                    "response_statuses": [],
                 }
                 calls.append(metadata)
                 if not authorized:
@@ -94,7 +95,7 @@ def codex_wire_metadata():
                     self.send_header("Content-Type", upstream.headers.get("Content-Type", "text/event-stream"))
                     self.end_headers()
                     event_types, item_types, tool_names = set(), set(), set()
-                    call_shapes = []
+                    call_shapes, response_statuses = [], set()
                     try:
                         for line in upstream:
                             if line.startswith(b"event: "):
@@ -102,6 +103,10 @@ def codex_wire_metadata():
                             elif line.startswith(b"data: "):
                                 try:
                                     event = json.loads(line[6:])
+                                    if event.get("type") in ("response.completed", "response.incomplete", "response.failed"):
+                                        response = event.get("response", {})
+                                        if isinstance(response, dict):
+                                            response_statuses.add(_safe_wire_name(response.get("status")))
                                     item = event.get("item", {})
                                     if isinstance(item, dict):
                                         item_types.add(_safe_wire_name(item.get("type")))
@@ -133,6 +138,7 @@ def codex_wire_metadata():
                         metadata["response_item_types"] = sorted(item_types)
                         metadata["response_tool_names"] = sorted(tool_names)
                         metadata["response_call_shapes"] = call_shapes
+                        metadata["response_statuses"] = sorted(response_statuses)
             except urllib.error.HTTPError as exc:
                 if calls:
                     calls[-1]["response_http_status"] = exc.code
@@ -353,6 +359,14 @@ def codex_command_diagnostics(stdout: str, proof_name: str, stderr: str = "") ->
     signals = ("tool", "function", "parse", "decode", "invalid", "schema", "sandbox",
                "permission", "network", "connection", "stream", "http", "missing",
                "unsupported", "timeout", "failed", "call", "api", "response", "request")
+    diagnostic_words = set(signals) | {"error", "sse", "read", "reading", "terminated",
+                                      "disconnected", "before", "completion", "eof", "end",
+                                      "body", "closed", "status", "retry", "retrying",
+                                      "unexpected", "200", "400", "401", "403", "429", "500", "502"}
+    error_keyword_sequences = [
+        [word for word in re.findall(r"[a-z]+|[0-9]+", value.lower())
+         if word in diagnostic_words][:20]
+        for value in errors if isinstance(value, str)]
     item_types = {item.get("type") for item in items}
     safe_types = sorted({value if isinstance(value, str) and
                          re.fullmatch(r"[a-z_]{1,40}", value) else "other"
@@ -365,6 +379,7 @@ def codex_command_diagnostics(stdout: str, proof_name: str, stderr: str = "") ->
             "codex_item_types": safe_types,
             "codex_error_event_count": len(errors),
             "codex_error_signals": sorted(signal for signal in signals if signal in error_text),
+            "codex_error_keyword_sequences": error_keyword_sequences,
             "codex_stderr_signals": sorted(signal for signal in signals if signal in stderr_text),
             "codex_file_change_started": any(phase == "item.started" for phase, _ in file_changes),
             "codex_file_change_completed": any(phase == "item.completed" for phase, _ in file_changes),

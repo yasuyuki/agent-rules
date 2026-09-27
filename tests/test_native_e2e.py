@@ -240,6 +240,7 @@ class NativeResultTests(unittest.TestCase):
                           "codex_item_types": ["agent_message", "command_execution"],
                           "codex_error_event_count": 0,
                           "codex_error_signals": [],
+                          "codex_error_keyword_sequences": [],
                           "codex_stderr_signals": [],
                           "codex_file_change_started": False,
                           "codex_file_change_completed": False,
@@ -266,6 +267,14 @@ class NativeResultTests(unittest.TestCase):
         self.assertTrue(result["codex_proof_command_failed"])
         self.assertEqual(result["codex_proof_exit_codes"], [2])
         self.assertEqual(result["codex_proof_error_class"], "missing_path")
+
+    def test_codex_error_words_exclude_secret_and_url(self):
+        event = {"type": "error", "message": "sse stream error for sk-secret https://private.example:502 before completion"}
+        result = codex_command_diagnostics(json.dumps(event), "proof.py")
+        self.assertEqual(result["codex_error_keyword_sequences"],
+                         [["sse", "stream", "error", "502", "before", "completion"]])
+        self.assertNotIn("secret", json.dumps(result))
+        self.assertNotIn("private", json.dumps(result))
         self.assertNotIn("SECRET", str(result))
 
     def test_codex_file_change_diagnostics_hide_paths_and_content(self):
