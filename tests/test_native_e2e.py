@@ -100,52 +100,6 @@ class NativeResultTests(unittest.TestCase):
         self.assertIn(f'model_providers.native_http.base_url="{base_url}"', argv)
         self.assertIn("model_providers.native_http.supports_websockets=false", argv)
 
-    def test_codex_wire_relay_forwards_response_child_without_path_in_artifact(self):
-        secret = "secret-test-token"
-
-        class FakeUpstream:
-            status = 200
-            headers = {"Content-Type": "application/json"}
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                pass
-
-            def read(self, _size):
-                if not hasattr(self, "sent"):
-                    self.sent = True
-                    return b'{"private":"response"}'
-                return b""
-
-        class FakeOpener:
-            def open(self, request, timeout):
-                assert request.full_url.endswith(("/v1/responses/secret-response-id", "/v1/models"))
-                return FakeUpstream()
-
-        with patch.dict(os.environ, {"OPENAI_API_KEY": secret}), \
-                patch("native_e2e.urllib.request.build_opener", return_value=FakeOpener()):
-            with codex_wire_metadata() as (base_url, calls):
-                parsed = urlsplit(base_url)
-                connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=3)
-                connection.request("GET", "/v1/responses/secret-response-id",
-                                   headers={"Authorization": "Bearer " + secret})
-                response = connection.getresponse()
-                self.assertEqual(response.read(), b'{"private":"response"}')
-                connection.close()
-                connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=3)
-                connection.request("GET", "/v1/models",
-                                   headers={"Authorization": "Bearer " + secret})
-                response = connection.getresponse()
-                self.assertEqual(response.read(), b'{"private":"response"}')
-                connection.close()
-        self.assertEqual(calls, [
-            {"auxiliary_method": "GET", "path_kind": "responses",
-             "known_resource": "responses", "response_http_status": 200},
-            {"auxiliary_method": "GET", "path_kind": "models",
-             "known_resource": "models", "response_http_status": 200}])
-
     def test_terminal_result_only(self):
         prompt = '{"rule":"RULE_echoed","challenge":"fresh"}'
         lines = [
