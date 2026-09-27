@@ -79,7 +79,16 @@ for vendor in "${vendors[@]}"; do
       ;;
     codex)
       sudo apt-get update -qq
-      sudo apt-get install -y -qq bubblewrap
+      sudo apt-get install -y -qq bubblewrap apparmor-profiles apparmor-utils
+      sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
+        /etc/apparmor.d/bwrap-userns-restrict
+      sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+      if ! sudo -n -u native-e2e bwrap --unshare-user --ro-bind / / \
+          --tmpfs /tmp --dev-bind /dev /dev --proc /proc --chdir /tmp \
+          -- /usr/bin/python3 -c 'print(1)' >/dev/null 2>&1; then
+        echo 'Codex Linux sandbox prerequisite failed for isolated user' >&2
+        exit 1
+      fi
       npm install --global --prefix "$tools_root/npm" @openai/codex@0.157.1
       cli="$tools_root/npm/bin/codex"
       expected='codex-cli 0.157.1'
