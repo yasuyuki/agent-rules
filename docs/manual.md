@@ -370,14 +370,15 @@ registry is rejected rather than auto-migrated.
 
 ## Share current state across environments
 
-The maintainer's [handoff rule](../rules/handoff.rule.md) keeps local resumption
-in the nearest HANDOFF.md and cross-environment work in an explicitly selected,
-accessible shared task. [human-handoff](https://github.com/yasuyuki/agent-skills/blob/main/skills/human-handoff/SKILL.md) governs
+The maintainer's [handoff rule](../rules/handoff.rule.md) assigns resumption to
+the owning task, operations documentation and task evidence. Workspace-wide
+HANDOFF.md creation and updates are retired. Cross-environment work remains
+in an explicitly selected, accessible shared task. [human-handoff](https://github.com/yasuyuki/agent-skills/blob/main/skills/human-handoff/SKILL.md) governs
 human relays; classification does not authorize execution. Saving a task is not
 recipient receipt or acceptance. The [handoff fixtures](../tests/fixtures/handoff/README.md)
 test this distinction; real host delivery and UI copying need separate evidence.
 
 The runtime owner documents the receiver binding, launch ordering, recovery and
 independent-work behavior. Existing GUI owners retain their fixed historical
-receiver entry until a separate adoption selects exactly one receiver owner for
-that launch path. Keep private bindings and shared fragments outside this repo.
+receiver entry until a separate adoption preserves its required information and
+retires the receiver for that launch path. Keep private bindings and shared fragments outside this repo.

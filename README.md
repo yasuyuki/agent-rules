@@ -34,7 +34,7 @@ inputs as described in the [manual](docs/manual.md#declared-placement-and-source
 Generic skills are edited in [agent-skills](https://github.com/yasuyuki/agent-skills).
 Project-specific skills remain here. There is no reverse mirror command.
 
-Runtime launch and HANDOFF receiving are owned by
+Runtime launch and the optional historical receiver are owned by
 [agent-runtime](https://github.com/yasuyuki/agent-runtime), not this checkout.
 Windows GUI consumers retained on their fixed historical agent-rules revision stay
 outside this compatibility surface until their separate adoption.
@@ -52,3 +52,11 @@ installed [workspace-lifecycle](https://github.com/yasuyuki/workspace-lifecycle)
 Use its CLI directly for task, finish, integration and retirement operations.
 Push preflight uses the fixed independent package directly. Its source, build and
 lifecycle tests belong to that repository.
+
+## Resuming work
+
+Use the owning task for remaining work and acceptance, operations documentation for
+procedures, and task evidence for retained results. Workspace-wide `HANDOFF.md`
+creation and updates are retired. Preserve and reconcile existing contents before
+removing each consumer; retire its receiver through the owning runtime configuration.
+See [the vocabulary](CONTEXT.md) and [decision](docs/adr/0001-task-owned-resumption.md).
