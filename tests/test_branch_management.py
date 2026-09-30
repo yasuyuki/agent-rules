@@ -768,7 +768,7 @@ s1\tcatalog.json\tenv
         self.git_at(topic, "fetch", "origin")
         self.branch("begin", "--mode", "continue", "--task", "topic", "--sync", repo=topic)
         self.git_at(topic, "merge", "--ff-only", "origin/topic")
-        self.branch("begin", "--mode", "continue", "--task", "topic", "--sync", repo=topic, ok=False)
+        self.branch("begin", "--mode", "continue", "--task", "topic", "--sync", repo=topic)
 
     def test_sync_diagnosis_records_a_completed_public_operation(self):
         self.begin("integration", "adopt", branch="main", into="main")

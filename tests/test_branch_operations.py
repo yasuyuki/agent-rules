@@ -23,6 +23,253 @@ def loaded_management():
 
 
 class OperationTests(BranchManagementTests):
+    def divergent_sync_topic(self, conflict=False):
+        topic = self.sync_topic()
+        name = "remote" if conflict else "local"
+        (topic / name).write_bytes(b"local content\n")
+        self.git_at(topic, "add", name)
+        self.git_at(topic, "commit", "-m", "local retained commit")
+        return topic
+
+    def test_same_task_divergence_sync_preserves_history_without_integration(self):
+        topic = self.divergent_sync_topic()
+        old = self.git_at(topic, "rev-parse", "HEAD").stdout.strip()
+        source = self.git_at(topic, "rev-parse", "origin/topic").stdout.strip()
+        self.git_at(topic, "push", "origin", "HEAD:refs/heads/topic", ok=False)
+        self.prepare_sync(topic)
+        prepared = self.checked_operation(topic)
+        self.git_at(topic, "merge", "--no-ff", "--no-commit", "origin/topic")
+        self.prepare_sync(topic)
+        resumed = self.operation(topic, ok=False)
+        self.assertEqual((resumed["id"], resumed["before"]), (prepared["id"], prepared["before"]))
+        self.git_at(topic, "commit", "-m", "synchronize same task")
+        self.assertEqual(self.git_at(topic, "show", "-s", "--format=%P", "HEAD").stdout.strip(), old + " " + source)
+        self.assertEqual(self.checked_operation(topic)["outcome"], "completed")
+        self.assertEqual((topic / "local").read_bytes(), b"local content\n")
+        self.assertEqual((topic / "remote").read_bytes(), b"remote\x00bytes\n")
+        continued = json.loads(self.branch("begin", "--mode", "continue", "--task", "topic", repo=topic).stdout)
+        self.assertNotIn("integrated", continued)
+        self.branch("retire", "--task", "topic", repo=topic, ok=False)
+        self.git_at(topic, "push", "origin", "HEAD:refs/heads/topic")
+
+    def test_same_task_manual_merge_can_be_adopted(self):
+        topic = self.divergent_sync_topic()
+        self.git_at(topic, "merge", "--no-ff", "--no-commit", "origin/topic")
+        self.prepare_sync(topic)
+        record = self.operation(topic)
+        self.assertEqual(record["snapshot_scope"], "active-operation-authorization")
+        self.git_at(topic, "commit", "-m", "adopt manual sync")
+        self.assertEqual(self.checked_operation(topic)["outcome"], "completed")
+
+    def test_same_task_manual_conflict_can_be_adopted(self):
+        topic = self.divergent_sync_topic(conflict=True)
+        self.git_at(topic, "merge", "--no-ff", "--no-commit", "origin/topic", ok=False)
+        self.prepare_sync(topic)
+        record = self.operation(topic, ok=False)
+        self.assertEqual(record["snapshot_scope"], "active-operation-authorization")
+        self.assertEqual(record["outcome"], "conflict")
+        (topic / "remote").write_bytes(b"remote and local resolved\n")
+        self.git_at(topic, "add", "remote")
+        self.git_at(topic, "commit", "-m", "adopt manual conflict")
+        self.assertEqual(self.checked_operation(topic)["id"], record["id"])
+
+    def test_same_task_conflict_resumes_and_preserves_unrelated_dirty(self):
+        topic = self.divergent_sync_topic(conflict=True)
+        self.prepare_sync(topic)
+        prepared = self.checked_operation(topic)
+        self.git_at(topic, "merge", "--no-ff", "--no-commit", "origin/topic", ok=False)
+        self.assertEqual(self.operation(topic, ok=False)["outcome"], "conflict")
+        self.prepare_sync(topic)
+        (topic / "unrelated").write_bytes(b"other owner\n")
+        self.prepare_sync(topic, ok=False)
+        self.assertEqual((topic / "unrelated").read_bytes(), b"other owner\n")
+        # Owner removes only their fixture change; production never auto-cleans.
+        (topic / "unrelated").unlink()
+        (topic / "remote").write_bytes(b"remote and local resolved\n")
+        self.git_at(topic, "add", "remote")
+        self.prepare_sync(topic)
+        self.git_at(topic, "commit", "-m", "resolve same task")
+        self.assertEqual(self.checked_operation(topic)["id"], prepared["id"])
+
+    def test_same_task_pending_sync_cannot_replace_remote_source(self):
+        topic = self.divergent_sync_topic()
+        self.prepare_sync(topic)
+        before = self.checked_operation(topic)
+        publisher = self.root / "publisher topic"
+        (publisher / "later").write_text("later\n")
+        self.git_at(publisher, "add", "later")
+        self.git_at(publisher, "commit", "-m", "remote advanced")
+        self.git_at(publisher, "push", "origin", "topic")
+        self.git_at(topic, "fetch", "origin")
+        self.prepare_sync(topic)
+        after = self.operation(topic)
+        self.assertEqual((after["id"], after["source"], after["before"]),
+                         (before["id"], before["source"], before["before"]))
+        self.git_at(topic, "merge", "--no-ff", "--no-commit", before["source"])
+        self.prepare_sync(topic)
+        self.git_at(topic, "commit", "-m", "finish pinned remote sync")
+        self.assertEqual(self.git_at(topic, "rev-parse", "HEAD^2").stdout.strip(), before["source"])
+        self.prepare_sync(topic)
+        self.git_at(topic, "merge", "--no-ff", "--no-commit", "origin/topic")
+        self.git_at(topic, "commit", "-m", "additional remote sync")
+        self.git_at(topic, "push", "origin", "HEAD:refs/heads/topic")
+        self.assertEqual((topic / "later").read_text(), "later\n")
+
+    def test_same_task_equal_and_ahead_sync_are_noops(self):
+        topic = self.sync_topic()
+        self.prepare_sync(topic)
+        self.git_at(topic, "merge", "--ff-only", "origin/topic")
+        for ahead in (False, True):
+            if ahead:
+                (topic / "local").write_text("local\n")
+                self.git_at(topic, "add", "local")
+                self.git_at(topic, "commit", "-m", "local ahead")
+            before = self.git_at(topic, "rev-parse", "HEAD").stdout
+            receipt = self.checked_operation(topic)
+            self.prepare_sync(topic)
+            self.assertEqual(self.git_at(topic, "rev-parse", "HEAD").stdout, before)
+            self.assertEqual(self.checked_operation(topic)["id"], receipt["id"])
+        self.git_at(topic, "push", "origin", "HEAD:refs/heads/topic")
+
+    def test_same_task_prepared_sync_rejects_concurrent_head_commit(self):
+        topic = self.divergent_sync_topic()
+        self.prepare_sync(topic)
+        before = self.checked_operation(topic)
+        (topic / "unrelated").write_text("other owner\n")
+        self.git_at(topic, "add", "unrelated")
+        self.git_at(topic, "commit", "-m", "concurrent update", ok=False)
+        after = self.operation(topic, ok=False)
+        self.assertEqual((after["id"], after["source"], after["before"]),
+                         (before["id"], before["source"], before["before"]))
+        self.assertEqual(self.git_at(topic, "rev-parse", "HEAD").stdout.strip(), before["before"]["head"])
+
+    def test_same_task_head_race_during_preparation_keeps_concurrent_commit(self):
+        topic = self.sync_topic()
+        management = loaded_management()
+        original = management.operation_inputs
+        def concurrent_inputs(repo, kind, source):
+            (topic / "concurrent").write_text("other owner\n")
+            self.git_at(topic, "add", "concurrent")
+            self.git_at(topic, "commit", "-m", "concurrent before snapshot")
+            return original(repo, kind, source)
+        args = type("Args", (), dict(repo=str(topic), task="topic", mode="continue", sync=True,
+                    from_remote=False, base=None, into=None, depends_on=None,
+                    branch=None, worktree=None, request=None))()
+        with patch.object(management, "operation_inputs", side_effect=concurrent_inputs):
+            with self.assertRaisesRegex(management.BranchError, "changed during"):
+                management.begin(args)
+        self.assertEqual((topic / "concurrent").read_text(), "other owner\n")
+        self.assertEqual(self.git_at(topic, "log", "-1", "--format=%s").stdout.strip(), "concurrent before snapshot")
+        self.prepare_sync(topic)
+        self.git_at(topic, "merge", "--no-ff", "--no-commit", "origin/topic")
+        self.git_at(topic, "commit", "-m", "retry from current destination")
+
+    def test_same_task_manual_source_is_pinned_after_remote_advances(self):
+        topic = self.divergent_sync_topic()
+        source = self.git_at(topic, "rev-parse", "origin/topic").stdout.strip()
+        self.git_at(topic, "merge", "--no-ff", "--no-commit", source)
+        publisher = self.root / "publisher topic"
+        (publisher / "later").write_text("later\n")
+        self.git_at(publisher, "add", "later")
+        self.git_at(publisher, "commit", "-m", "remote advances during manual merge")
+        self.git_at(publisher, "push", "origin", "topic")
+        self.git_at(topic, "fetch", "origin")
+        self.prepare_sync(topic)
+        self.assertEqual(self.operation(topic)["source"], source)
+        self.git_at(topic, "commit", "-m", "finish original manual source")
+        self.prepare_sync(topic)
+        self.git_at(topic, "merge", "--no-ff", "--no-commit", "origin/topic")
+        self.git_at(topic, "commit", "-m", "additional sync")
+
+    def test_same_task_known_remote_rollback_is_rejected_without_new_evidence(self):
+        topic = self.sync_topic()
+        self.prepare_sync(topic)
+        self.git_at(topic, "merge", "--ff-only", "origin/topic")
+        before = self.operation(topic)
+        # Simulate another fetch observing rewritten remote history.
+        self.git_at(topic, "update-ref", "refs/remotes/origin/topic", "origin/main")
+        self.prepare_sync(topic, ok=False)
+        self.assertEqual(self.operation(topic)["id"], before["id"])
+        self.assertEqual(self.git_at(topic, "rev-parse", "HEAD").stdout.strip(), before["completed"])
+
+    def test_same_task_generated_rules_and_handoff_modify_delete_preserve_meaning(self):
+        topic = Path(self.begin("topic", branch="topic")["worktree"])
+        (topic / "rules.txt").write_text("base rule\n")
+        (topic / "AGENTS.md").write_text("base rule\n")
+        (topic / "HANDOFF.md").write_text("unfinished acceptance\n")
+        (topic / "evidence.md").write_text("existing task evidence\n")
+        self.git_at(topic, "add", "rules.txt", "AGENTS.md", "HANDOFF.md", "evidence.md")
+        self.git_at(topic, "commit", "-m", "seed existing consumer")
+        self.git_at(topic, "push", "origin", "topic")
+        publisher = self.root / "publisher generated"
+        self.command("git", "clone", "--branch", "topic", self.remote, publisher)
+        self.git_at(publisher, "config", "user.name", "Publisher")
+        self.git_at(publisher, "config", "user.email", "publisher@example.invalid")
+        (publisher / "AGENTS.md").write_text("remote generated rule\n")
+        self.git_at(publisher, "rm", "HANDOFF.md")
+        self.git_at(publisher, "add", "AGENTS.md")
+        self.git_at(publisher, "commit", "-m", "remote handoff retirement")
+        self.git_at(publisher, "push", "origin", "topic")
+        (topic / "rules.txt").write_text("required current rule\n")
+        (topic / "AGENTS.md").write_text("local generated rule\n")
+        retained = "unfinished acceptance\nretained owner decision\n"
+        (topic / "HANDOFF.md").write_text(retained)
+        self.git_at(topic, "add", "rules.txt", "AGENTS.md", "HANDOFF.md")
+        self.git_at(topic, "commit", "-m", "local consumer work")
+        local = self.git_at(topic, "rev-parse", "HEAD").stdout.strip()
+        self.git_at(topic, "fetch", "origin")
+        remote = self.git_at(topic, "rev-parse", "origin/topic").stdout.strip()
+        self.prepare_sync(topic)
+        self.git_at(topic, "merge", "--no-ff", "--no-commit", "origin/topic", ok=False)
+        self.assertEqual(set(self.operation(topic, ok=False)["conflicts"]), {"AGENTS.md", "HANDOFF.md"})
+        # Regenerate the fixture output from its retained source, never hand-edit it.
+        (topic / "AGENTS.md").write_bytes((topic / "rules.txt").read_bytes())
+        self.assertEqual((topic / "HANDOFF.md").read_text(), retained)
+        self.git_at(topic, "add", "AGENTS.md", "HANDOFF.md")
+        self.git_at(topic, "commit", "-m", "preserve both histories and unresolved information")
+        # The separate, owned retirement follows preservation; sync itself never
+        # authorizes unrelated edits to the task's existing evidence document.
+        (topic / "evidence.md").write_text("existing task evidence\n" + retained)
+        self.assertIn(retained, (topic / "evidence.md").read_text())
+        self.git_at(topic, "rm", "HANDOFF.md")
+        self.git_at(topic, "add", "evidence.md")
+        self.git_at(topic, "commit", "-m", "retire handoff after evidence preservation")
+        for ancestor in (local, remote):
+            self.git_at(topic, "merge-base", "--is-ancestor", ancestor, "HEAD")
+        self.assertEqual((topic / "AGENTS.md").read_bytes(), (topic / "rules.txt").read_bytes())
+        self.assertFalse((topic / "HANDOFF.md").exists())
+        self.git_at(topic, "push", "origin", "HEAD:refs/heads/topic")
+
+    def test_same_task_divergent_sync_preserves_all_dirty_categories(self):
+        topic = self.divergent_sync_topic()
+        exclude = Path(self.git_at(topic, "rev-parse", "--git-path", "info/exclude").stdout.strip())
+        exclude.write_text("remote\n")
+        (topic / "remote").write_bytes(b"ignored other owner\n")
+        denied = self.prepare_sync(topic, ok=False)
+        self.assertIn("collision", denied.stderr)
+        self.assertEqual((topic / "remote").read_bytes(), b"ignored other owner\n")
+        (topic / "staged").write_bytes(b"staged owner\n")
+        self.git_at(topic, "add", "staged")
+        (topic / "README").write_bytes(b"unstaged owner\n")
+        (topic / "untracked").write_bytes(b"untracked owner\n")
+        index = Path(self.git_at(topic, "rev-parse", "--path-format=absolute", "--git-path", "index").stdout.strip())
+        paths = ("remote", "staged", "README", "untracked")
+        before = (index.read_bytes(), {name: (topic / name).read_bytes() for name in paths})
+        self.prepare_sync(topic, ok=False)
+        self.assertEqual(before, (index.read_bytes(), {name: (topic / name).read_bytes() for name in paths}))
+
+    def test_same_task_manual_wrong_source_is_refused(self):
+        topic = self.divergent_sync_topic()
+        publisher = self.root / "publisher topic"
+        (publisher / "wrong").write_text("wrong\n")
+        self.git_at(publisher, "add", "wrong")
+        self.git_at(publisher, "commit", "-m", "other branch")
+        self.git_at(publisher, "push", "origin", "HEAD:refs/heads/other")
+        self.git_at(topic, "fetch", "origin")
+        self.git_at(topic, "merge", "--no-ff", "--no-commit", "origin/other")
+        self.prepare_sync(topic, ok=False)
+        self.git_at(topic, "commit", "-m", "wrong sync", ok=False)
+
     def sync_topic(self, task="topic"):
         topic = Path(self.begin(task, branch=task)["worktree"])
         publisher = self.root / ("publisher " + task)

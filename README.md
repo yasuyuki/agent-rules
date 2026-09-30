@@ -1000,10 +1000,20 @@ directory is rejected. Interrupted worktree creation is resumed without reset,
 stash or automatic removal. Each worktree has one lead performing Git updates.
 
 A fetched update of the **same** remote branch can be admitted with `begin
---mode continue --task ID --repo REPO --sync`, then `git merge --ff-only
-REMOTE/BRANCH` in its registered worktree. The one-use import is pinned to the
-old and fetched new commits; unrelated fast-forwards are rejected. This does not
-identify which Git command produced the same reference transition.
+--mode continue --task ID --repo REPO --sync` in its registered worktree. Equal
+or local-ahead history succeeds without a Git change. For a fast-forward use
+`git merge --ff-only REMOTE/BRANCH`; for divergence use `git merge --no-ff
+--no-commit REMOTE/BRANCH`, resolve conflicts, verify the resulting content and
+commit. The same `--sync` can adopt an already active merge of that exact fetched
+source or resume an interrupted merge. Permission pins both tips, ordered merge
+parents and the computed content; retries never substitute a new remote source.
+If the fetched remote advances, finish the pinned source while it remains an
+ancestor of that remote, then prepare any further sync. Rewritten remote history
+is refused without discarding the operation.
+Sync keeps the same task and does not create an integration receipt or authorize
+retirement. Normal push follows the shared preflight; a rejected push preserves
+the local commits for the next same-task synchronization. This does not identify
+which Git command produced an identical authorized reference transition.
 
 `branch check --json` diagnoses the latest recorded sync, merge, or pick in
 its registered checkout. It returns `id`, `kind`, `task`, `source`, `before`,
@@ -1032,7 +1042,7 @@ pending baseline. After an explicitly reviewed Git abort restores the original
 HEAD/index/worktree, a fresh preparation may select the new source.
 
 Preparation calculates the expected Git result outside the registration lock.
-Sync uses the fetched tree; merge/pick use `merge-tree --write-tree` (pick also
+Fast-forward sync uses the fetched tree; divergent sync and merge/pick use `merge-tree --write-tree` (pick also
 requires `--merge-base`, and a single-parent commit). Unsupported Git versions
 fail before issuing permission. Custom merge drivers/renormalization and
 unverified worktree conversions are outside this preparation contract. Plain
