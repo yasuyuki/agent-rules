@@ -230,7 +230,7 @@ def managed_names(template):
 SHARED_TARGETS = ("codexcli", "grokcli", "opencode", "antigravity-cli")
 
 
-def export_sources(sources, destination, targets, exclude_ids=(), global_mode=False, skills_sources=()):
+def export_sources(sources, destination, targets, exclude_ids=(), global_mode=False, skills_sources=(), skill_targets=()):
     """Convert selected legacy policy inputs once into native Rulesync sources.
 
     The destination must be new. Exported files are disposable build inputs,
@@ -254,6 +254,17 @@ def export_sources(sources, destination, targets, exclude_ids=(), global_mode=Fa
         raise ValueError("unknown excluded rule ids: " + ", ".join(sorted(unknown)))
     rules = [rule for rule in rules if rule[0]["id"] not in excluded]
     skills = load_skill_dirs(skills_sources)
+    scoped_skills = {}
+    for selection in skill_targets:
+        skill_id, separator, selected = selection.partition("=")
+        chosen = selected.split(",")
+        if (not separator or skill_id not in skills or skill_id in scoped_skills
+                or not selected or len(chosen) != len(set(chosen))
+                or set(chosen) - set(targets)):
+            raise ValueError("invalid --skill-target selection: " + selection)
+        if "targets" in parse_skill_frontmatter(skills[skill_id]["SKILL.md"].decode("utf-8"), skill_id):
+            raise ValueError("skill already declares targets: " + skill_id)
+        scoped_skills[skill_id] = chosen
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=destination.parent) as temporary:
         root = Path(temporary) / "source"
@@ -262,7 +273,14 @@ def export_sources(sources, destination, targets, exclude_ids=(), global_mode=Fa
             for relative, content in tree.items():
                 path = root / "skills" / skill_id / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(content)
+                if relative == "SKILL.md" and skill_id in scoped_skills:
+                    newline = b"\r\n" if content.startswith(b"---\r\n") else b"\n"
+                    header = b"---" + newline
+                    target_line = ("targets: " + json.dumps(scoped_skills[skill_id]) + "\n").encode("utf-8")
+                    content_to_write = header + target_line.replace(b"\n", newline) + content[len(header):]
+                else:
+                    content_to_write = content
+                path.write_bytes(content_to_write)
                 if os.name != "nt":
                     path.chmod(0o644 | getattr(content, "executable", 0))
         for meta, common, bindings in rules:
@@ -329,8 +347,10 @@ if __name__ == "__main__":
                         help="export separate native user-scope roots rather than shared project AGENTS.md")
     parser.add_argument("--skills", action="append", default=[],
                         help="explicit native skill source directory for this disposable input tree")
+    parser.add_argument("--skill-target", action="append", default=[], metavar="ID=TARGET,TARGET",
+                        help="restrict one selected skill in this export without changing its canonical source")
     args = parser.parse_args()
     try:
-        print("Exported %d rules" % export_sources(args.source, args.dest, args.targets, args.exclude_id, args.global_mode, args.skills))
+        print("Exported %d rules" % export_sources(args.source, args.dest, args.targets, args.exclude_id, args.global_mode, args.skills, args.skill_target))
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
