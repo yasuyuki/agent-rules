@@ -104,6 +104,31 @@ class ExportTests(unittest.TestCase):
             self.assertTrue(list((dest/'rules').glob('*.md')))
             self.assertFalse((dest/'skills').exists())
 
+    def test_one_skill_can_exclude_cursor_without_changing_other_targets_or_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root/'rules'
+            source.mkdir()
+            skills = root/'skills'
+            for name in ('classify-work', 'other'):
+                skill = skills/name
+                skill.mkdir(parents=True)
+                (skill/'SKILL.md').write_text(
+                    '---\nname: '+name+'\ndescription: Example\n---\n# Example\n', encoding='utf-8')
+            original = (skills/'classify-work/SKILL.md').read_bytes()
+            dest = root/'export'
+            rules.export_sources([source], dest,
+                ['codexcli', 'claudecode', 'cursor'], skills_sources=[skills],
+                skill_targets=['classify-work=codexcli,claudecode'])
+            selected = (dest/'skills/classify-work/SKILL.md').read_text(encoding='utf-8')
+            self.assertIn('targets: ["codexcli", "claudecode"]', selected)
+            self.assertEqual((dest/'skills/other/SKILL.md').read_bytes(),
+                             (skills/'other/SKILL.md').read_bytes())
+            self.assertEqual((skills/'classify-work/SKILL.md').read_bytes(), original)
+            with self.assertRaisesRegex(ValueError, 'invalid --skill-target'):
+                rules.export_sources([source], root/'invalid', ['codexcli'],
+                    skills_sources=[skills], skill_targets=['classify-work=cursor'])
+
 
 if __name__=='__main__':
     unittest.main()

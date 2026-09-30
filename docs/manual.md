@@ -188,6 +188,9 @@ Use `--skills skills` to include this checkout's project skills in the same
 disposable source tree; do not select this repository root as native input,
 because its canonical rules use the legacy authoring format. Native private/project
 rules need no conversion. Old standalone `render`/`verify` have been removed.
+When one output root must keep an existing skill owned by another writer, use
+`--skill-target ID=TARGET,TARGET` to restrict that selected skill in this export.
+The source skill stays unchanged; regenerate the disposable export after source updates.
 
 ### Original and third-party skills
 
