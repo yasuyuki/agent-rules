@@ -404,6 +404,7 @@ def finish(state, name, permit, new):
     record = state.get('operations', {}).get(name)
     if (record and record['id'] == permit.get('operation_id') and record['before']['head'] == permit['old']
             and ((record['kind'] == 'sync' and permit['kind'] == 'import' and record['source'] == new)
+                 or (record['kind'] == 'sync-merge' and permit.get('sync_source') == record['source'])
                  or (record['kind'] == 'merge' and permit.get('merge') and record['source'] == permit['parents'][1])
                  or (record['kind'] == 'pick' and permit.get('pick') == record['source']))):
         record['completed'] = new
@@ -485,8 +486,21 @@ def begin(args):
             task = state['tasks'][args.task]
             if top(repo) != task['worktree'] or task.get('creating'):
                 raise BranchError('sync must be prepared in its registered completed worktree')
+            destination = task['tip']
             source = oid(repo, 'refs/remotes/' + state['remote'] + '/' + task['branch'])
-        inputs = operation_inputs(repo, 'sync', source)
+            pending = state.get('operations', {}).get(task['branch'])
+            if pending and pending['kind'] in ('sync', 'sync-merge') and not pending.get('preflight_rejected'):
+                sync_remote_valid(repo, state, task['branch'], pending['source'])
+            if (pending and pending['kind'] in ('sync', 'sync-merge')
+                    and not pending.get('completed') and not pending.get('preflight_rejected')):
+                source = pending['source']
+            else:
+                active = git(repo, 'rev-parse', '--verify', 'MERGE_HEAD', optional=True)
+                if active:
+                    sync_remote_valid(repo, state, task['branch'], active)
+                    source = active
+            sync_kind = 'sync' if ancestor(repo, task['tip'], source) else 'sync-merge'
+        inputs = operation_inputs(repo, sync_kind, source)
     with locked(repo) as (directory, state):
         assert_install(repo, directory, state)
         reconcile(repo, state)
@@ -512,16 +526,31 @@ def begin(args):
                     raise BranchError('registered branch tip has changed outside enforcement')
             if args.sync:
                 old = task['tip']
-                new = oid(repo, 'refs/remotes/' + state['remote'] + '/' + task['branch'])
-                if old == new:
-                    raise BranchError('same-branch remote has no new commit to import')
-                if not ancestor(repo, old, new):
-                    raise BranchError('same-branch remote update is not a fast-forward')
+                if old != destination or inputs['before']['head'] != destination:
+                    raise BranchError('sync destination changed during preparation; preserve and retry')
+                new = inputs['source']
+                sync_remote_valid(repo, state, task['branch'], new)
                 if not same_checkout(repo, repo, task['branch']) or top(repo) != task['worktree']:
                     raise BranchError('sync must be prepared in its registered worktree')
-                record = prepare_operation(repo, directory, state, task, 'sync', new, inputs)
-                state['permits'][task['branch']] = {'kind': 'import', 'old': old, 'new': new,
-                                                      'operation_id': record['id'], 'worktree': task['worktree']}
+                previous = state.get('operations', {}).get(task['branch'])
+                if (previous and previous['kind'] in ('sync', 'sync-merge')
+                        and not previous.get('completed') and not previous.get('preflight_rejected')
+                        and previous['source'] != new):
+                    raise BranchError('pending same-branch sync source changed; preserve the original operation')
+                active = git(repo, 'rev-parse', '--verify', 'MERGE_HEAD', optional=True)
+                if active and (sync_kind != 'sync-merge' or active != new):
+                    raise BranchError('active merge differs from fetched same-branch sync source')
+                if ancestor(repo, new, old):
+                    # Equality/local-ahead need no Git change and no new permission.
+                    return {'task': args.task, **task}
+                record = prepare_operation(repo, directory, state, task, sync_kind, new, inputs,
+                                           resume=bool(active))
+                permission = {'kind': 'import' if sync_kind == 'sync' else 'sync-merge',
+                              'old': old, 'new': new, 'operation_id': record['id'],
+                              'worktree': task['worktree']}
+                if sync_kind == 'sync-merge':
+                    permission['sync_source'] = new
+                state['permits'][task['branch']] = permission
         else:
             if args.task in tasks:
                 raise BranchError('work already registered; use --mode continue')
@@ -944,10 +973,11 @@ def operation_changes(record, current, *, final=False):
     actual = index_entries(current['index'])
     before = index_entries(record['before']['index'])
     conflicts = set(record['conflicts'])
+    unmerged = {row.split('\t', 1)[1] for row in current['unmerged']}
     changed = set(current['untracked'])
     for name in set(expected) | set(actual) | set(before):
         if name in conflicts:
-            if final and not work_matches(current['worktree'].get(name), actual.get(name)):
+            if final and name not in unmerged and not work_matches(current['worktree'].get(name), actual.get(name)):
                 if actual.get(name) is not None or current['worktree'].get(name, {}).get('kind') != 'missing':
                     changed.add(name)
             continue
@@ -978,11 +1008,18 @@ def authorized_record(repo, state, kind, source, operation_id):
 def operation_markers_match(repo, record, current, *, final=False):
     if record['kind'] == 'sync':
         return not current['markers']
-    marker = 'MERGE_HEAD' if record['kind'] == 'merge' else 'CHERRY_PICK_HEAD'
+    marker = 'MERGE_HEAD' if record['kind'] in ('merge', 'sync-merge') else 'CHERRY_PICK_HEAD'
     if not current['markers']:
         return not final
     return (git(repo, 'rev-parse', '--verify', marker, optional=True) == record['source']
             and not set(current['markers']) - {marker, 'sequencer'})
+
+
+def sync_remote_valid(repo, state, name, source):
+    """Keep the pinned source when the fetched topic advances normally."""
+    fetched = oid(repo, 'refs/remotes/' + state['remote'] + '/' + name)
+    if not ancestor(repo, source, fetched):
+        raise BranchError('fetched same-branch history no longer contains the pinned sync source')
 
 
 def validate_operation(repo, directory, state, record):
@@ -1029,11 +1066,12 @@ def operation_diagnosis(repo, state, record):
         authorization = 'consumed'
     else:
         try:
-            if record['kind'] == 'sync':
+            if record['kind'] in ('sync', 'sync-merge'):
                 permission = permit
-                if (permit.get('kind') != 'import' or permit.get('new') != record['source']
-                        or oid(repo, 'refs/remotes/' + state['remote'] + '/' + name) != record['source']):
+                pinned = permit.get('new') if record['kind'] == 'sync' else permit.get('sync_source')
+                if pinned != record['source']:
                     raise BranchError('same-branch import permission or fetched source changed')
+                sync_remote_valid(repo, state, name, record['source'])
             elif record['kind'] == 'merge':
                 permission = state['merges'].get(name, {})
                 if permission.get('source') != record['source']:
@@ -1046,7 +1084,7 @@ def operation_diagnosis(repo, state, record):
         except BranchError as exc:
             authorization, authorization_error = 'stale', str(exc)
     unverified = sorted(n for n, item in current['worktree'].items() if item.get('unverified'))
-    marker = 'MERGE_HEAD' if record['kind'] == 'merge' else 'CHERRY_PICK_HEAD'
+    marker = 'MERGE_HEAD' if record['kind'] in ('merge', 'sync-merge') else 'CHERRY_PICK_HEAD'
     active_source = git(repo, 'rev-parse', '--verify', marker, optional=True)
     markers_match = (record['kind'] != 'sync' and active_source == record['source']
                      and not set(current['markers']) - {marker, 'sequencer'})
@@ -1111,7 +1149,7 @@ def prepare_operation(repo, directory, state, task, kind, source, inputs, *, res
               'prepared_at': datetime.now(timezone.utc).isoformat(), 'git_exit': None,
               'snapshot_scope': 'active-operation-authorization' if resume else 'before-git-operation'}
     if resume:
-        allowed = {'MERGE_HEAD'} if kind == 'merge' else {'CHERRY_PICK_HEAD', 'sequencer'}
+        allowed = {'MERGE_HEAD'} if kind in ('merge', 'sync-merge') else {'CHERRY_PICK_HEAD', 'sequencer'}
         if operation_changes(record, before, final=True) or set(before['markers']) - allowed:
             raise BranchError('active operation has unrelated dirty staged/unstaged/untracked changes; preserve before authorization')
     else:
@@ -1218,6 +1256,8 @@ def prepare_commit(repo, directory, state):
     if task['tip'] != old:
         raise BranchError('branch tip differs from registration')
     merge_head = Path(git(repo, 'rev-parse', '--git-path', 'MERGE_HEAD'))
+    if state['permits'].get(name, {}).get('sync_source') and not merge_head.exists():
+        raise BranchError('pending same-branch sync requires its pinned merge before commit')
     pick = git(repo, 'rev-parse', '--verify', 'CHERRY_PICK_HEAD', optional=True)
     parents = [old]
     permit = {'kind': 'commit', 'old': old, 'worktree': task['worktree']}
@@ -1225,12 +1265,20 @@ def prepare_commit(repo, directory, state):
     if merge_head.exists():
         heads = merge_head.read_text().splitlines()
         ticket = state['merges'].get(name)
-        if not ticket or heads != [ticket['source']]:
-            raise BranchError('merge is not authorized by prepare-merge')
-        merge_valid(repo, state, name, ticket)
+        sync = state['permits'].get(name, {})
+        if sync.get('sync_source'):
+            if heads != [sync['sync_source']] or sync['old'] != old:
+                raise BranchError('same-branch sync source or destination changed')
+            sync_remote_valid(repo, state, name, sync['sync_source'])
+            permit['sync_source'] = sync['sync_source']
+            record = authorized_record(repo, state, 'sync-merge', sync['sync_source'], sync.get('operation_id'))
+        else:
+            if not ticket or heads != [ticket['source']]:
+                raise BranchError('merge is not authorized by prepare-merge')
+            merge_valid(repo, state, name, ticket)
+            permit['merge'] = ticket['task']
+            record = authorized_record(repo, state, 'merge', ticket['source'], ticket.get('operation_id'))
         parents += heads
-        permit['merge'] = ticket['task']
-        record = authorized_record(repo, state, 'merge', ticket['source'], ticket.get('operation_id'))
     elif name == state['default']:
         raise BranchError('default branch is integration-only')
     if pick:
@@ -1292,8 +1340,9 @@ def transaction(repo, directory, state, phase, data):
                 if permit['kind'] == 'import':
                     record = authorized_record(repo, state, 'sync', new, permit.get('operation_id'))
                     validate_operation(repo, directory, state, record)
-                    if new != permit['new'] or new != oid(repo, 'refs/remotes/' + state['remote'] + '/' + name):
+                    if new != permit['new']:
                         raise BranchError('remote update differs from registered same-branch import')
+                    sync_remote_valid(repo, state, name, new)
                 else:
                     lines = git(repo, 'cat-file', '-p', new).split('\n\n', 1)[0].splitlines()
                     trees = [line[5:] for line in lines if line.startswith('tree ')]
@@ -1303,13 +1352,16 @@ def transaction(repo, directory, state, phase, data):
                     if git(repo, 'rev-parse', '--verify', 'CHERRY_PICK_HEAD', optional=True) != permit.get('pick'):
                         raise BranchError('cherry-pick state changed after commit preparation')
                     if permit.get('operation_id'):
-                        record = authorized_record(repo, state, 'pick' if permit.get('pick') else 'merge',
+                        kind = 'pick' if permit.get('pick') else 'sync-merge' if permit.get('sync_source') else 'merge'
+                        record = authorized_record(repo, state, kind,
                             permit.get('pick') or permit['parents'][1], permit['operation_id'])
                         current = validate_operation(repo, directory, state, record)
                         if index_entries(current['index']) != tree_entries(repo, permit['tree']):
                             raise BranchError('index changed after operation commit preparation')
                     if permit.get('merge'):
                         merge_valid(repo, state, name, state['merges'][name])
+                    if permit.get('sync_source'):
+                        sync_remote_valid(repo, state, name, permit['sync_source'])
             checked.append((name, new))
         for name, new in checked:
             state['permits'][name]['prepared'] = new
