@@ -335,6 +335,72 @@ def _generate(config: dict, executable: str) -> dict[str, tuple[bytes, int]]:
     return combined
 
 
+class _Ownership(dict):
+    """File ownership plus skill directory identities retained after file removal.
+
+    Retirement adds an optional v1 manifest field. Older adapters deliberately
+    reject that field, so consumers must upgrade the single existing writer;
+    do not run old/new adapters as competing ownership writers.
+    """
+    def __init__(self, files=(), skill_directories=None):
+        super().__init__(files)
+        self.skill_directories = skill_directories or []
+
+
+def _directory_identity(path: Path) -> dict:
+    if _contains_link(path) or _is_link_or_reparse(path) or not path.is_dir():
+        raise BackendError(f"owned skill directory is not plain: {path}")
+    info = path.stat()
+    if info.st_ino <= 0 or info.st_dev < 0:
+        raise BackendError(f"owned skill directory identity is unavailable: {path}")
+    return {"path": None, "device": info.st_dev, "inode": info.st_ino,
+            "mode": stat.S_IMODE(info.st_mode) & 0o777}
+
+
+def _validate_skill_directory_tree(output: Path, record: dict, allowed_files=()) -> None:
+    expected = {entry["path"]: entry for entry in record["directories"]}
+    root = output / record["path"]
+    for rel, entry in expected.items():
+        identity = _directory_identity(output / rel)
+        identity["path"] = rel
+        if identity != entry:
+            raise BackendError(f"owned skill directory identity changed: {rel}")
+    actual = {record["path"]}
+    for path in _walk_plain(root):
+        rel = path.relative_to(output).as_posix()
+        if path.is_dir():
+            actual.add(rel)
+        elif rel not in allowed_files:
+            raise BackendError(f"unowned contents in owned skill: {rel}")
+    if actual != set(expected):
+        raise BackendError(f"unowned directory in owned skill: {record['path']}")
+
+
+def _skill_directory_state(output: Path, desired: dict, owned: dict) -> list[dict]:
+    previous = {record["path"]: record for record in getattr(owned, "skill_directories", [])}
+    stale = set(owned) - set(desired)
+    affected = {root for root in _skill_roots(owned)
+                if any(rel.startswith(root + "/") for rel in stale)}
+    records = []
+    for root in sorted(set(previous) | affected):
+        files = {rel for rel in owned if rel.startswith(root + "/")}
+        known = {entry["path"]: entry for entry in previous.get(root, {}).get("directories", [])}
+        directories = {root}
+        for rel in files:
+            parent = Path(rel).parent
+            while parent.as_posix() != root:
+                directories.add(parent.as_posix())
+                parent = parent.parent
+        for rel in directories - set(known):
+            entry = _directory_identity(output / rel)
+            entry["path"] = rel
+            known[rel] = entry
+        record = {"path": root, "directories": [known[rel] for rel in sorted(known)]}
+        _validate_skill_directory_tree(output, record, files)
+        records.append(record if root in affected else previous[root])
+    return records
+
+
 def _read_manifest(output: Path, config: dict) -> dict[str, dict] | None:
     manifest = output / MANIFEST
     if not manifest.exists():
@@ -343,7 +409,7 @@ def _read_manifest(output: Path, config: dict) -> dict[str, dict] | None:
         raise BackendError(f"symlink or junction is not allowed: {manifest}")
     try:
         value = json.loads(manifest.read_text(encoding="utf-8"))
-        if not isinstance(value, dict) or type(value.get("version")) is not int or value["version"] != 1 or set(value) != {"version", "files"} or not isinstance(value.get("files"), list):
+        if not isinstance(value, dict) or type(value.get("version")) is not int or value["version"] != 1 or set(value) not in ({"version", "files"}, {"version", "files", "skill_directories"}) or not isinstance(value.get("files"), list):
             raise ValueError("invalid format")
         files = {}
         for entry in value["files"]:
@@ -354,7 +420,31 @@ def _read_manifest(output: Path, config: dict) -> dict[str, dict] | None:
             if (not isinstance(rel, str) or not rel or rel != pure.as_posix() or ":" in rel or "\\" in rel or pure.is_absolute() or pure.drive or any(part in ("", ".", "..") for part in pure.parts) or rel == MANIFEST or rel in files or not isinstance(digest, str) or len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest) or not isinstance(mode, int) or isinstance(mode, bool) or mode < 0 or mode > 0o777 or not any(_allowed(target, rel, config["global"]) for target in config["targets"])):
                 raise ValueError("invalid file entry")
             files[rel] = {"sha256": digest, "mode": mode}
-        return files
+        directory_records = value.get("skill_directories", [])
+        if not isinstance(directory_records, list):
+            raise ValueError("invalid skill directories")
+        roots = set()
+        for record in directory_records:
+            if not isinstance(record, dict) or set(record) != {"path", "directories"} or not isinstance(record["directories"], list):
+                raise ValueError("invalid skill directory")
+            root = _plain_relative(record["path"], config)
+            parts = Path(root).parts
+            if "skills" not in parts[:-1] or root in roots:
+                raise ValueError("invalid skill directory root")
+            roots.add(root)
+            seen = set()
+            for entry in record["directories"]:
+                if not isinstance(entry, dict) or set(entry) != {"path", "device", "inode", "mode"}:
+                    raise ValueError("invalid owned skill directory")
+                rel = _plain_relative(entry["path"], config)
+                if rel in seen or not (rel == root or rel.startswith(root + "/")) or any(type(entry[key]) is not int for key in ("device", "inode", "mode")) or entry["device"] < 0 or entry["inode"] <= 0 or not 0 <= entry["mode"] <= 0o777:
+                    raise ValueError("invalid owned skill directory")
+                seen.add(rel)
+            if root not in seen or any(Path(rel).parent.as_posix() not in seen for rel in seen if rel != root):
+                raise ValueError("invalid owned skill directory ancestry")
+        if any(root.startswith(other + "/") for root in roots for other in roots if root != other):
+            raise ValueError("overlapping skill directory roots")
+        return _Ownership(files, directory_records)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise BackendError(f"invalid ownership manifest {manifest}: {exc}") from exc
 
@@ -371,18 +461,13 @@ def _actual(path: Path) -> tuple[str, int]:
 
 
 def _skill_roots(files: dict[str, tuple[bytes, int]]) -> set[str]:
-    roots = set()
-    for rel in files:
-        parts = rel.split("/")
-        for index, part in enumerate(parts):
-            if part == "skills" and len(parts) > index + 1:
-                roots.add("/".join(parts[: index + 2]))
-    return roots
+    return {Path(rel).parent.as_posix() for rel in files
+            if Path(rel).name == "SKILL.md" and "skills" in Path(rel).parts[:-1]}
 
 
 def _validate_reconcile(output: Path, desired: dict[str, tuple[bytes, int]], owned: dict[str, dict] | None, config: dict, allow_grok_stale_claude: bool = False) -> dict[str, dict]:
     _assert_plain_output(output)
-    owned = owned or {}
+    owned = owned if owned is not None else _Ownership()
     if "grokcli" in config["targets"] and not config["global"] and "AGENTS.md" in desired and (output / "CLAUDE.md").exists():
         if not (allow_grok_stale_claude and "CLAUDE.md" in owned and "CLAUDE.md" not in desired):
             raise BackendError("Grok discovers existing CLAUDE.md; refusing to change AGENTS.md")
@@ -399,11 +484,13 @@ def _validate_reconcile(output: Path, desired: dict[str, tuple[bytes, int]], own
             raise BackendError(f"symlink or junction is not allowed: {path}")
         if path.exists() and rel not in owned:
             raise BackendError(f"unowned file would be replaced: {rel}")
+    recorded_roots = {record["path"] for record in getattr(owned, "skill_directories", [])}
+    _skill_directory_state(output, desired, owned)
     for skill in _skill_roots(desired) | _skill_roots({rel: (b"", 0) for rel in owned}):
         directory = output / skill
         if directory.exists():
             matching_owned = any(rel.startswith(skill + "/") for rel in owned)
-            if not matching_owned:
+            if not matching_owned and skill not in recorded_roots:
                 raise BackendError(f"unowned same-name skill: {skill}")
             for item in _walk_plain(directory):
                 if item.is_file() and item.relative_to(output).as_posix() not in owned:
@@ -430,9 +517,12 @@ def _protect_sources(config: dict, desired: dict[str, tuple[bytes, int]]) -> Non
                     raise BackendError(f"generated output overlaps source tree: {rel}")
 
 
-def _manifest_bytes(desired: dict[str, tuple[bytes, int]]) -> bytes:
+def _manifest_bytes(desired: dict[str, tuple[bytes, int]], skill_directories: list[dict] | None = None) -> bytes:
     files = [{"path": rel, "sha256": _digest(data), "mode": mode} for rel, (data, mode) in sorted(desired.items())]
-    return (json.dumps({"version": 1, "files": files}, sort_keys=True, indent=2) + "\n").encode()
+    value = {"version": 1, "files": files}
+    if skill_directories:
+        value["skill_directories"] = skill_directories
+    return (json.dumps(value, sort_keys=True, indent=2) + "\n").encode()
 
 
 def _journal_bytes(backups: dict[Path, tuple[bytes, int] | None], after: dict[Path, tuple[bytes, int] | None], output: Path, directories: list[Path]) -> bytes:
@@ -532,7 +622,9 @@ def _apply_reconcile(output: Path, desired: dict[str, tuple[bytes, int]], owned:
     stale = set(owned) - set(desired)
     writes = {rel: value for rel, value in desired.items() if rel not in owned or _actual(output / rel) != (_digest(value[0]), value[1])}
     manifest = output / MANIFEST
-    manifest_data = _manifest_bytes(desired)
+    # Preserve old directories and their ACLs; only files and manifest are journaled.
+    directory_records = _skill_directory_state(output, desired, owned)
+    manifest_data = _manifest_bytes(desired, directory_records)
     manifest_needs = not manifest.exists() or manifest.read_bytes() != manifest_data
     if not stale and not writes and not manifest_needs:
         return False

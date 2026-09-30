@@ -367,6 +367,226 @@ m.apply(sys.argv[2], sys.argv[3])
         self.assertTrue((self.root / "out/.agents/skills/new/SKILL.md").is_file())
 
 
+    def test_retired_skill_actual_generation_can_readd(self):
+        self.skill("generic", "Retained")
+        support = self.src / "skills/demo/references/deep/example.md"
+        support.parent.mkdir(parents=True)
+        support.write_text("nested support")
+        self.assertTrue(self.apply())
+        out = self.root / "out"
+        native = out / ".agents/skills"
+        (native / "unrelated").mkdir()
+        saved = {p.relative_to(out): p.read_bytes() for p in out.rglob("*") if p.is_file() and "/demo/" in p.as_posix()}
+        shutil.rmtree(self.src / "skills/demo")
+        self.assertTrue(self.apply())
+        for prefix in (".agents", ".claude", ".grok"):
+            self.assertTrue((out / prefix / "skills/demo").is_dir())
+            self.assertFalse(any(p.is_file() for p in (out / prefix / "skills/demo").rglob("*")))
+            self.assertTrue((out / prefix / "skills/generic/SKILL.md").is_file())
+        self.assertTrue((native / "unrelated").is_dir())
+        self.skill("demo", "Demo")
+        support.parent.mkdir(parents=True)
+        support.write_text("nested support")
+        self.assertTrue(self.apply())
+        for rel, data in saved.items():
+            self.assertEqual((out / rel).read_bytes(), data)
+        self.assertEqual((native / "demo/tool.sh").stat().st_mode & 0o777,
+                         (self.src / "skills/demo/tool.sh").stat().st_mode & 0o777)
+        self.assertTrue(backend.check(self.config, str(RULESYNC)))
+
+    def removed_skill_fixture(self):
+        out = self.root / "transaction"
+        out.mkdir()
+        plain_mode = 0o666 if os.name == "nt" else 0o644
+        executable_mode = 0o666 if os.name == "nt" else 0o755
+        desired = {".agents/skills/category/demo/SKILL.md": (b"skill", plain_mode),
+                   ".agents/skills/category/demo/references/deep.txt": (b"support", executable_mode),
+                   ".agents/skills/category/other/SKILL.md": (b"retained", plain_mode)}
+        backend._apply_reconcile(out, desired, {})
+        root = out / ".agents/skills/category/demo"
+        if os.name != "nt":
+            root.chmod(0o750)
+            (root / "references").chmod(0o710)
+        owned = {rel: {"sha256": backend._digest(data), "mode": mode} for rel, (data, mode) in desired.items()}
+        retained = {rel: value for rel, value in desired.items() if "/other/" in rel}
+        return out, root, desired, owned, retained
+
+    def test_retired_skill_foreign_empty_directory_blocks_and_rolls_back(self):
+        out, root, desired, owned, retained = self.removed_skill_fixture()
+        (root / "unowned-empty").mkdir()
+        modes = {p: p.stat().st_mode & 0o777 for p in (root, root / "references")}
+        with self.assertRaisesRegex(backend.BackendError, "unowned directory"):
+            backend._apply_reconcile(out, retained, owned)
+        for rel, (data, mode) in desired.items():
+            self.assertEqual((out / rel).read_bytes(), data)
+            self.assertEqual((out / rel).stat().st_mode & 0o777, mode)
+        for directory, mode in modes.items():
+            self.assertEqual(directory.stat().st_mode & 0o777, mode)
+        self.assertTrue((root / "unowned-empty").is_dir())
+        self.assertFalse((out / backend.JOURNAL).exists())
+
+    def test_retired_skill_unowned_file_and_fresh_empty_skill_refused(self):
+        out, root, desired, owned, retained = self.removed_skill_fixture()
+        config = backend._load_config(self.config)
+        (root / "foreign.txt").write_text("foreign")
+        with self.assertRaisesRegex(backend.BackendError, "unowned contents"):
+            backend._validate_reconcile(out, retained, owned, config)
+        self.assertEqual((root / "foreign.txt").read_text(), "foreign")
+        (root / "foreign.txt").unlink()
+        backend._apply_reconcile(out, retained, owned)
+        shutil.rmtree(root)
+        root.mkdir()
+        with self.assertRaisesRegex(backend.BackendError, "unowned same-name"):
+            backend._validate_reconcile(out, desired, {rel: owned[rel] for rel in retained}, config)
+
+    def test_retired_skill_crash_after_manifest_recovers_ownership_and_files(self):
+        out, root, desired, owned, retained = self.removed_skill_fixture()
+        modes = {p.relative_to(out).as_posix(): p.stat().st_mode & 0o777 for p in (root, root / "references")}
+        script = """
+import importlib.util, json, os, pathlib, sys
+spec = importlib.util.spec_from_file_location('backend', sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+old = pathlib.Path.unlink
+def crash(path, *args, **kwargs):
+    if path.name == m.JOURNAL: os._exit(23)
+    return old(path, *args, **kwargs)
+pathlib.Path.unlink = crash
+out = pathlib.Path(sys.argv[2])
+owned = json.loads(sys.argv[3])
+retained_path = '.agents/skills/category/other/SKILL.md'
+retained = {retained_path: (b'retained', owned[retained_path]['mode'])}
+m._apply_reconcile(out, retained, owned)
+"""
+        result = subprocess.run([sys.executable, "-c", script, str(ROOT / "bin/rulesync_backend.py"), str(out), json.dumps(owned)])
+        self.assertEqual(result.returncode, 23)
+        self.assertTrue(root.exists())
+        backend._recover(out, backend._load_config(self.config))
+        for rel, (data, mode) in desired.items():
+            self.assertEqual((out / rel).read_bytes(), data)
+            self.assertEqual((out / rel).stat().st_mode & 0o777, mode)
+        for rel, mode in modes.items():
+            self.assertEqual((out / rel).stat().st_mode & 0o777, mode)
+        self.assertFalse((out / backend.JOURNAL).exists())
+
+    def test_retired_skill_identity_replacement_and_bad_manifest_refused(self):
+        out, root, desired, owned, retained = self.removed_skill_fixture()
+        backend._apply_reconcile(out, retained, owned)
+        config = backend._load_config(self.config)
+        state = backend._read_manifest(out, config)
+        moved = root.with_name("original")
+        root.rename(moved)
+        root.mkdir()
+        with self.assertRaisesRegex(backend.BackendError, "identity changed"):
+            backend._validate_reconcile(out, desired, state, config)
+        root.rmdir()
+        moved.rename(root)
+        value = json.loads((out / backend.MANIFEST).read_text())
+        for rel, inode in ((".agents/skills", 42), ("../escape", 42),
+                           (".agents/skills/category/demo", 0),
+                           (".agents/skills/category/demo", True)):
+            changed = json.loads(json.dumps(value))
+            changed["skill_directories"][0]["directories"][0]["path"] = rel
+            changed["skill_directories"][0]["directories"][0]["inode"] = inode
+            (out / backend.MANIFEST).write_text(json.dumps(changed))
+            with self.assertRaisesRegex(backend.BackendError, "invalid ownership manifest"):
+                backend._read_manifest(out, config)
+
+    def test_retired_skill_partial_support_removal_then_full_removal_readd(self):
+        out, root, desired, owned, retained = self.removed_skill_fixture()
+        config = backend._load_config(self.config)
+        without_support = {rel: value for rel, value in desired.items() if not rel.endswith("deep.txt")}
+        backend._apply_reconcile(out, without_support, owned)
+        first = backend._read_manifest(out, config)
+        self.assertTrue((root / "references").is_dir())
+        self.assertFalse(backend._apply_reconcile(out, without_support, first))
+        backend._validate_reconcile(out, retained, first, config)
+        backend._apply_reconcile(out, retained, first)
+        removed = backend._read_manifest(out, config)
+        backend._validate_reconcile(out, desired, removed, config)
+        backend._apply_reconcile(out, desired, removed)
+        readded = backend._read_manifest(out, config)
+        self.assertFalse(backend._apply_reconcile(out, desired, readded))
+        for rel, (data, mode) in desired.items():
+            self.assertEqual((out / rel).read_bytes(), data)
+            self.assertEqual((out / rel).stat().st_mode & 0o777, mode)
+
+    def test_retired_skill_new_support_directory_is_immediately_idempotent(self):
+        out, root, desired, owned, retained = self.removed_skill_fixture()
+        data = json.loads(self.config.read_text())
+        data["output_root"] = str(out)
+        self.config.write_text(json.dumps(data))
+        config = backend._load_config(self.config)
+        without_support = {rel: value for rel, value in desired.items() if not rel.endswith("deep.txt")}
+        backend._apply_reconcile(out, without_support, owned)
+        state = backend._read_manifest(out, config)
+        expanded = dict(without_support)
+        plain_mode = 0o666 if os.name == "nt" else 0o644
+        expanded[".agents/skills/category/demo/new/nested.txt"] = (b"new support", plain_mode)
+        backend._validate_reconcile(out, expanded, state, config)
+        backend._apply_reconcile(out, expanded, state)
+        state = backend._read_manifest(out, config)
+        from unittest.mock import patch
+        with patch.object(backend, "_generate", return_value=expanded):
+            self.assertTrue(backend.check(self.config, str(RULESYNC)))
+            self.assertFalse(self.apply())
+        backend._apply_reconcile(out, without_support, state)
+        state = backend._read_manifest(out, config)
+        backend._apply_reconcile(out, retained, state)
+        state = backend._read_manifest(out, config)
+        backend._validate_reconcile(out, expanded, state, config)
+        backend._apply_reconcile(out, expanded, state)
+        self.assertEqual((root / "new/nested.txt").read_bytes(), b"new support")
+        self.assertFalse(backend._apply_reconcile(out, expanded, backend._read_manifest(out, config)))
+
+    def test_retired_skill_noop_foreign_contents_and_links_refused(self):
+        out, root, desired, owned, retained = self.removed_skill_fixture()
+        backend._apply_reconcile(out, retained, owned)
+        config = backend._load_config(self.config)
+        state = backend._read_manifest(out, config)
+        self.assertFalse(backend._apply_reconcile(out, retained, state))
+        foreign = root / "foreign.txt"
+        foreign.write_text("foreign")
+        with self.assertRaisesRegex(backend.BackendError, "unowned contents"):
+            backend._validate_reconcile(out, desired, state, config)
+        self.assertEqual(foreign.read_text(), "foreign")
+        foreign.unlink()
+        foreign.mkdir()
+        with self.assertRaisesRegex(backend.BackendError, "unowned directory"):
+            backend._validate_reconcile(out, desired, state, config)
+        foreign.rmdir()
+        target = self.root / "foreign-target"
+        target.mkdir()
+        if os.name == "nt":
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(foreign), str(target)], check=True, capture_output=True)
+        else:
+            foreign.symlink_to(target, target_is_directory=True)
+        with self.assertRaisesRegex(backend.BackendError, "symlink or junction"):
+            backend._validate_reconcile(out, desired, state, config)
+        self.assertTrue(target.is_dir())
+
+    def test_retired_skill_manifest_cleanup_failure_rolls_back(self):
+        from unittest.mock import patch
+        out, root, desired, owned, retained = self.removed_skill_fixture()
+        manifest_before = (out / backend.MANIFEST).read_bytes()
+        identities = {path: (path.stat().st_dev, path.stat().st_ino, path.stat().st_mode) for path in (root, root / "references")}
+        original = Path.unlink
+        calls = [0]
+        def fail_once(path, *args, **kwargs):
+            if path.name == backend.JOURNAL:
+                calls[0] += 1
+                if calls[0] == 1:
+                    raise OSError("cleanup failure")
+            return original(path, *args, **kwargs)
+        with patch.object(Path, "unlink", fail_once):
+            with self.assertRaisesRegex(OSError, "cleanup failure"):
+                backend._apply_reconcile(out, retained, owned)
+        self.assertEqual((out / backend.MANIFEST).read_bytes(), manifest_before)
+        for path, identity in identities.items():
+            self.assertEqual((path.stat().st_dev, path.stat().st_ino, path.stat().st_mode), identity)
+        for rel, (data, mode) in desired.items():
+            self.assertEqual((out / rel).read_bytes(), data)
+        self.assertFalse((out / backend.JOURNAL).exists())
+
     def handover_plan(self, files, backup=None, output=None, desired=None):
         output = output or (self.root / "out")
         backup = backup or (self.root / "handover-backup")

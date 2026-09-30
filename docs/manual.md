@@ -82,6 +82,19 @@ The adapter owns only paths recorded by its successful apply. Unknown files,
 unknown same-name skill directories and symlinks/junctions are conflicts.
 Changes made directly to owned outputs are preserved by refusing replacement;
 move an intentional handwritten edit into its source before applying again.
+When owned skill files are removed, the manifest retains identities of their
+now-empty directories in the optional `skill_directories` field. The adapter
+leaves directories and their ACLs in place. Re-adding the skill requires the
+same plain directory tree; foreign contents, replacement directories and links
+are refused. Partial support-file removals retain the same provenance. Directory
+identities unavailable on a filesystem block reuse rather than weakening the
+unowned-directory check.
+
+This manifest extension requires this adapter revision on the single existing
+writer. Earlier v1 manifests remain readable; older adapters reject the new
+field. Preserve the source, manifest and later edits before an adapter rollback;
+do not hand-edit the manifest or run an old writer beside the new one.
+
 Delete a source and apply to remove its previously owned output. Empty sources
 remove owned output; unrelated files remain. A repeated apply preserves unchanged
 files. Check stages expected output outside the destination and reports drift. A check
