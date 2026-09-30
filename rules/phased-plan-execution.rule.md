@@ -26,5 +26,5 @@ source更新や範囲変更時は、影響する配布物・pin・検証・承�
 既存の `<repo>/.claude/plan-phases/<slug>/` を使う。repo 自体が `.claude` なら
 `<repo>/plan-phases/<slug>/`。短い作業に phase 文書は不要。
 受け入れ条件が通った phase 文書と index の参照を削除し、未完了だけを残す。
-恒久的な手順と設計判断は README / docs へ移し、再開地点は HANDOFF に残す。
+恒久的な手順と設計判断は README / docs へ移し、再開地点は対象作業の正本に残す。
 一時的な plan file にだけ再開に必要な情報を置かない。
