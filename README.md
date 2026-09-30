@@ -737,6 +737,32 @@ python3 tests/test_push_preflight.py
 
 ## Skills
 
+`grill-with-docs` combines the design interview in `grilling` with the glossary
+and ADR workflow in `domain-modeling`. Deliver all three directories to the same
+agent. The composition supports a native Skill tool or reading dependencies from
+the agent's skill catalog; sibling links provide the same instructions when a
+dedicated tool is unavailable. The composite remains explicitly invoked.
+
+Invoke it as `$grill-with-docs` in Codex, `/grill-with-docs` in Claude, Cursor,
+and Agy, or by its skill name in OpenCode. In particular, Cursor's
+`disable-model-invocation: true` requires the explicit slash command; a natural
+language mention is not its invocation contract. See the
+[Cursor skill documentation](https://cursor.com/docs/skills).
+
+These skills retain Matt Pocock's MIT notice and the upstream base tree IDs in
+`skills/UPSTREAM.tsv`. `grill-with-docs` is adapted for agents without a Skill tool;
+the `agents/openai.yaml` files are local presentation metadata. The manifest
+keeps the whole group out of the authorship-filtered `agent-skills` mirror.
+
+Before distributing a skill change, validate and commit its source and the
+target declaration through their existing branch workflows. Apply the committed
+source on each target runtime with its declared inputs, then run placement and
+readiness checks. Finally invoke the skill through that agent's normal entry
+point and verify its dependencies and expected behavior. File equality proves
+projection, not invocation. Record the source and declaration revisions with
+the behavioral results in the existing shared task; generated HOME files are
+deployment outputs, not the source commit.
+
 `skills/create-verification-skill/SKILL.md` creates a project-specific verification
 skill when generation or revision is requested. Read it by path and name the
 target checkout; ordinary verification requests use the existing generated skill.
