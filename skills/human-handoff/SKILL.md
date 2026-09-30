@@ -88,7 +88,7 @@ reason recurrence is expected; distinguish the immediate handoff workaround from
 the unresolved cause. Do not wait for another failure, duplicate an existing
 issue, or expand the task into fixing the underlying interface without authority.
 If issue registration is unavailable, preserve the pending registration in the
-existing handoff record and report the limitation.
+owning task record and report the limitation.
 
 Validate the exact presented syntax in the stated shell and use a safe dry run
 or version query through the same argument path where available. Syntax checks

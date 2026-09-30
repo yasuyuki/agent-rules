@@ -1184,9 +1184,10 @@ MIT. See `LICENSE`.
 
 ## Cross-environment handoff
 
-The maintainer's `handoff` rule keeps workspace resumption in the nearest
-HANDOFF.md and cross-environment unfinished work in an explicitly selected,
-accessible shared task. `classify-work` handles capability/phase routing;
+The maintainer's `handoff` rule keeps resumption information in the owning task,
+operational documentation and task-specific evidence. It retires workspace-wide
+HANDOFF.md updates. Cross-environment unfinished work stays in an explicitly
+selected, accessible shared task. `classify-work` handles capability/phase routing;
 `human-handoff` handles a person's relay and copy/paste path. The session-end
 rule includes that relay as human work. The phase rule already preserves scope
 and acceptance boundaries and needs no parallel delivery procedure.

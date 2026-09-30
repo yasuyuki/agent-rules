@@ -10,7 +10,7 @@ explicit environment binding. Read the public README's work-classification
 schema before preparing input. Do not discover an authority by searching other
 HOME directories or silently choose another catalog.
 
-Reconcile the request with the current handoff, open issue ledger, and relevant
+Reconcile the request with its authoritative task record, open issue ledger, and relevant
 product acceptance records. Keep references and classification conditions in
 the work input, not a second progress ledger. Exclude completed items and record
 why other apparent work is outside the request. An old phase file alone does
