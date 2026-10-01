@@ -4,6 +4,8 @@ Use the [README](../README.md) to install from source. The project CLI manages
 your own sources. The advanced checkout commands below additionally support the
 maintainer's catalog and explicitly supplied environment declarations; they do
 not enroll an ordinary project in that environment policy.
+The examples abbreviate the virtual environment's CLI path to `agent-rules`;
+use the installed executable path from the README when it is not on PATH.
 
 ## Project rules and skills
 
@@ -108,6 +110,19 @@ adoption. Do not run old and new installers on the same output root. The live
 migration owner must retain the old revision, source inputs and outputs for
 recovery; reverting must stop at any subsequent user edit, rather than overwrite
 it. Synthetic generation proves files and safety behavior, not model loading.
+
+### Remove managed output
+
+To stop using the project CLI, first remove your rules and skills from the
+configured source directories. Keep those directories, the configuration,
+selected targets and output root in place. Run `agent-rules apply` and then
+`agent-rules check` with the same `--config` and `--rulesync` arguments you used
+for installation. Confirm that the managed agent files are gone before
+uninstalling the Python package with that virtual environment's Python and
+`-m pip uninstall agent-rules`. Removing a target from the configuration
+or uninstalling the package alone does not remove its output. Ownership
+metadata and the transaction lock remain in the output root; they are not
+agent instructions.
 
 ### One-time handwritten-output handover
 
