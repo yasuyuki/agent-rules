@@ -393,11 +393,15 @@ recover: task identity, dependencies, acceptance, holds, retirement requests and
 process-use leases. Git remains the source of truth for worktree, branch, HEAD,
 upstream, lock, merge and removal operations.
 
-The package is version `0.1.0` and is not published to PyPI. Installing it from
-its subdirectory does not adopt existing consumers, migrate a registry, rebind
-hooks, or deploy a live environment. Pinned legacy consumers remain on their
-existing interface until an explicit migration proves the boundary. A legacy
-registry is rejected rather than auto-migrated.
+Use that repository for its current version and installation instructions.
+This checkout pins a separate revision for its legacy compatibility tests in
+[CI](../.github/workflows/ci.yml); that test dependency is not required for
+project `agent-rules apply` or `check`. The agent-runtime owner selects its own
+lifecycle compatibility revision. Installing workspace-lifecycle alone does
+not adopt existing consumers, migrate a registry, rebind hooks, or deploy a
+live environment. Pinned legacy consumers remain on their existing interface
+until an explicit migration proves the boundary. A legacy registry is rejected
+rather than auto-migrated.
 
 ## Share current state across environments
 
