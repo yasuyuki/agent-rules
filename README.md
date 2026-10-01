@@ -53,6 +53,7 @@ The prepared Python package has not been published to PyPI.
 
 ## Sources and migration
 
+The repositories in this section are optional for project `apply` and `check`.
 Common policies in `rules/` remain one editable source; export explicitly chosen
 inputs as described in the [manual](docs/manual.md#declared-placement-and-source-authoring).
 Generic skills are edited in [agent-skills](https://github.com/yasuyuki/agent-skills).

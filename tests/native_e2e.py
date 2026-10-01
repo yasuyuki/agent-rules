@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shlex
 import signal
 import shutil
 import subprocess
@@ -348,6 +349,7 @@ def claude_skill_diagnostics(stdout: str, skill_name: str) -> dict[str, object]:
     malformed = False
     proof_commands: list[str] = []
     bash_errors: set[str] = set()
+    bash_exit_codes: set[int] = set()
     for line in stdout.splitlines():
         if not line.strip():
             continue
@@ -402,8 +404,13 @@ def claude_skill_diagnostics(stdout: str, skill_name: str) -> dict[str, object]:
                             tool_result = event.get("tool_use_result")
                             if isinstance(tool_result, dict):
                                 content_text += " " + str(tool_result.get("stderr", "")).lower()
+                            for match in re.finditer(r"\bexit (?:code|status)\s+([0-9]{1,3})\b", content_text):
+                                code = int(match.group(1))
+                                if code <= 255:
+                                    bash_exit_codes.add(code)
                             if any(word in content_text for word in
-                                   ("permission denied", "not permitted", "not allowed", "denied")):
+                                   ("permission denied", "permission required", "requires approval",
+                                    "approval required", "not permitted", "not allowed", "denied")):
                                 bash_errors.add("permission")
                             elif any(word in content_text for word in
                                      ("no such file", "not found", "can't open file")):
@@ -423,6 +430,20 @@ def claude_skill_diagnostics(stdout: str, skill_name: str) -> dict[str, object]:
     relevant = {name for name, selected in calls.values() if selected}
     success = {calls[tool_id][0] for tool_id in completed if calls[tool_id][1]}
     errors = {calls[tool_id][0] for tool_id in failed if calls[tool_id][1]}
+    first_programs = set()
+    for command in proof_commands:
+        try:
+            words = shlex.split(command)
+        except ValueError:
+            first_programs.add("unparseable")
+            continue
+        if not words:
+            first_programs.add("empty")
+            continue
+        program = words[0].replace("\\", "/").rsplit("/", 1)[-1]
+        first_programs.add(program if program in
+                           ("python3", "python", "proof.py", "cat", "ls", "head", "grep", "sh", "bash")
+                           else "other")
     raw = terminal[0].get("result") if len(terminal) == 1 else None
     try:
         terminal_json_object = isinstance(terminal_json(raw), dict) if isinstance(raw, str) else False
@@ -437,6 +458,8 @@ def claude_skill_diagnostics(stdout: str, skill_name: str) -> dict[str, object]:
         "skill_read_result_ok": "Read" in success,
         "proof_bash_result_ok": "Bash" in success,
         "proof_bash_error_classes": sorted(bash_errors),
+        "proof_bash_exit_codes": sorted(bash_exit_codes),
+        "proof_bash_first_programs": sorted(first_programs),
         "proof_bash_command_shape": {
             "starts_python3": any(command.lstrip().startswith("python3 ") for command in proof_commands),
             "contains_python3": any("python3" in command for command in proof_commands),

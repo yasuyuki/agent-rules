@@ -220,10 +220,36 @@ class NativeResultTests(unittest.TestCase):
         self.assertFalse(shape["terminal_json_object"])
         self.assertEqual(shape["tool_error_kinds"], ["Bash"])
         self.assertEqual(shape["proof_bash_error_classes"], ["permission"])
+        self.assertEqual(shape["proof_bash_exit_codes"], [])
+        self.assertEqual(shape["proof_bash_first_programs"], ["python3"])
         self.assertEqual(shape["proof_bash_command_shape"], {
             "starts_python3": True, "contains_python3": True,
             "contains_skill_path": False, "contains_challenge_arg": True,
             "contains_output_arg": True})
+        self.assertNotIn("SECRET", json.dumps(diagnostics))
+
+    def test_claude_failed_bash_keeps_only_program_and_exit_shape(self):
+        skill = "e2e-probe-example"
+        events = [
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "one", "name": "Bash", "input": {
+                    "command": f".claude/skills/{skill}/proof.py --challenge SECRET --output out.json"}},
+                {"type": "tool_use", "id": "two", "name": "Bash", "input": {
+                    "command": f"cat .claude/skills/{skill}/proof.py"}},
+            ]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "one", "is_error": True,
+                 "content": "Command failed with exit code 126. SECRET"},
+                {"type": "tool_result", "tool_use_id": "two", "is_error": True,
+                 "content": "Permission required. SECRET"},
+            ]}},
+            {"type": "result", "subtype": "error_during_execution", "result": "SECRET"},
+        ]
+        diagnostics = claude_skill_diagnostics("\n".join(map(json.dumps, events)), skill)
+        shape = diagnostics["claude_skill_events"]
+        self.assertEqual(shape["proof_bash_first_programs"], ["cat", "proof.py"])
+        self.assertEqual(shape["proof_bash_exit_codes"], [126])
+        self.assertEqual(shape["proof_bash_error_classes"], ["other", "permission"])
         self.assertNotIn("SECRET", json.dumps(diagnostics))
 
     def test_negative_rule_diagnostics_do_not_expose_response(self):
@@ -331,7 +357,7 @@ class NativeResultTests(unittest.TestCase):
             def native(_vendor, _cli, _model, _workspace, _user, _home, prompt,
                        proof_name=None, diagnostics=None, api_base_url=None):
                 challenge = re.search(r"exactly ([0-9a-f]{32})", prompt).group(1)
-                (workspace / proof_name).write_text(challenge + "\n")
+                (workspace / proof_name).write_bytes((challenge + "\n").encode("ascii"))
                 diagnostics.update(codex_proof_command_attempted=True,
                                    codex_proof_command_failed=False,
                                    codex_proof_command_shape={"python3": True},
