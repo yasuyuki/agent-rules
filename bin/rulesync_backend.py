@@ -610,12 +610,13 @@ def _restore(backups: dict[Path, tuple[bytes, int] | None]) -> None:
             if previous is None:
                 if path.exists() or _is_link_or_reparse(path):
                     path.unlink()
-            else:
+            elif not path.is_file() or _is_link_or_reparse(path) or _actual(path) != (_digest(previous[0]), previous[1]):
                 _write_atomic(path, *previous)
         except BaseException as exc:
-            failure = failure or exc
+            failure = failure or (path, exc)
     if failure:
-        raise BackendError("rollback failed") from failure
+        path, error = failure
+        raise BackendError(f"rollback failed for {path}: {error}") from error
 
 
 def _apply_reconcile(output: Path, desired: dict[str, tuple[bytes, int]], owned: dict[str, dict]) -> bool:
@@ -665,7 +666,7 @@ def _apply_reconcile(output: Path, desired: dict[str, tuple[bytes, int]], owned:
             if journal.exists():
                 journal.unlink()
         except BaseException as rollback:
-            raise BackendError("rollback failed") from rollback
+            raise BackendError(f"apply failed: {exc}; rollback failed: {rollback}") from rollback
         raise exc
     return True
 
