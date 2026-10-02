@@ -384,6 +384,15 @@ hooks, or deploy a live environment. Pinned legacy consumers remain on their
 existing interface until an explicit migration proves the boundary. A legacy
 registry is rejected rather than auto-migrated.
 
+For an explicitly approved legacy integration-task tip drift, the source utility
+`python bin/repair_legacy_tip.py --help` describes the bounded repair contract.
+It uses the installed legacy owner's lock, checks and atomic save. It requires
+exact identity, descendant commits and preserved staged/unstaged patch evidence.
+It updates only the selected registered tip and records the approval and evidence.
+It does not establish acceptance or integration, migrate the registry, rebind
+the owner, or change hooks, Git history or working files. Resume synchronization
+through the installed owner's normal entry after repair.
+
 ## Share current state across environments
 
 The maintainer's [handoff rule](../rules/handoff.rule.md) assigns resumption to
