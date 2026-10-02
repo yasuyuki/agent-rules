@@ -395,6 +395,258 @@ m.apply(sys.argv[2], sys.argv[3])
                          (self.src / "skills/demo/tool.sh").stat().st_mode & 0o777)
         self.assertTrue(backend.check(self.config, str(RULESYNC)))
 
+    def absent_retired_skill_fixture(self):
+        data = json.loads(self.config.read_text())
+        data["targets"] = ["codexcli"]
+        self.config.write_text(json.dumps(data))
+        agents = self.src / "skills/demo/agents"
+        agents.mkdir(parents=True, exist_ok=True)
+        (agents / "support.md").write_text("Demo support\n")
+        self.assertTrue(self.apply())
+        shutil.rmtree(self.src / "skills/demo")
+        self.assertTrue(self.apply())
+        out = self.root / "out"
+        root = out / ".agents/skills/demo"
+        manifest = out / backend.MANIFEST
+        self.assertEqual({entry["path"] for entry in json.loads(manifest.read_text())["skill_directories"][0]["directories"]},
+                         {".agents/skills/demo", ".agents/skills/demo/agents"})
+        shutil.rmtree(root)
+        return out, root, manifest
+
+    def test_apply_retires_absent_deselected_tree_and_check_stays_readonly(self):
+        out, root, manifest = self.absent_retired_skill_fixture()
+        before = manifest.read_bytes()
+        with self.assertRaisesRegex(backend.BackendError, "owned skill directory is not plain"):
+            backend.check(self.config, str(RULESYNC))
+        self.assertEqual(manifest.read_bytes(), before)
+        self.assertFalse((out / backend.JOURNAL).exists())
+        self.assertTrue(self.apply())
+        self.assertNotIn("skill_directories", json.loads(manifest.read_text()))
+        self.assertFalse(root.exists())
+        self.assertTrue(backend.check(self.config, str(RULESYNC)))
+        self.assertFalse(self.apply())
+        root.mkdir()
+        self.skill("demo", "Demo")
+        retired_manifest = manifest.read_bytes()
+        with self.assertRaisesRegex(backend.BackendError, "unowned same-name skill"):
+            self.apply()
+        self.assertEqual(manifest.read_bytes(), retired_manifest)
+        self.assertEqual(list(root.iterdir()), [])
+
+    def test_absent_retirement_requires_zero_desired_and_owned_files(self):
+        out, root, manifest = self.absent_retired_skill_fixture()
+        before = manifest.read_bytes()
+        self.skill("demo", "Demo")
+        with self.assertRaisesRegex(backend.BackendError, "owned skill directory is not plain"):
+            self.apply()
+        self.assertEqual(manifest.read_bytes(), before)
+        self.assertFalse(root.exists())
+        self.assertTrue((self.src / "skills/demo/SKILL.md").is_file())
+        shutil.rmtree(self.src / "skills/demo")
+        self.assertTrue(self.apply())
+        self.skill("demo", "Demo")
+        self.assertTrue(self.apply())
+        shutil.rmtree(root)
+        shutil.rmtree(self.src / "skills/demo")
+        before = manifest.read_bytes()
+        with self.assertRaisesRegex(backend.BackendError, "externally modified owned file"):
+            self.apply()
+        self.assertEqual(manifest.read_bytes(), before)
+        self.assertFalse(root.exists())
+
+    def test_absent_retirement_preserves_present_records_and_refuses_foreign_tree(self):
+        out, root, manifest = self.absent_retired_skill_fixture()
+        record = json.loads(manifest.read_text())["skill_directories"][0]
+        root.mkdir()
+        recorded_inode = next(entry["inode"] for entry in record["directories"] if entry["path"] == record["path"])
+        if root.stat().st_ino == recorded_inode:
+            root.rename(root.with_name("held-replacement"))
+            root.mkdir()
+        self.assertNotEqual(root.stat().st_ino, recorded_inode)
+        (root / "agents").mkdir()
+        before = manifest.read_bytes()
+        with self.assertRaisesRegex(backend.BackendError, "identity changed"):
+            self.apply()
+        self.assertEqual(manifest.read_bytes(), before)
+        shutil.rmtree(root)
+        self.assertTrue(self.apply())
+        self.skill("demo", "Demo")
+        self.assertTrue(self.apply())
+        shutil.rmtree(self.src / "skills/demo")
+        self.assertTrue(self.apply())
+        before = manifest.read_bytes()
+        identities = {path: path.stat().st_ino for path in (root,)}
+        self.assertFalse(self.apply())
+        self.assertEqual(manifest.read_bytes(), before)
+        self.assertEqual({path: path.stat().st_ino for path in identities}, identities)
+        foreign = root / "foreign.txt"
+        foreign.write_text("foreign")
+        with self.assertRaisesRegex(backend.BackendError, "unowned contents"):
+            self.apply()
+        self.assertEqual(foreign.read_text(), "foreign")
+        self.assertEqual(manifest.read_bytes(), before)
+        foreign.unlink()
+        foreign.mkdir()
+        with self.assertRaisesRegex(backend.BackendError, "unowned directory"):
+            self.apply()
+        self.assertTrue(foreign.is_dir())
+        self.assertEqual(manifest.read_bytes(), before)
+
+    def test_absent_retirement_refuses_parent_link(self):
+        out, root, manifest = self.absent_retired_skill_fixture()
+        parent = root.parent
+        saved = parent.with_name("saved-skills")
+        parent.rename(saved)
+        foreign = self.root / "foreign"
+        foreign.mkdir()
+        if os.name == "nt":
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(parent), str(foreign)], check=True, capture_output=True)
+        else:
+            parent.symlink_to(foreign, target_is_directory=True)
+        before = manifest.read_bytes()
+        with self.assertRaisesRegex(backend.BackendError, "retired skill ancestor is not plain"):
+            self.apply()
+        self.assertEqual(manifest.read_bytes(), before)
+        self.assertEqual(list(foreign.iterdir()), [])
+        self.assertFalse((out / backend.JOURNAL).exists())
+
+    def test_absent_retirement_refuses_mounted_ancestor_below_output(self):
+        out, root, manifest = self.absent_retired_skill_fixture()
+        before = manifest.read_bytes()
+        original = os.path.ismount
+        def mounted(path):
+            return path == root.parent or original(path)
+        with patch.object(backend.os.path, "ismount", mounted):
+            with self.assertRaisesRegex(backend.BackendError, "retired skill ancestor is mounted"):
+                self.apply()
+        self.assertEqual(manifest.read_bytes(), before)
+        self.assertFalse(root.exists())
+        self.assertFalse((out / backend.JOURNAL).exists())
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux mountinfo only")
+    def test_absent_retirement_refuses_same_device_bind_mount_with_escaped_path(self):
+        out, root, manifest = self.absent_retired_skill_fixture()
+        before = manifest.read_bytes()
+        original = Path.read_text
+        mountpoint = str(root.parent).replace("\\", "\\134").replace(" ", "\\040")
+        def mounted(path, *args, **kwargs):
+            if path == Path("/proc/self/mountinfo"):
+                return f"123 456 0:1 / {mountpoint} rw - tmpfs tmpfs rw\n"
+            return original(path, *args, **kwargs)
+        with patch.object(Path, "read_text", mounted), patch.object(backend.os.path, "ismount", return_value=False):
+            with self.assertRaisesRegex(backend.BackendError, "retired skill ancestor is mounted"):
+                self.apply()
+        self.assertEqual(manifest.read_bytes(), before)
+        self.assertFalse(root.exists())
+        self.assertFalse((out / backend.JOURNAL).exists())
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux mountinfo only")
+    def test_absent_retirement_refuses_unreadable_or_malformed_mountinfo(self):
+        out, root, manifest = self.absent_retired_skill_fixture()
+        before = manifest.read_bytes()
+        original = Path.read_text
+        for content, expected in ((None, "cannot inspect retired skill directory"),
+                                  ("malformed", "invalid Linux mount information"),
+                                  ("", "invalid Linux mount information")):
+            with self.subTest(content=content):
+                def unreadable(path, *args, **kwargs):
+                    if path == Path("/proc/self/mountinfo"):
+                        if content is None:
+                            raise PermissionError("mountinfo denied")
+                        return content
+                    return original(path, *args, **kwargs)
+                with patch.object(Path, "read_text", unreadable):
+                    with self.assertRaisesRegex(backend.BackendError, expected):
+                        self.apply()
+                self.assertEqual(manifest.read_bytes(), before)
+                self.assertFalse(root.exists())
+                self.assertFalse((out / backend.JOURNAL).exists())
+
+    def test_absent_retirement_permission_failure_is_not_absence(self):
+        out, root, manifest = self.absent_retired_skill_fixture()
+        before = manifest.read_bytes()
+        original = Path.lstat
+        def denied(path, *args, **kwargs):
+            if path == root / "agents":
+                raise PermissionError("denied descendant")
+            return original(path, *args, **kwargs)
+        with patch.object(Path, "lstat", denied):
+            with self.assertRaisesRegex(backend.BackendError, "cannot inspect retired skill directory.*denied descendant"):
+                self.apply()
+        self.assertEqual(manifest.read_bytes(), before)
+        self.assertFalse(root.exists())
+        self.assertFalse((out / backend.JOURNAL).exists())
+
+    def test_absent_retirement_rechecks_recorded_descendants(self):
+        out, root, manifest = self.absent_retired_skill_fixture()
+        before = manifest.read_bytes()
+        original = Path.lstat
+        def descendant_present(path, *args, **kwargs):
+            if path == root / "agents":
+                return original(root.parent)
+            return original(path, *args, **kwargs)
+        with patch.object(Path, "lstat", descendant_present):
+            with self.assertRaisesRegex(backend.BackendError, "retired skill directory is not absent"):
+                self.apply()
+        self.assertEqual(manifest.read_bytes(), before)
+        self.assertFalse(root.exists())
+
+    def test_absent_retirement_transaction_rechecks_tree_and_parent_identity(self):
+        for replace_parent in (False, True):
+            with self.subTest(replace_parent=replace_parent):
+                out, root, manifest = self.absent_retired_skill_fixture()
+                before = manifest.read_bytes()
+                original = backend._write_atomic
+                def race(path, *args):
+                    original(path, *args)
+                    if path.name == backend.JOURNAL:
+                        if replace_parent:
+                            root.parent.rename(root.parent.with_name("old-skills"))
+                            root.parent.mkdir()
+                        else:
+                            root.mkdir()
+                with patch.object(backend, "_write_atomic", race):
+                    with self.assertRaisesRegex(backend.BackendError, "retired skill directory ancestry changed"):
+                        self.apply()
+                self.assertEqual(manifest.read_bytes(), before)
+                self.assertFalse((out / backend.JOURNAL).exists())
+                self.assertEqual(list(root.iterdir()) if root.exists() else list(root.parent.iterdir()), [])
+                shutil.rmtree(out)
+                self.skill("demo", "Demo")
+
+    def test_absent_retirement_crash_after_manifest_recovers_before_retry(self):
+        out, root, manifest = self.absent_retired_skill_fixture()
+        before = manifest.read_bytes()
+        self.rule("a", "After retirement crash")
+        script = """
+import importlib.util, os, pathlib, sys
+spec = importlib.util.spec_from_file_location('backend', sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+old = pathlib.Path.unlink
+def crash(path, *args, **kwargs):
+    if path.name == m.JOURNAL: os._exit(23)
+    return old(path, *args, **kwargs)
+pathlib.Path.unlink = crash
+m.apply(sys.argv[2], sys.argv[3])
+"""
+        result = subprocess.run([sys.executable, "-c", script, str(ROOT / "bin/rulesync_backend.py"), str(self.config), str(RULESYNC)])
+        self.assertEqual(result.returncode, 23)
+        self.assertNotIn("skill_directories", json.loads(manifest.read_text()))
+        with self.assertRaisesRegex(backend.BackendError, "pending Rulesync transaction"):
+            backend.check(self.config, str(RULESYNC))
+        original = backend._validate_reconcile
+        recovered = []
+        def validate(*args, **kwargs):
+            recovered.append(manifest.read_bytes())
+            return original(*args, **kwargs)
+        with patch.object(backend, "_validate_reconcile", validate):
+            self.assertTrue(self.apply())
+        self.assertEqual(recovered, [before])
+        self.assertFalse(root.exists())
+        self.assertFalse((out / backend.JOURNAL).exists())
+        self.assertIn("After retirement crash", (out / "AGENTS.md").read_text())
+        self.assertTrue(backend.check(self.config, str(RULESYNC)))
+
     def removed_skill_fixture(self):
         out = self.root / "transaction"
         out.mkdir()
