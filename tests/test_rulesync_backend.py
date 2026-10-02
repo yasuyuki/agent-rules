@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).parents[1]
@@ -721,6 +722,96 @@ m._apply_reconcile(out, retained, owned)
         backup.mkdir()
         with self.assertRaisesRegex(backend.BackendError, "backup already exists"):
             backend.handover(self.config, plan, str(RULESYNC))
+
+    def recovery_fixture(self, current=b"before"):
+        out = self.root / "recovery"
+        out.mkdir()
+        path = out / "AGENTS.md"
+        path.write_bytes(current)
+        mode = path.stat().st_mode & 0o777
+        before, after = (b"before", mode), (b"after", mode)
+        journal = backend._journal_bytes({path: before}, {path: after}, out, [])
+        (out / backend.JOURNAL).write_bytes(journal)
+        return out, path, journal, {"targets": ["codexcli"], "global": False}
+
+    def test_recovery_before_state_preserves_file_identity(self):
+        out, path, journal, config = self.recovery_fixture()
+        identity = path.stat()
+        with patch.object(backend, "_write_atomic", side_effect=PermissionError("replacement denied")):
+            backend._recover(out, config)
+        self.assertEqual(path.read_bytes(), b"before")
+        self.assertEqual((path.stat().st_ino, path.stat().st_mtime_ns),
+                         (identity.st_ino, identity.st_mtime_ns))
+        self.assertFalse((out / backend.JOURNAL).exists())
+
+    def test_recovery_restores_after_state(self):
+        out, path, journal, config = self.recovery_fixture(b"after")
+        backend._recover(out, config)
+        self.assertEqual(path.read_bytes(), b"before")
+        self.assertFalse((out / backend.JOURNAL).exists())
+
+    def test_recovery_failure_retains_journal_and_can_resume(self):
+        out, path, journal, config = self.recovery_fixture(b"after")
+        second = out / ".claude/rules/a.md"
+        second.parent.mkdir(parents=True)
+        second.write_bytes(b"after")
+        mode = second.stat().st_mode & 0o777
+        journal = backend._journal_bytes(
+            {path: (b"before", mode), second: (b"before", mode)},
+            {path: (b"after", mode), second: (b"after", mode)}, out, [])
+        (out / backend.JOURNAL).write_bytes(journal)
+        write = backend._write_atomic
+        def fail_second(target, *args):
+            if target == second:
+                raise PermissionError("recovery denied")
+            write(target, *args)
+        with patch.object(backend, "_write_atomic", side_effect=fail_second):
+            with self.assertRaisesRegex(backend.BackendError, "recovery denied"):
+                backend._recover(out, {"targets": ["codexcli", "claudecode"], "global": False})
+        self.assertEqual(path.read_bytes(), b"before")
+        self.assertEqual(second.read_bytes(), b"after")
+        self.assertEqual((out / backend.JOURNAL).read_bytes(), journal)
+        identity = path.stat()
+        backend._recover(out, {"targets": ["codexcli", "claudecode"], "global": False})
+        self.assertEqual(path.stat().st_ino, identity.st_ino)
+        self.assertEqual(second.read_bytes(), b"before")
+        self.assertFalse((out / backend.JOURNAL).exists())
+
+    def test_recovery_refuses_later_user_edit(self):
+        out, path, journal, config = self.recovery_fixture(b"user edit")
+        with self.assertRaisesRegex(backend.BackendError, "external edit"):
+            backend._recover(out, config)
+        self.assertEqual(path.read_bytes(), b"user edit")
+        self.assertEqual((out / backend.JOURNAL).read_bytes(), journal)
+
+    def test_apply_reports_original_and_rollback_causes(self):
+        out = self.root / "failed-apply"
+        out.mkdir()
+        path = out / "AGENTS.md"
+        path.write_bytes(b"before")
+        mode = path.stat().st_mode & 0o777
+        other = out / ".claude/rules/a.md"
+        other.parent.mkdir(parents=True)
+        desired = {"AGENTS.md": (b"after", mode), ".claude/rules/a.md": (b"new", mode)}
+        owned = {"AGENTS.md": {"sha256": backend._digest(b"before"), "mode": mode}}
+        write = backend._write_atomic
+        def fail(target, data, permissions):
+            if target == other:
+                raise PermissionError("original apply denied")
+            if target == path and data == b"before":
+                raise PermissionError("rollback restore denied")
+            write(target, data, permissions)
+        with patch.object(backend, "_write_atomic", side_effect=fail):
+            with self.assertRaises(backend.BackendError) as caught:
+                backend._apply_reconcile(out, desired, owned)
+        self.assertIn("original apply denied", str(caught.exception))
+        self.assertIn("rollback restore denied", str(caught.exception))
+        self.assertIn("AGENTS.md", str(caught.exception))
+        self.assertTrue((out / backend.JOURNAL).exists())
+        backend._recover(out, {"targets": ["codexcli", "claudecode"], "global": False})
+        self.assertEqual(path.read_bytes(), b"before")
+        self.assertFalse(other.exists())
+        self.assertFalse((out / backend.JOURNAL).exists())
 
 
 if __name__ == "__main__":
