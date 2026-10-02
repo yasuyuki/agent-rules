@@ -37,7 +37,7 @@ def git_bytes(repo, *args): return subprocess.run(['git','-C',str(repo),*args],c
 class LegacyTipRepairTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
-        self.base = Path(self.temp.name); self.repo = self.base / 'repo'; self.repo.mkdir()
+        self.base = Path(self.temp.name).resolve(); self.repo = self.base / 'repo'; self.repo.mkdir()
         git(self.repo, 'init'); git(self.repo, 'config', 'user.name', 'Test'); git(self.repo, 'config', 'user.email', 'test@example.invalid')
         (self.repo / 'base').write_text('old\n'); (self.repo / 'staged').write_text('base\n'); (self.repo / 'worktree').write_text('base\n')
         git(self.repo, 'add', 'base', 'staged', 'worktree'); git(self.repo, 'commit', '-m', 'old')
