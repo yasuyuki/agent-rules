@@ -376,7 +376,61 @@ def _validate_skill_directory_tree(output: Path, record: dict, allowed_files=())
         raise BackendError(f"unowned directory in owned skill: {record['path']}")
 
 
-def _skill_directory_state(output: Path, desired: dict, owned: dict) -> list[dict]:
+def _retired_skill_absence(output: Path, record: dict) -> dict | None:
+    root = output / record["path"]
+    proof = {}
+    try:
+        try:
+            root.lstat()
+        except FileNotFoundError:
+            proof[root] = None
+        else:
+            return None
+        for entry in record["directories"]:
+            path = output / entry["path"]
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                proof[path] = None
+            else:
+                raise BackendError(f"retired skill directory is not absent: {path}")
+        device = next(entry["device"] for entry in record["directories"]
+                      if entry["path"] == record["path"])
+        mountpoints = set()
+        if sys.platform.startswith("linux"):
+            lines = Path("/proc/self/mountinfo").read_text().splitlines()
+            if not lines:
+                raise BackendError("invalid Linux mount information")
+            for line in lines:
+                fields = line.split()
+                if len(fields) < 10 or "-" not in fields:
+                    raise BackendError("invalid Linux mount information")
+                separator = fields.index("-")
+                if separator < 6 or len(fields) != separator + 4 or not fields[0].isdigit() or not fields[1].isdigit() or not fields[4].startswith("/"):
+                    raise BackendError("invalid Linux mount information")
+                mountpoint = fields[4]
+                for escaped, character in (("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\")):
+                    mountpoint = mountpoint.replace(escaped, character)
+                mountpoints.add(Path(mountpoint))
+        for path in root.parents:
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                proof[path] = None
+                continue
+            if not stat.S_ISDIR(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+                raise BackendError(f"retired skill ancestor is not plain: {path}")
+            if output in path.parents and (path in mountpoints or os.path.ismount(path)):
+                raise BackendError(f"retired skill ancestor is mounted: {path}")
+            if info.st_ino <= 0 or info.st_dev < 0 or ((path == output or output in path.parents) and info.st_dev != device):
+                raise BackendError(f"retired skill ancestor identity changed: {path}")
+            proof[path] = (info.st_dev, info.st_ino, info.st_mode)
+    except OSError as exc:
+        raise BackendError(f"cannot inspect retired skill directory: {exc}") from exc
+    return proof
+
+
+def _skill_directory_state(output: Path, desired: dict, owned: dict, retired: list | None = None) -> list[dict]:
     previous = {record["path"]: record for record in getattr(owned, "skill_directories", [])}
     stale = set(owned) - set(desired)
     affected = {root for root in _skill_roots(owned)
@@ -384,6 +438,11 @@ def _skill_directory_state(output: Path, desired: dict, owned: dict) -> list[dic
     records = []
     for root in sorted(set(previous) | affected):
         files = {rel for rel in owned if rel.startswith(root + "/")}
+        if retired is not None and root in previous and not files and not any(rel.startswith(root + "/") for rel in desired):
+            proof = _retired_skill_absence(output, previous[root])
+            if proof is not None:
+                retired.append((previous[root], proof))
+                continue
         known = {entry["path"]: entry for entry in previous.get(root, {}).get("directories", [])}
         directories = {root}
         for rel in files:
@@ -465,7 +524,7 @@ def _skill_roots(files: dict[str, tuple[bytes, int]]) -> set[str]:
             if Path(rel).name == "SKILL.md" and "skills" in Path(rel).parts[:-1]}
 
 
-def _validate_reconcile(output: Path, desired: dict[str, tuple[bytes, int]], owned: dict[str, dict] | None, config: dict, allow_grok_stale_claude: bool = False) -> dict[str, dict]:
+def _validate_reconcile(output: Path, desired: dict[str, tuple[bytes, int]], owned: dict[str, dict] | None, config: dict, allow_grok_stale_claude: bool = False, allow_absent_retired: bool = False) -> dict[str, dict]:
     _assert_plain_output(output)
     owned = owned if owned is not None else _Ownership()
     if "grokcli" in config["targets"] and not config["global"] and "AGENTS.md" in desired and (output / "CLAUDE.md").exists():
@@ -485,7 +544,7 @@ def _validate_reconcile(output: Path, desired: dict[str, tuple[bytes, int]], own
         if path.exists() and rel not in owned:
             raise BackendError(f"unowned file would be replaced: {rel}")
     recorded_roots = {record["path"] for record in getattr(owned, "skill_directories", [])}
-    _skill_directory_state(output, desired, owned)
+    _skill_directory_state(output, desired, owned, [] if allow_absent_retired else None)
     for skill in _skill_roots(desired) | _skill_roots({rel: (b"", 0) for rel in owned}):
         directory = output / skill
         if directory.exists():
@@ -624,7 +683,8 @@ def _apply_reconcile(output: Path, desired: dict[str, tuple[bytes, int]], owned:
     writes = {rel: value for rel, value in desired.items() if rel not in owned or _actual(output / rel) != (_digest(value[0]), value[1])}
     manifest = output / MANIFEST
     # Preserve old directories and their ACLs; only files and manifest are journaled.
-    directory_records = _skill_directory_state(output, desired, owned)
+    retired = []
+    directory_records = _skill_directory_state(output, desired, owned, retired)
     manifest_data = _manifest_bytes(desired, directory_records)
     manifest_needs = not manifest.exists() or manifest.read_bytes() != manifest_data
     if not stale and not writes and not manifest_needs:
@@ -655,6 +715,9 @@ def _apply_reconcile(output: Path, desired: dict[str, tuple[bytes, int]], owned:
         for rel, value in writes.items():
             _write_atomic(output / rel, *value)
         if manifest_needs:
+            for record, proof in retired:
+                if _retired_skill_absence(output, record) != proof:
+                    raise BackendError(f"retired skill directory ancestry changed: {record['path']}")
             _write_atomic(manifest, manifest_data, 0o600)
         journal.unlink()
     except BaseException as exc:
@@ -798,7 +861,7 @@ def apply(config_path: str | Path, rulesync: str | None = None) -> bool:
     output = config["_output"]
     with _output_lock(output):
         _recover(output, config)
-        owned = _validate_reconcile(output, desired, _read_manifest(output, config), config)
+        owned = _validate_reconcile(output, desired, _read_manifest(output, config), config, allow_absent_retired=True)
         return _apply_reconcile(output, desired, owned)
 
 
