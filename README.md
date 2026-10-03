@@ -1,34 +1,59 @@
 # Agent Rules
 
-Place explicitly selected rules and skills with **Rulesync 16.39.1**. Rulesync
-owns format generation; a small staging adapter protects unowned files, rejects
-conflicts, removes only owned stale output, and restores failed writes.
+Keep your rules and skills in selected source directories, then place them in the
+native file locations for the agents you choose. Run `apply` after editing a
+source and `check` to detect drift. **Rulesync 16.39.1** generates the files;
+the staging adapter protects unowned files, rejects conflicts, removes only
+owned stale output, and restores failed writes. The CLI runs only when called.
 No agent CLI, credentials, private repository or maintainer policies are required.
 
 ## Start from source
 
-Use Python 3.10+ and Node.js 22+ on Linux or Windows. From this checkout:
+Use Python 3.10+ and Node.js 22+ on Linux or Windows. From this checkout, use
+a virtual environment so installation does not change your global Python.
+On Linux:
 
 ```console
+python3 -m venv .venv
+.venv/bin/python -m pip install .
 npm ci --ignore-scripts
-python -m pip install .
+```
+
+On Windows PowerShell:
+
+```console
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install .
+npm.cmd ci --ignore-scripts
 ```
 
 Create native Rulesync sources and an explicit placement configuration using the
-[project guide](docs/manual.md#project-rules-and-skills), then run:
+[project guide](docs/manual.md#project-rules-and-skills). From the project that
+contains `rulesync-placement.json`, run the installed CLI with the Rulesync
+executable in this checkout. On Linux:
 
 ```console
-agent-rules apply --config rulesync-placement.json
-agent-rules check --config rulesync-placement.json
+/absolute/path/to/agent-rules/.venv/bin/agent-rules apply --config rulesync-placement.json --rulesync /absolute/path/to/agent-rules/node_modules/.bin/rulesync
+/absolute/path/to/agent-rules/.venv/bin/agent-rules check --config rulesync-placement.json --rulesync /absolute/path/to/agent-rules/node_modules/.bin/rulesync
 ```
 
-Select the installed Rulesync executable with
-`--rulesync` when it is not on PATH. There is no implicit download or initial
-sample policy. Check compares generated output without writing the destination.
+On Windows PowerShell:
+
+```console
+& "C:\path\to\agent-rules\.venv\Scripts\agent-rules.exe" apply --config rulesync-placement.json --rulesync "C:\path\to\agent-rules\node_modules\.bin\rulesync.cmd"
+& "C:\path\to\agent-rules\.venv\Scripts\agent-rules.exe" check --config rulesync-placement.json --rulesync "C:\path\to\agent-rules\node_modules\.bin\rulesync.cmd"
+```
+
+You may omit `--rulesync` if the executable is on PATH or in `node_modules/.bin`
+beside the configuration or current directory. `npm ci` in a different checkout
+does not make its executable available to a project. There is no implicit
+download or initial sample policy. Check compares generated output without
+writing the destination. See the [removal steps](docs/manual.md#remove-managed-output).
 The prepared Python package has not been published to PyPI.
 
 ## Sources and migration
 
+The repositories in this section are optional for project `apply` and `check`.
 Common policies in `rules/` remain one editable source; export explicitly chosen
 inputs as described in the [manual](docs/manual.md#declared-placement-and-source-authoring).
 Generic skills are edited in [agent-skills](https://github.com/yasuyuki/agent-skills).
