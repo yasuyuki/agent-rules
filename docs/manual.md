@@ -63,8 +63,11 @@ enough. agy user scope needs the `antigravity-cli` target. agy keeps only the
 first 24,000 bytes of `~/.gemini/GEMINI.md`, so the adapter does not use
 Rulesync's single global rule file: it places each input rule targeting
 `antigravity-cli` as its own always-on file in `.gemini/config/rules/`, and
-Rulesync generates only the skills in `.gemini/antigravity-cli/skills/`. An
-earlier owned `.gemini/GEMINI.md` is removed on the next apply. Combine all selected targets in one
+places Rulesync's generated skills in `.gemini/config/skills/`, the only skill
+root agy 1.3 reads. An earlier owned `.gemini/GEMINI.md` or
+`.gemini/antigravity-cli/skills/` file is removed on the next apply. agy 1.3
+moves the old skill root once on first start; restore those files to the owned
+paths before that apply, or it reports them as externally modified. Combine all selected targets in one
 config per output root: that root has one ownership manifest.
 
 Rulesync generates each target in an isolated staging directory. Shared output

@@ -134,19 +134,24 @@ class RulesyncBackendTest(unittest.TestCase):
         data.update(targets=['antigravity-cli'], output_root='global-out', **{'global': True})
         self.config.write_text(json.dumps(data))
         home = self.root / 'global-out'
-        # A manifest from the single-file layout owns GEMINI.md; apply retires it.
+        # A manifest from the single-file, pre-1.3 layout owns GEMINI.md and the
+        # old skill root; apply retires both.
         gemini = home / '.gemini/GEMINI.md'
-        gemini.parent.mkdir(parents=True)
+        legacy = home / '.gemini/antigravity-cli/skills/demo/SKILL.md'
+        legacy.parent.mkdir(parents=True)
         gemini.write_text('# Old\n')
+        legacy.write_text('# Old skill\n')
         (home / backend.MANIFEST).write_text(json.dumps({'version': 1, 'files': [{
-            'path': '.gemini/GEMINI.md', 'sha256': backend._digest(gemini.read_bytes()),
-            'mode': gemini.stat().st_mode & 0o777}]}))
+            'path': path.relative_to(home).as_posix(), 'sha256': backend._digest(path.read_bytes()),
+            'mode': path.stat().st_mode & 0o777} for path in (gemini, legacy)]}))
         self.assertTrue(self.apply())
         self.assertFalse(gemini.exists())
+        self.assertFalse(legacy.exists())
         self.assertEqual((home / '.gemini/config/rules/a.md').read_text(), '---\ntrigger: always_on\n---\n# Global\n')
         self.assertIn('# Listed', (home / '.gemini/config/rules/c.md').read_text())
         self.assertFalse((home / '.gemini/config/rules/b.md').exists())
-        self.assertTrue((home / '.gemini/antigravity-cli/skills/demo/reference.md').is_file())
+        self.assertTrue((home / '.gemini/config/skills/demo/reference.md').is_file())
+        self.assertFalse((home / '.gemini/antigravity-cli/skills/demo/reference.md').exists())
         self.assertFalse(self.apply())
         self.assertTrue(backend.check(self.config, str(RULESYNC)))
 

@@ -22,6 +22,8 @@ from pathlib import Path
 VERSION = "16.39.1"
 MANIFEST = ".rulesync-ownership.json"
 JOURNAL = ".rulesync-transaction.json"
+AGY_SKILLS = ".gemini/config/skills/"
+AGY_LEGACY_SKILLS = ".gemini/antigravity-cli/skills/"
 LOCK = ".rulesync-transaction.lock"
 TARGETS = {"codexcli", "claudecode", "grokcli", "opencode", "cursor", "antigravity-cli"}
 FEATURES = {"rules", "skills"}
@@ -221,8 +223,9 @@ def _allowed(target: str, rel: str, global_mode: bool = False) -> bool:
         return rel.startswith(".cursor/skills/") or (not global_mode and rel.startswith(".cursor/rules/"))
     if target == "antigravity-cli":
         if global_mode:
-            # GEMINI.md stays listed only so earlier manifests can retire it.
-            return rel == ".gemini/GEMINI.md" or rel.startswith(".gemini/config/rules/") or rel.startswith(".gemini/antigravity-cli/skills/")
+            # GEMINI.md and the pre-1.3 skill root stay listed only so earlier
+            # manifests can retire them.
+            return rel == ".gemini/GEMINI.md" or rel.startswith((".gemini/config/rules/", AGY_SKILLS, AGY_LEGACY_SKILLS))
         return rel == "AGENTS.md" or rel.startswith(".agents/skills/")
     if target == "codexcli":
         rule = ".codex/AGENTS.md" if global_mode else "AGENTS.md"
@@ -328,6 +331,10 @@ def _generate(config: dict, executable: str) -> dict[str, tuple[bytes, int]]:
                 rel = item.relative_to(generated_root).as_posix()
                 if not _allowed(target, rel, config["global"]):
                     raise BackendError(f"Rulesync emitted unsupported path for {target}: {rel}")
+                if target == "antigravity-cli" and rel.startswith(AGY_LEGACY_SKILLS):
+                    # Rulesync 16.39.1 still writes the pre-1.3 root, which agy
+                    # 1.3 moves once to ~/.gemini/config/skills/ and no longer reads.
+                    rel = AGY_SKILLS + rel[len(AGY_LEGACY_SKILLS):]
                 value = (item.read_bytes(), stat.S_IMODE(item.stat().st_mode) & 0o777)
                 _combine(combined, rel, value)
     if "grokcli" in config["targets"] and not config["global"] and "CLAUDE.md" in combined:
