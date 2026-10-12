@@ -48,7 +48,7 @@ wrong, skipped, or incomplete results is a failure.
 
 `result.json` fixes expectations and lists commands, revision, source hashes,
 runtime, owned resources, results, and cleanup. `playwright.json` records each
-assertion outcome and links screenshots under `results/`. Logs retain failures.
+test outcome and links screenshots under `results/`. Logs retain failures.
 Evidence survives removal of the temporary frontend, node modules, and browser.
 
 The fixture returns a fixed Undo identity and records IPC requests. It does not
