@@ -6,6 +6,13 @@ placement/composition/mirror run and its result interpretation. Use
 when creating or revising a verifier. The canonical sources are this checkout's
 skills; distributed copies need no vendor API or private environment binding.
 
+For agent-environment's current Rulesync source composition, use
+[verify-agent-environment](../skills/verify-agent-environment/SKILL.md) and its
+[feature map](../skills/verify-agent-environment/features/README.md).
+It drives installed `agent-rules apply/check` on copied synthetic inputs.
+The older placement demonstration below exercises the historical `place.py`
+entry and does not certify the current Rulesync route.
+
 This page preserves historical acceptance, including limits and failed attempts.
 It does not make an old pass evidence for a new revision or host. The current
 helper's CLI/help and regression tests own the executable procedure; the skill
