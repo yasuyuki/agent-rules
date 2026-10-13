@@ -12,7 +12,7 @@ from verify import TITLE, judge
 class EvidenceTests(unittest.TestCase):
     def test_report_requires_both_executed_projects_and_retained_capture(self):
         with tempfile.TemporaryDirectory() as directory:
-            evidence = Path(directory)
+            evidence = Path(directory).resolve()
             image = evidence / "capture.jpg"
             image.write_bytes(b"synthetic detector fixture")
             report = {"suites": [{"specs": [{"title": TITLE, "ok": True, "tests": [
