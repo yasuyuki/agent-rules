@@ -198,6 +198,12 @@ describes local invocation. Timeouts preserve partial outcomes and terminate
 only owned test processes. Lifecycle tests use disposable Git repositories and
 independent package environments.
 
+Before integration, run the checkout job's `tests/ci_runner.py` module
+selections locally with a Python 3.10 interpreter, the `requires-python` floor.
+Use it as the lifecycle task validation. A newer interpreter alone does not
+detect standard-library APIs or syntax added after 3.10; `hashlib.file_digest`
+in #43 passed locally on 3.14 and failed only in the 3.10 matrix.
+
 Read failing case output in the normal log and retained `ci-results-*` artifacts.
 Artifacts include runtime/dependency identity and source/workflow/run metadata.
 Compare matching inputs before reusing evidence; a PR head is not its merge or
