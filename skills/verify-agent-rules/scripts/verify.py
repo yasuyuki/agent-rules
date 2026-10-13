@@ -220,7 +220,7 @@ def run(repo, evidence_root=None, doctor_only=False, environment_repo=None, agen
                     "from `agent_rules_root`.\n<!-- agent-rules:end example-private -->")
         assertion(label + " dependency section", True, expected in text)
         assertion(label + " dependency section count", 1, text.count("<!-- agent-rules:begin example-private -->"))
-        assertion(label + " public handoff section", 1, text.count("<!-- agent-rules:begin handoff -->"))
+        assertion(label + " public rule section", 1, text.count("<!-- agent-rules:begin git-commit-policy -->"))
 
     record()  # Expectations exist before the first operation.
     try:

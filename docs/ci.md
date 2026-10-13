@@ -187,7 +187,7 @@ skip. Failures, cancellation and unexpected skips cannot satisfy them.
 
 | Boundary | Evidence |
 | --- | --- |
-| Source behavior | Current source, placement, handoff, inventory, optional-hook and workspace-entry contracts |
+| Source behavior | Current source, placement, inventory, optional-hook and workspace-entry contracts |
 | Installed distribution | Build/metadata and project CLI end-to-end checks; imports must resolve outside the checkout |
 | Selection and documentation | Whole-range classification, intentional/abnormal skips, and maintained local reference tests |
 | Real environment behavior | Separate authorized host acceptance; fixture/byte checks do not establish native agent loading or UI delivery |

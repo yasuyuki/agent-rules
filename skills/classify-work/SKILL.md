@@ -59,9 +59,8 @@ ID/principal, existing entry point, requested mode, acceptance risk, material
 exclusions/prohibitions, cited capability evidence, and every unknown condition.
 If phases use different environments, explain the handover using existing
 transfer paths; unknown transfer paths remain unresolved. Identify the accessible
-shared task and required recipient notification as proposed handoff steps. When
-an applicable `handoff` rule is available, use it to describe those steps; do not
-perform them as part of classification. Classification output alone is not
+shared task and required recipient notification as proposed handoff steps; do
+not perform them as part of classification. Classification output alone is not
 delivery or receipt.
 Do not substitute synthetic success for real acceptance.
 

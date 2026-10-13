@@ -417,13 +417,12 @@ through the installed owner's normal entry after repair.
 
 ## Share current state across environments
 
-The maintainer's [handoff rule](../rules/handoff.rule.md) assigns resumption to
-the owning task, operations documentation and task evidence. Workspace-wide
-HANDOFF.md creation and updates are retired. Cross-environment work remains
-in an explicitly selected, accessible shared task. [human-handoff](https://github.com/yasuyuki/agent-skills/blob/main/skills/human-handoff/SKILL.md) governs
+Resumption information lives in the owning task Issue, operations documentation
+and task evidence; workspace-wide HANDOFF.md files are retired
+([ADR 0002](adr/0002-always-on-rules-stay-small.md)). Cross-environment work
+remains in an explicitly selected, accessible shared task. [human-handoff](https://github.com/yasuyuki/agent-skills/blob/main/skills/human-handoff/SKILL.md) governs
 human relays; classification does not authorize execution. Saving a task is not
-recipient receipt or acceptance. The [handoff fixtures](../tests/fixtures/handoff/README.md)
-test this distinction; real host delivery and UI copying need separate evidence.
+recipient receipt or acceptance.
 
 The runtime owner documents the receiver binding, launch ordering, recovery and
 independent-work behavior. Existing GUI owners retain their fixed historical
