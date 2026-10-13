@@ -26,8 +26,11 @@ NOT_RUN = ["real-track listening and beat alignment", "live playback and keys",
 
 
 def sha256(path):
+    digest = hashlib.sha256()
     with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+        while chunk := stream.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def read_wav(path):
