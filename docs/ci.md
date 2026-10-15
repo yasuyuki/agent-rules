@@ -181,7 +181,7 @@ runs are distinct evidence.
 
 [The workflow](../.github/workflows/ci.yml) owns exact commands, versions,
 partitions and installed-wheel selections. Full CI covers Windows/Linux and
-Python 3.10/3.12, with one checkout job and a separate package job per configuration. The four existing `test` gates require successful documentation
+Python 3.12, with one checkout job and a separate package job per configuration. The two existing `test` gates require successful documentation
 checks and either successful heavy matrices or their classification-authorized
 skip. Failures, cancellation and unexpected skips cannot satisfy them.
 
@@ -199,10 +199,8 @@ only owned test processes. Lifecycle tests use disposable Git repositories and
 independent package environments.
 
 Before integration, run the checkout job's `tests/ci_runner.py` module
-selections locally with a Python 3.10 interpreter, the `requires-python` floor.
-Use it as the lifecycle task validation. A newer interpreter alone does not
-detect standard-library APIs or syntax added after 3.10; `hashlib.file_digest`
-in #43 passed locally on 3.14 and failed only in the 3.10 matrix.
+selections locally with a Python 3.12 interpreter, the `requires-python` floor.
+Use it as the lifecycle task validation.
 
 Read failing case output in the normal log and retained `ci-results-*` artifacts.
 Artifacts include runtime/dependency identity and source/workflow/run metadata.
@@ -248,9 +246,9 @@ same three wheel-specific E2Es. Separate runners isolate build output, source
 hash checks, installed environments and every mutable Git fixture. There is no
 artifact transfer or shared mutable checkout between verification jobs.
 
-The four existing `test (<os>, <python>)` check names are retained as gates. Each
-waits for **all** checkout partitions and package configurations, including
-artifact upload, and accepts only `success` for both matrices. Failure,
+The four `test (<os>, <python>)` check names were gates in the measured
+configuration. Each waited for **all** checkout partitions and package configurations, including
+artifact upload, and accepted only `success` for both matrices. Failure,
 cancellation or an unexpected job skip cannot satisfy the gate. Matrix fail-fast
 remains disabled. Source-stage skips in checkout partition 1 are intentional:
 those contracts run once per OS/Python configuration in partition 0. Platform

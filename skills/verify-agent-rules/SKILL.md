@@ -8,9 +8,7 @@ license: MIT
 
 Verify the public placement CLI with new disposable inputs. Use the default
 profile for placement; add `--environment-repo` only to exercise dependent
-source composition. The recipe is verified on
-Linux with Python 3.10+ and Git, but that past result is not evidence for a
-future run.
+source composition. Use Python 3.12+ and Git. Each run needs fresh evidence.
 
 From the selected `agent-rules` checkout:
 

@@ -9,7 +9,7 @@ use the installed executable path from the README when it is not on PATH.
 
 ## Project rules and skills
 
-Use Python 3.10+ and the pinned Rulesync 16.39.1 executable installed by
+Use Python 3.12+ and the pinned Rulesync 16.39.1 executable installed by
 `npm ci --ignore-scripts` from this checkout. The Python wheel only includes the
 project entry and staging adapter; runtime, Git hooks, catalogs and optional
 review tooling are checkout-only until their separate extraction is complete.

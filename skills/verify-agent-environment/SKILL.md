@@ -16,7 +16,7 @@ input under test. The public agent-rules CLI and Rulesync generate output.
 
 ## Launch and Doctor
 
-Run on Linux with Python 3.10+, Git, Node.js 22+, an installed agent-rules CLI,
+Run on Linux with Python 3.12+, Git, Node.js 22+, an installed agent-rules CLI,
 and the target's pinned Rulesync 16.39.1 executable. Use existing installations.
 This recipe installs nothing and launches no agent or server.
 
