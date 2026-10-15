@@ -1,15 +1,7 @@
 [
   {
     "app": "github-actions",
-    "name": "test (ubuntu-latest, 3.10)"
-  },
-  {
-    "app": "github-actions",
     "name": "test (ubuntu-latest, 3.12)"
-  },
-  {
-    "app": "github-actions",
-    "name": "test (windows-latest, 3.10)"
   },
   {
     "app": "github-actions",

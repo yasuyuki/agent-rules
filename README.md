@@ -9,7 +9,7 @@ No agent CLI, credentials, private repository or maintainer policies are require
 
 ## Start from source
 
-Use Python 3.10+ and Node.js 22+ on Linux or Windows. From this checkout, use
+Use Python 3.12+ and Node.js 22+ on Linux or Windows. From this checkout, use
 a virtual environment so installation does not change your global Python.
 On Linux:
 

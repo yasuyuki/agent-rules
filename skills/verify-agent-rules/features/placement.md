@@ -2,7 +2,7 @@
 
 The default helper profile drives `bin/place.py apply` and `check` against a
 new local project and synthetic declaration, rule, and skill inputs. It requires
-Python 3.10+, Git, and a readable checkout with `bin/place.py`, `placement.json`,
+Python 3.12+, Git, and a readable checkout with `bin/place.py`, `placement.json`,
 `rules/`, and `skills/`; it needs no agent installation or authentication.
 
 Before each operation, the helper declares and later records these independent
