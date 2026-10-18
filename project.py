@@ -12,8 +12,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", action="version", version=version("agent-rules"))
     sub = parser.add_subparsers(dest="command", required=True)
-    for command in ("apply", "check", "handover"):
-        entry = sub.add_parser(command)
+    for command in ("apply", "check", "preview", "handover"):
+        entry = sub.add_parser(command, help="list apply's pending changes without writing"
+                               if command == "preview" else None)
         entry.add_argument("--config", required=True, type=Path,
                            help="explicit Rulesync placement configuration")
         entry.add_argument("--rulesync", help="installed Rulesync 16.39.1 executable")

@@ -48,7 +48,8 @@ You may omit `--rulesync` if the executable is on PATH or in `node_modules/.bin`
 beside the configuration or current directory. `npm ci` in a different checkout
 does not make its executable available to a project. There is no implicit
 download or initial sample policy. Check compares generated output without
-writing the destination. See the [removal steps](docs/manual.md#remove-managed-output).
+writing the destination. `preview` with the same arguments lists the paths apply
+would add, update or delete before you approve it. See the [removal steps](docs/manual.md#remove-managed-output).
 The prepared Python package has not been published to PyPI.
 
 ## Sources and migration
