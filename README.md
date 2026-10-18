@@ -67,6 +67,7 @@ outside this compatibility surface until their separate adoption.
 
 - [User manual](docs/manual.md): source selection, ownership and migration boundaries.
 - [Development and CI](docs/ci.md): build and verification.
+- [Related public repositories](docs/repositories.md): responsibilities, change order and cloud session scope.
 - [Agent runtime](https://github.com/yasuyuki/agent-runtime): native CLI adapter and HANDOFF receiver owner.
 - [Workspace lifecycle guide](https://github.com/yasuyuki/workspace-lifecycle): independent task, finish, integration and retirement contract.
 - [Necessity review](https://github.com/yasuyuki/necessity-review): independent owner and management CLI; existing fixed consumers can retain their accepted agent-rules revision until separately migrated.
