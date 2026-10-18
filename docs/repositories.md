@@ -18,7 +18,7 @@ are indexed separately and are not named here.
 | [agent-runtime](https://github.com/yasuyuki/agent-runtime) | Standard `codex`, `claude` and `grok` launch and the HANDOFF receiver | workspace-lifecycle (SHA-256 pinned CLI) |
 | [workspace-lifecycle](https://github.com/yasuyuki/workspace-lifecycle) | Task worktree creation, supervised runs, integration and retirement | — |
 | [necessity-review](https://github.com/yasuyuki/necessity-review) | Command necessity review for native Codex hooks | — |
-| [agent-telemetry](https://github.com/yasuyuki/agent-telemetry) | Local OTLP log collection into SQLite for Codex and Claude Code | — |
+| [agent-telemetry](https://github.com/yasuyuki/agent-telemetry) | Local OTLP log collection into SQLite for Codex and Claude Code; standalone, intended for use by rule experiments | — |
 | [agent-at](https://github.com/yasuyuki/agent-at) | Scheduled agent launch | — |
 | [rule-experiment-apparatus](https://github.com/yasuyuki/rule-experiment-apparatus) | Rule experiment protocol, schemas and cycle CLI | agent-telemetry, agent-runtime, workspace-lifecycle |
 
