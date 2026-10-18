@@ -166,6 +166,107 @@ class RulesyncBackendTest(unittest.TestCase):
             with self.assertRaisesRegex(backend.BackendError, "externally modified"):
                 backend.preview(self.config, str(RULESYNC))
 
+    def set_targets(self, targets, global_mode=False):
+        data = json.loads(self.config.read_text())
+        data["targets"], data["global"] = targets, global_mode
+        self.config.write_text(json.dumps(data))
+
+    def test_removed_target_outputs_are_retired_and_readded(self):
+        out = self.root / "out"
+        self.assertTrue(self.apply())
+        (out / ".claude/settings.json").write_text("{}")
+        (out / ".claude/skills/mine").mkdir()
+        (out / ".claude/skills/mine/SKILL.md").write_text("mine")
+        agents = (out / "AGENTS.md").read_bytes()
+        shared = {path: path.read_bytes() for path in (out / ".agents").rglob("*") if path.is_file()}
+        for targets, gone in ((["codexcli", "claudecode"], ".grok/"), (["codexcli"], ".claude/")):
+            with self.subTest(targets=targets):
+                retired = {rel for rel in json.loads((out / backend.MANIFEST).read_text())["files"]
+                           for rel in [rel["path"]] if rel.startswith(gone)}
+                self.assertTrue(retired)
+                self.set_targets(targets)
+                self.assertFalse(backend.check(self.config, str(RULESYNC)))
+                plan = self.preview_matches_apply()
+                self.assertEqual(plan, {"changes": [{"path": rel, "operation": "delete"} for rel in sorted(retired)],
+                                        "manifest": True})
+                self.assertTrue(backend.check(self.config, str(RULESYNC)))
+                self.assertFalse(self.apply())
+                self.assertEqual(agents, (out / "AGENTS.md").read_bytes())
+                self.assertEqual(shared, {path: path.read_bytes() for path in (out / ".agents").rglob("*") if path.is_file()})
+        self.assertEqual((out / ".claude/settings.json").read_text(), "{}")
+        self.assertEqual((out / ".claude/skills/mine/SKILL.md").read_text(), "mine")
+        self.assertFalse((out / ".claude/rules/a.md").exists())
+        self.set_targets(["codexcli", "claudecode"])
+        self.assertTrue(self.apply())
+        self.assertTrue((out / ".claude/rules/a.md").is_file())
+        self.assertTrue(backend.check(self.config, str(RULESYNC)))
+        self.assertFalse(self.apply())
+
+    def test_removed_target_retirement_refuses_unsafe_state_without_writing(self):
+        out = self.root / "out"
+        self.set_targets(["codexcli", "claudecode"])
+        self.assertTrue(self.apply())
+        self.set_targets(["codexcli"])
+        owned = out / ".claude/rules/a.md"
+        original = owned.read_bytes()
+        manifest = (out / backend.MANIFEST).read_text()
+        foreign = json.loads(manifest)
+        foreign["files"].append({"path": "README.md", "sha256": "0" * 64, "mode": 0o644})
+        linked = self.root / "linked-rules"
+
+        def link_rules():
+            shutil.copytree(out / ".claude/rules", linked)
+            shutil.rmtree(out / ".claude/rules")
+            if os.name == "nt":
+                subprocess.run(["cmd", "/c", "mklink", "/J", str(out / ".claude/rules"), str(linked)],
+                               check=True, capture_output=True)
+            else:
+                (out / ".claude/rules").symlink_to(linked, target_is_directory=True)
+
+        def unlink_rules():
+            os.rmdir(out / ".claude/rules") if os.name == "nt" else (out / ".claude/rules").unlink()
+            shutil.copytree(linked, out / ".claude/rules")
+            shutil.rmtree(linked)
+
+        journal = json.dumps({"version": 1, "directories": [], "files": [
+            {"path": ".claude/rules/a.md", "before": {"data": "YQ==", "mode": 0o644}, "after": None}]})
+        conflicts = (
+            ("externally modified", lambda: owned.write_bytes(b"edited"), lambda: owned.write_bytes(original)),
+            ("invalid ownership manifest", lambda: (out / backend.MANIFEST).write_text(json.dumps(foreign)),
+             lambda: (out / backend.MANIFEST).write_text(manifest)),
+            ("symlink or junction", link_rules, unlink_rules),
+            ("pending", lambda: (out / backend.JOURNAL).write_text(journal),
+             lambda: (out / backend.JOURNAL).unlink()),
+        )
+        for reason, create, remove in conflicts:
+            with self.subTest(reason=reason):
+                create()
+                before = self.snapshot()
+                for operation in (backend.check, backend.preview, backend.apply):
+                    with self.assertRaisesRegex(backend.BackendError, reason):
+                        operation(self.config, str(RULESYNC))
+                    self.assertEqual(before, self.snapshot())
+                remove()
+        mode = owned.stat().st_mode & 0o777
+        owned.unlink()
+        (out / backend.JOURNAL).write_bytes(backend._journal_bytes({owned: (original, mode)}, {owned: None}, out, []))
+        self.assertTrue(self.apply())
+        self.assertFalse((out / backend.JOURNAL).exists())
+        self.assertFalse(owned.exists())
+        self.assertTrue(backend.check(self.config, str(RULESYNC)))
+
+    def test_removed_global_target_is_retired(self):
+        out = self.root / "out"
+        self.set_targets(["codexcli", "claudecode"], global_mode=True)
+        self.assertTrue(self.apply())
+        self.assertTrue(any((out / ".claude").rglob("*.md")))
+        self.set_targets(["codexcli"], global_mode=True)
+        plan = self.preview_matches_apply()
+        self.assertEqual({change["operation"] for change in plan["changes"]}, {"delete"})
+        self.assertFalse(any((out / ".claude").rglob("*.md")))
+        self.assertTrue((out / ".codex/AGENTS.md").is_file())
+        self.assertTrue(backend.check(self.config, str(RULESYNC)))
+
     def test_cursor_project_ownership_update_delete_and_global_skills(self):
         data = json.loads(self.config.read_text())
         data['targets'] = ['codexcli', 'cursor']
