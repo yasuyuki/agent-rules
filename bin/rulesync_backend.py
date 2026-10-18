@@ -483,7 +483,7 @@ def _read_manifest(output: Path, config: dict) -> dict[str, dict] | None:
                 raise ValueError("invalid file entry")
             rel, digest, mode = entry["path"], entry["sha256"], entry["mode"]
             pure = Path(rel) if isinstance(rel, str) else Path("")
-            if (not isinstance(rel, str) or not rel or rel != pure.as_posix() or ":" in rel or "\\" in rel or pure.is_absolute() or pure.drive or any(part in ("", ".", "..") for part in pure.parts) or rel == MANIFEST or rel in files or not isinstance(digest, str) or len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest) or not isinstance(mode, int) or isinstance(mode, bool) or mode < 0 or mode > 0o777 or not any(_allowed(target, rel, config["global"]) for target in config["targets"])):
+            if (not isinstance(rel, str) or not rel or rel != pure.as_posix() or ":" in rel or "\\" in rel or pure.is_absolute() or pure.drive or any(part in ("", ".", "..") for part in pure.parts) or rel == MANIFEST or rel in files or not isinstance(digest, str) or len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest) or not isinstance(mode, int) or isinstance(mode, bool) or mode < 0 or mode > 0o777 or not _owned_output(rel, config)):
                 raise ValueError("invalid file entry")
             files[rel] = {"sha256": digest, "mode": mode}
         directory_records = value.get("skill_directories", [])
@@ -493,7 +493,7 @@ def _read_manifest(output: Path, config: dict) -> dict[str, dict] | None:
         for record in directory_records:
             if not isinstance(record, dict) or set(record) != {"path", "directories"} or not isinstance(record["directories"], list):
                 raise ValueError("invalid skill directory")
-            root = _plain_relative(record["path"], config)
+            root = _plain_relative(record["path"], config, owned=True)
             parts = Path(root).parts
             if "skills" not in parts[:-1] or root in roots:
                 raise ValueError("invalid skill directory root")
@@ -502,7 +502,7 @@ def _read_manifest(output: Path, config: dict) -> dict[str, dict] | None:
             for entry in record["directories"]:
                 if not isinstance(entry, dict) or set(entry) != {"path", "device", "inode", "mode"}:
                     raise ValueError("invalid owned skill directory")
-                rel = _plain_relative(entry["path"], config)
+                rel = _plain_relative(entry["path"], config, owned=True)
                 if rel in seen or not (rel == root or rel.startswith(root + "/")) or any(type(entry[key]) is not int for key in ("device", "inode", "mode")) or entry["device"] < 0 or entry["inode"] <= 0 or not 0 <= entry["mode"] <= 0o777:
                     raise ValueError("invalid owned skill directory")
                 seen.add(rel)
@@ -616,7 +616,7 @@ def _recover(output: Path, config: dict, readonly: bool = False) -> None:
                 raise ValueError()
             rel = entry["path"]
             canonical = Path(rel).as_posix() if isinstance(rel, str) else ""
-            allowed = rel == MANIFEST or any(_allowed(target, rel, config["global"]) for target in config["targets"])
+            allowed = rel == MANIFEST or _owned_output(rel, config)
             if not isinstance(rel, str) or not rel or rel != canonical or "\\" in rel or ":" in rel or Path(rel).is_absolute() or ".." in Path(rel).parts or rel == JOURNAL or not allowed:
                 raise ValueError()
             def decode(item):
@@ -748,13 +748,19 @@ def _apply_reconcile(output: Path, desired: dict[str, tuple[bytes, int]], owned:
     return True
 
 
-def _plain_relative(rel: object, config: dict) -> str:
+def _owned_output(rel: str, config: dict) -> bool:
+    # Recorded ownership may come from a target since removed from the config;
+    # it must stay readable so apply can retire it. New output stays per-target.
+    return any(_allowed(target, rel, config["global"]) for target in TARGETS)
+
+
+def _plain_relative(rel: object, config: dict, owned: bool = False) -> str:
     if not isinstance(rel, str) or not rel:
         raise ValueError("invalid file entry")
     pure = Path(rel)
     if (rel != pure.as_posix() or ":" in rel or "\\" in rel or pure.is_absolute() or pure.drive
             or any(part in ("", ".", "..") for part in pure.parts) or rel in (MANIFEST, JOURNAL, LOCK)
-            or not any(_allowed(target, rel, config["global"]) for target in config["targets"])):
+            or not (_owned_output(rel, config) if owned else any(_allowed(target, rel, config["global"]) for target in config["targets"]))):
         raise ValueError("invalid file entry")
     return rel
 
