@@ -145,6 +145,10 @@ class ProjectCliTests(unittest.TestCase):
             source.mkdir(parents=True)
             rule = source / 'policy.md'
             rule.write_text('---\nroot: false\ntargets: [codexcli, claudecode]\n---\nOnly the selected project policy.\n', encoding='utf-8')
+            skill = source.parent / 'skills/license-proof'
+            skill.mkdir(parents=True)
+            skill_source = b'---\nname: license-proof\ndescription: Check packaged metadata preservation.\nlicense: MIT\n---\n# License proof\n'
+            (skill / 'SKILL.md').write_bytes(skill_source)
             config = root / 'placement.json'
             config.write_text(json.dumps(dict(version=1, input_roots=['inputs'],
                 targets=['codexcli','claudecode','grokcli'], features=['rules','skills'],
@@ -159,6 +163,20 @@ class ProjectCliTests(unittest.TestCase):
             result = run('apply', '--config', str(config))
             self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
             self.assertEqual((root/'project/AGENTS.md').read_text().strip(), 'Only the selected project policy.')
+            parser = """const {createRequire} = require('node:module');
+const {readFileSync, realpathSync} = require('node:fs');
+const matter = createRequire(realpathSync(process.argv[1]))('gray-matter');
+process.stdout.write(JSON.stringify(process.argv.slice(2).map(p => matter(readFileSync(p, 'utf8')).data)));"""
+            parsed = subprocess.run([shutil.which('node') or 'node', '-e', parser,
+                                     os.environ['RULESYNC_EXECUTABLE'],
+                                     *[str(root / 'project' / target / 'skills/license-proof/SKILL.md')
+                                       for target in ('.agents', '.claude', '.grok')]],
+                                    capture_output=True, text=True)
+            self.assertEqual(parsed.returncode, 0, parsed.stderr)
+            self.assertEqual(json.loads(parsed.stdout),
+                             [{'name': 'license-proof', 'description': 'Check packaged metadata preservation.',
+                               'license': 'MIT'}] * 3)
+            self.assertEqual((skill / 'SKILL.md').read_bytes(), skill_source)
             self.assertEqual(run('check', '--config', str(config)).returncode, 0)
             before = {p: (p.read_bytes(),p.stat().st_mtime_ns) for p in (root/'project').rglob('*') if p.is_file()}
             self.assertEqual(run('apply', '--config', str(config)).returncode, 0)

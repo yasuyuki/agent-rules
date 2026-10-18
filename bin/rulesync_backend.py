@@ -307,6 +307,51 @@ def _antigravity_global_rules(config: dict) -> dict[str, tuple[bytes, int]]:
     return placed
 
 
+def _skill_frontmatter(config: dict, target: str, executable: str, files: dict[str, tuple[bytes, int]]) -> None:
+    roots = {
+        "codexcli": ".agents/skills/", "claudecode": ".claude/skills/",
+        "grokcli": ".grok/skills/", "cursor": ".cursor/skills/",
+        "opencode": ".config/opencode/skills/" if config["global"] else ".opencode/skills/",
+        "antigravity-cli": AGY_SKILLS if config["global"] else ".agents/skills/",
+    }
+    sources = []
+    for root in config["_roots"]:
+        directory = root / "skills"
+        if directory.is_dir():
+            for item in sorted(directory.iterdir()):
+                source = item / "SKILL.md"
+                if item.is_dir() and source.is_file():
+                    sources.append({"id": item.name, "sourceBase64": base64.b64encode(source.read_bytes()).decode("ascii")})
+    paths = {}
+    for rel in files:
+        if rel.startswith(roots[target]):
+            parts = rel[len(roots[target]):].split("/")
+            if len(parts) == 2 and parts[1] == "SKILL.md":
+                paths[parts[0]] = rel
+    if not sources and not paths:
+        return
+    request = {"target": target, "sources": sources, "generated": [
+        {"id": name, "generatedBase64": base64.b64encode(files[rel][0]).decode("ascii")}
+        for name, rel in paths.items()
+    ]}
+    try:
+        run = subprocess.run([shutil.which("node") or "node", str(Path(__file__).with_name("skill_frontmatter.cjs")), executable],
+                             input=json.dumps(request), text=True, capture_output=True, encoding="utf-8", check=False)
+    except OSError as exc:
+        raise BackendError(f"cannot inspect skill frontmatter for {target}: {exc}") from exc
+    if run.returncode:
+        raise BackendError(f"cannot preserve skill frontmatter for {target}: {run.stderr.strip()}")
+    try:
+        generated = json.loads(run.stdout)["generated"]
+        if {entry["id"] for entry in generated} != set(paths) or len(generated) != len(paths):
+            raise ValueError("unexpected skill identities")
+        for entry in generated:
+            rel = paths[entry["id"]]
+            files[rel] = (base64.b64decode(entry["generatedBase64"], validate=True), files[rel][1])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise BackendError(f"invalid skill frontmatter response for {target}: {exc}") from exc
+
+
 def _generate(config: dict, executable: str) -> dict[str, tuple[bytes, int]]:
     combined: dict[str, tuple[bytes, int]] = {}
     with tempfile.TemporaryDirectory(prefix="rulesync-backend-") as temp:
@@ -336,6 +381,7 @@ def _generate(config: dict, executable: str) -> dict[str, tuple[bytes, int]]:
             # In global mode Rulesync deliberately writes below HOME and ignores
             # output-roots.  HOME is our staging root, so reconcile that tree.
             generated_root = home if config["global"] else stage
+            target_files: dict[str, tuple[bytes, int]] = {}
             for item in _walk_plain(generated_root):
                 if not item.is_file():
                     continue
@@ -347,6 +393,10 @@ def _generate(config: dict, executable: str) -> dict[str, tuple[bytes, int]]:
                     # 1.3 moves once to ~/.gemini/config/skills/ and no longer reads.
                     rel = AGY_SKILLS + rel[len(AGY_LEGACY_SKILLS):]
                 value = (item.read_bytes(), _output_mode(item.stat().st_mode))
+                _combine(target_files, rel, value)
+            if "skills" in features:
+                _skill_frontmatter(config, target, executable, target_files)
+            for rel, value in target_files.items():
                 _combine(combined, rel, value)
     if "grokcli" in config["targets"] and not config["global"] and "CLAUDE.md" in combined:
         raise BackendError("Grok also discovers CLAUDE.md; use non-root Claude rules to avoid duplicate policy")
