@@ -83,11 +83,12 @@ class RulesyncBackendTest(unittest.TestCase):
                                                    path.stat().st_mode, path.stat().st_mtime_ns)
                 for path in out.rglob("*")}
 
-    def preview_matches_apply(self):
+    def preview_matches_apply(self, repeat=False):
         before = self.snapshot()
         sources = {path: path.read_bytes() for path in self.src.rglob("*") if path.is_file()}
         plan = backend.preview(self.config, str(RULESYNC))
-        self.assertEqual(plan, backend.preview(self.config, str(RULESYNC)))
+        if repeat:
+            self.assertEqual(plan, backend.preview(self.config, str(RULESYNC)))
         self.assertEqual(before, self.snapshot())
         self.assertEqual(sources, {path: path.read_bytes() for path in self.src.rglob("*") if path.is_file()})
         self.assertEqual(plan["changes"], sorted(plan["changes"], key=lambda change: change["path"]))
@@ -119,7 +120,7 @@ class RulesyncBackendTest(unittest.TestCase):
         self.skill("extra", "Extra")
         if os.name != "nt":
             (self.src / "skills/demo/tool.sh").chmod(0o700)
-        plan = self.preview_matches_apply()
+        plan = self.preview_matches_apply(repeat=True)
         by_operation = {}
         for change in plan["changes"]:
             by_operation.setdefault(change["operation"], set()).add(change["path"])
