@@ -135,6 +135,66 @@ class RulesyncBackendTest(unittest.TestCase):
         self.assertIn(".agents/skills/extra/reference.md", {change["path"] for change in plan["changes"]})
         self.assertEqual(self.preview_matches_apply(), {"changes": [], "manifest": False})
 
+    @unittest.skipIf(os.name == "nt", "POSIX umask and group write bits")
+    def test_umask_write_bits_do_not_change_desired_output(self):
+        (self.src / "rules/agy.md").write_text('---\nroot: false\ntargets: ["antigravity-cli"]\n---\n# Agy\n')
+        group = self.root / "src-group"
+        shutil.copytree(self.src, group)
+        for tree, plain, executable in ((self.src, 0o644, 0o755), (group, 0o664, 0o775)):
+            for path in tree.rglob("*"):
+                if path.is_file():
+                    path.chmod(executable if path.name == "tool.sh" else plain)
+        configs = {}
+        for name, source in (("plain", "src"), ("group", "src-group")):
+            for scope, targets, features in (("project", ["codexcli", "claudecode", "antigravity-cli"], ["skills"]),
+                                             ("global", ["codexcli", "claudecode", "antigravity-cli"], ["rules", "skills"])):
+                configs[name, scope] = self.root / f"{name}-{scope}.json"
+                configs[name, scope].write_text(json.dumps({"version": 1, "input_roots": [source], "targets": targets, "output_root": "out" if scope == "global" else "out-project",
+                                                            "global": scope == "global", "features": features}))
+        previous = os.umask(0o002)
+        try:
+            for scope in ("project", "global"):
+                plain, grouped = configs["plain", scope], configs["group", scope]
+                self.assertEqual(backend.preview(plain, str(RULESYNC)), backend.preview(grouped, str(RULESYNC)))
+                self.assertTrue(backend.apply(grouped, str(RULESYNC)))
+                out = self.root / ("out" if scope == "global" else "out-project")
+                modes = {path.relative_to(out).as_posix(): path.stat().st_mode & 0o777 for path in out.rglob("*")
+                         if path.is_file() and path.name not in (backend.MANIFEST, backend.LOCK)}
+                self.assertEqual({mode for rel, mode in modes.items() if not rel.endswith("tool.sh")}, {0o644})
+                self.assertEqual({mode for rel, mode in modes.items() if rel.endswith("tool.sh")}, {0o755})
+                for config in (plain, grouped):
+                    self.assertTrue(backend.check(config, str(RULESYNC)))
+                    self.assertEqual(backend.preview(config, str(RULESYNC)), {"changes": [], "manifest": False})
+                    self.assertFalse(backend.apply(config, str(RULESYNC)))
+            self.assertIn(".gemini/config/rules/agy.md", modes)
+            self.assertIn(".agents/skills/demo/tool.sh", modes)
+
+            self.src, self.config = group, configs["group", "global"]
+            (group / "skills/demo/tool.sh").chmod(0o664)
+            (group / "rules/agy.md").chmod(0o600)
+            self.assertFalse(backend.check(self.config, str(RULESYNC)))
+            plan = self.preview_matches_apply()
+            self.assertEqual({change["path"] for change in plan["changes"]},
+                             {".gemini/config/rules/agy.md", *(rel for rel in modes if rel.endswith("tool.sh"))})
+            self.assertEqual((out / ".gemini/config/rules/agy.md").stat().st_mode & 0o777, 0o600)
+            self.assertEqual((out / ".agents/skills/demo/tool.sh").stat().st_mode & 0o777, 0o644)
+            self.assertFalse(backend.check(configs["plain", "global"], str(RULESYNC)))
+
+            # An adapter that carried the umask recorded and wrote group write; that
+            # one-time mode change is reported and applied, not hidden.
+            manifest = json.loads((out / backend.MANIFEST).read_text())
+            for entry in manifest["files"]:
+                if entry["path"] == ".claude/rules/a.md":
+                    entry["mode"] = 0o664
+            (out / backend.MANIFEST).write_text(json.dumps(manifest))
+            (out / ".claude/rules/a.md").chmod(0o664)
+            self.assertFalse(backend.check(self.config, str(RULESYNC)))
+            self.assertEqual(self.preview_matches_apply(), {"changes": [{"path": ".claude/rules/a.md", "operation": "update"}], "manifest": True})
+            self.assertEqual((out / ".claude/rules/a.md").stat().st_mode & 0o777, 0o644)
+            self.assertTrue(backend.check(self.config, str(RULESYNC)))
+        finally:
+            os.umask(previous)
+
     def test_preview_fails_closed_on_conflicts_without_writing(self):
         out = self.root / "out"
         self.assertFalse(out.exists())
