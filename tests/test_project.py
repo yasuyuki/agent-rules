@@ -69,8 +69,29 @@ class ProjectCliTests(unittest.TestCase):
                                                '--rulesync', rulesync], cwd=workspace, env=env,
                                               text=True, capture_output=True)
 
+                    def tree():
+                        return {path: (path.read_bytes() if path.is_file() else None, path.stat().st_mtime_ns)
+                                for path in workspace.rglob('*')}
+
+                    def preview():
+                        before = tree()
+                        result = run('preview')
+                        self.assertEqual(before, tree())
+                        if result.returncode:
+                            self.assertEqual((result.returncode, result.stdout), (1, ''))
+                            self.assertTrue(result.stderr.startswith('FAIL: '), result.stderr)
+                            return None
+                        plan = json.loads(result.stdout)
+                        self.assertEqual(set(plan), {'changes', 'manifest'})
+                        self.assertEqual(plan['changes'], sorted(plan['changes'], key=lambda c: c['path']))
+                        return plan
+
+                    added = preview()
+                    self.assertEqual({c['operation'] for c in added['changes']}, {'add'})
+                    self.assertTrue(added['manifest'])
                     self.assertEqual(run('apply').returncode, 0)
                     self.assertEqual(run('check').returncode, 0)
+                    self.assertEqual(preview(), {'changes': [], 'manifest': False})
                     manifest = workspace / '.rulesync-ownership.json'
                     self.assertTrue(manifest.is_file())
                     owned = {item['path'] for item in json.loads(manifest.read_text())['files']}
@@ -89,6 +110,7 @@ class ProjectCliTests(unittest.TestCase):
                                          f'.cursor/skills/{name}/support.txt',
                                          f'.cursor/skills/{name}/proof.py'))
                     self.assertTrue(expected <= owned, (case, expected - owned, owned))
+                    self.assertEqual({c['path'] for c in added['changes']}, owned)
                     self.assertTrue(any(rule in (workspace / rel).read_text(encoding='utf-8')
                                         for rel in owned if rel.endswith(('.md', '.mdc'))))
                     self.assertTrue(all(skill in (workspace / rel).read_text(encoding='utf-8')
@@ -101,12 +123,15 @@ class ProjectCliTests(unittest.TestCase):
                     support = next(rel for rel in owned if rel.endswith('support.txt'))
                     (workspace / support).unlink()
                     self.assertNotEqual(run('check').returncode, 0)
+                    self.assertIsNone(preview())
                     self.assertNotEqual(run('apply').returncode, 0)
                     (workspace / support).write_bytes(before[support][0])
                     self.assertEqual(run('check').returncode, 0)
                     shutil.rmtree(source / 'skills' / name)
                     (source / 'rules/native-probe.md').unlink()
                     self.assertNotEqual(run('check').returncode, 0)
+                    self.assertEqual(preview(), {'changes': [{'path': rel, 'operation': 'delete'}
+                                                             for rel in sorted(owned)], 'manifest': True})
                     rollback = run('apply')
                     self.assertEqual(rollback.returncode, 0, rollback.stdout + rollback.stderr)
                     self.assertEqual(run('check').returncode, 0)

@@ -46,7 +46,23 @@ contains native `SKILL.md` plus its relative supporting files.
 ```console
 agent-rules apply --config rulesync-placement.json
 agent-rules check --config rulesync-placement.json
+agent-rules preview --config rulesync-placement.json
 ```
+
+`preview` prints the changes the next apply would make, without writing or
+locking the output root:
+
+```json
+{"changes": [{"path": ".claude/rules/policy.md", "operation": "update"}, {"path": "AGENTS.md", "operation": "add"}], "manifest": true}
+```
+
+`changes` lists only changed paths, sorted by path; each `operation` is `add`,
+`update` (bytes or mode differ) or `delete`. An empty list means apply would
+change no output. `manifest` is true when apply would also rewrite the ownership
+manifest. A conflict that apply refuses, such as an unowned or externally edited
+file, a same-name skill, a link or a pending transaction, makes preview fail
+with exit code 1 and the reason on stderr instead of returning a list. The
+report contains paths only, never file contents.
 
 Pass `--rulesync` to select an installed executable outside PATH. It must report
 16.39.1; applying never downloads software. For user scope, use a separate config

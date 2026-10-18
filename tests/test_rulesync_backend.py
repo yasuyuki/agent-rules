@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -73,6 +74,96 @@ class RulesyncBackendTest(unittest.TestCase):
         self.assertTrue(self.apply())
         self.assertFalse((out / "AGENTS.md").exists())
         self.assertTrue(backend.check(self.config, str(RULESYNC)))
+
+    def snapshot(self):
+        out = self.root / "out"
+        if not out.exists():
+            return {}
+        return {path.relative_to(out).as_posix(): (None if path.is_dir() else path.read_bytes(),
+                                                   path.stat().st_mode, path.stat().st_mtime_ns)
+                for path in out.rglob("*")}
+
+    def preview_matches_apply(self):
+        before = self.snapshot()
+        sources = {path: path.read_bytes() for path in self.src.rglob("*") if path.is_file()}
+        plan = backend.preview(self.config, str(RULESYNC))
+        self.assertEqual(plan, backend.preview(self.config, str(RULESYNC)))
+        self.assertEqual(before, self.snapshot())
+        self.assertEqual(sources, {path: path.read_bytes() for path in self.src.rglob("*") if path.is_file()})
+        self.assertEqual(plan["changes"], sorted(plan["changes"], key=lambda change: change["path"]))
+        self.apply()
+        after = self.snapshot()
+        metadata = {backend.MANIFEST, backend.LOCK}
+        files = lambda tree: {rel: value[:2] for rel, value in tree.items()
+                              if rel not in metadata and not stat.S_ISDIR(value[1])}
+        old, new = files(before), files(after)
+        actual = sorted([{"path": rel, "operation": "add"} for rel in new.keys() - old.keys()]
+                        + [{"path": rel, "operation": "delete"} for rel in old.keys() - new.keys()]
+                        + [{"path": rel, "operation": "update"} for rel in old.keys() & new.keys() if old[rel] != new[rel]],
+                        key=lambda change: change["path"])
+        self.assertEqual(plan["changes"], actual)
+        self.assertEqual(plan["manifest"], before.get(backend.MANIFEST, (None,))[0] != after[backend.MANIFEST][0])
+        return plan
+
+    def test_preview_lists_exact_apply_changes_without_writing(self):
+        plan = self.preview_matches_apply()
+        operations = {change["operation"] for change in plan["changes"]}
+        paths = {change["path"] for change in plan["changes"]}
+        self.assertEqual(operations, {"add"})
+        self.assertTrue({"AGENTS.md", ".claude/rules/a.md", ".grok/skills/demo/SKILL.md",
+                         ".agents/skills/demo/tool.sh", ".claude/skills/demo/reference.md"} <= paths)
+        self.assertTrue(plan["manifest"])
+        self.assertEqual(self.preview_matches_apply(), {"changes": [], "manifest": False})
+        self.rule("a", "Updated")
+        self.skill("demo", "Changed")
+        self.skill("extra", "Extra")
+        if os.name != "nt":
+            (self.src / "skills/demo/tool.sh").chmod(0o700)
+        plan = self.preview_matches_apply()
+        by_operation = {}
+        for change in plan["changes"]:
+            by_operation.setdefault(change["operation"], set()).add(change["path"])
+        self.assertEqual(set(by_operation), {"add", "update"})
+        self.assertIn(".claude/skills/extra/SKILL.md", by_operation["add"])
+        self.assertTrue({"AGENTS.md", ".claude/rules/a.md", ".agents/skills/demo/SKILL.md",
+                         ".grok/skills/demo/reference.md"} <= by_operation["update"])
+        self.assertEqual(".agents/skills/demo/tool.sh" in by_operation["update"], os.name != "nt")
+        shutil.rmtree(self.src / "skills/extra")
+        plan = self.preview_matches_apply()
+        self.assertEqual({change["operation"] for change in plan["changes"]}, {"delete"})
+        self.assertIn(".agents/skills/extra/reference.md", {change["path"] for change in plan["changes"]})
+        self.assertEqual(self.preview_matches_apply(), {"changes": [], "manifest": False})
+
+    def test_preview_fails_closed_on_conflicts_without_writing(self):
+        out = self.root / "out"
+        self.assertFalse(out.exists())
+        backend.preview(self.config, str(RULESYNC))
+        self.assertFalse(out.exists())
+        self.apply()
+        self.rule("a", "Pending")
+        owned = out / "AGENTS.md"
+        original = owned.read_bytes()
+        conflicts = (
+            ("externally modified", lambda: owned.write_bytes(b"edited"), lambda: owned.write_bytes(original)),
+            ("unowned file", lambda: (self.rule("b", "B"), (out / ".claude/rules/b.md").write_text("mine")),
+             lambda: ((self.src / "rules/b.md").unlink(), (out / ".claude/rules/b.md").unlink())),
+            ("same-name skill", lambda: (self.skill("other", "Other"), (out / ".agents/skills/other").mkdir()),
+             lambda: (shutil.rmtree(self.src / "skills/other"), (out / ".agents/skills/other").rmdir())),
+            ("pending Rulesync transaction", lambda: (out / backend.JOURNAL).write_text("{}"),
+             lambda: (out / backend.JOURNAL).unlink()),
+        )
+        for reason, create, remove in conflicts:
+            with self.subTest(reason=reason):
+                create()
+                before = self.snapshot()
+                with self.assertRaisesRegex(backend.BackendError, reason):
+                    backend.preview(self.config, str(RULESYNC))
+                self.assertEqual(before, self.snapshot())
+                remove()
+        if os.name != "nt":
+            os.chmod(owned, 0o600)
+            with self.assertRaisesRegex(backend.BackendError, "externally modified"):
+                backend.preview(self.config, str(RULESYNC))
 
     def test_cursor_project_ownership_update_delete_and_global_skills(self):
         data = json.loads(self.config.read_text())
@@ -425,7 +516,7 @@ m.apply(sys.argv[2], sys.argv[3])
             backend.check(self.config, str(RULESYNC))
         self.assertEqual(manifest.read_bytes(), before)
         self.assertFalse((out / backend.JOURNAL).exists())
-        self.assertTrue(self.apply())
+        self.assertEqual(self.preview_matches_apply(), {"changes": [], "manifest": True})
         self.assertNotIn("skill_directories", json.loads(manifest.read_text()))
         self.assertFalse(root.exists())
         self.assertTrue(backend.check(self.config, str(RULESYNC)))

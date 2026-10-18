@@ -685,15 +685,22 @@ def _restore(backups: dict[Path, tuple[bytes, int] | None]) -> None:
         raise BackendError(f"rollback failed for {path}: {error}") from error
 
 
-def _apply_reconcile(output: Path, desired: dict[str, tuple[bytes, int]], owned: dict[str, dict]) -> bool:
+def _plan(output: Path, desired: dict[str, tuple[bytes, int]], owned: dict[str, dict]):
+    """Read-only reconcile plan shared by apply and preview."""
     stale = set(owned) - set(desired)
     writes = {rel: value for rel, value in desired.items() if rel not in owned or _actual(output / rel) != (_digest(value[0]), value[1])}
     manifest = output / MANIFEST
-    # Preserve old directories and their ACLs; only files and manifest are journaled.
     retired = []
     directory_records = _skill_directory_state(output, desired, owned, retired)
     manifest_data = _manifest_bytes(desired, directory_records)
     manifest_needs = not manifest.exists() or manifest.read_bytes() != manifest_data
+    return stale, writes, retired, manifest_data, manifest_needs
+
+
+def _apply_reconcile(output: Path, desired: dict[str, tuple[bytes, int]], owned: dict[str, dict]) -> bool:
+    # Preserve old directories and their ACLs; only files and manifest are journaled.
+    stale, writes, retired, manifest_data, manifest_needs = _plan(output, desired, owned)
+    manifest = output / MANIFEST
     if not stale and not writes and not manifest_needs:
         return False
     touched = [output / rel for rel in stale | set(writes)] + ([manifest] if manifest_needs else [])
@@ -884,6 +891,22 @@ def check(config_path: str | Path, rulesync: str | None = None) -> bool:
     if set(owned) != set(desired):
         return False
     return all(_actual(output / rel) == (_digest(data), mode) for rel, (data, mode) in desired.items())
+
+
+def preview(config_path: str | Path, rulesync: str | None = None) -> dict:
+    """List what apply would change, without writing or locking the output."""
+    config = _load_config(config_path)
+    executable = _resolve_executable(config, rulesync)
+    desired = _generate(config, executable)
+    _protect_sources(config, desired)
+    output = config["_output"]
+    _assert_plain_output(output)
+    _recover(output, config, readonly=True)
+    owned = _validate_reconcile(output, desired, _read_manifest(output, config), config, allow_absent_retired=True)
+    stale, writes, _, _, manifest_needs = _plan(output, desired, owned)
+    changes = [{"path": rel, "operation": "update" if rel in owned else "add"} for rel in writes]
+    changes += [{"path": rel, "operation": "delete"} for rel in stale]
+    return {"changes": sorted(changes, key=lambda change: change["path"]), "manifest": manifest_needs}
 
 
 def main(argv: list[str] | None = None) -> int:
