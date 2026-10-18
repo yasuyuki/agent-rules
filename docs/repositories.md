@@ -30,7 +30,7 @@ applications. Work on them in a local environment, not in cloud sessions.
 | Repository | Owns | Uses |
 | --- | --- | --- |
 | [funkot-autodj](https://github.com/yasuyuki/funkot-autodj) | `funkot-core` and its CLI | — |
-| [funkot-player](https://github.com/yasuyuki/funkot-player) | Player application and its current-track API | funkot-autodj (commit pinned in `funkot-core.commit`) |
+| [funkot-player](https://github.com/yasuyuki/funkot-player) | Player application and its current-track API; a client of the agent foundation tools that can be developed without them | funkot-autodj (commit pinned in `funkot-core.commit`) |
 | [dj-live-text](https://github.com/yasuyuki/dj-live-text) | Windows live text display for DJ streams | funkot-player (current-track API) |
 | [funkot-calendar](https://github.com/yasuyuki/funkot-calendar) | Party event ledger and ICS feed | — |
 
