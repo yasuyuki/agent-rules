@@ -54,6 +54,143 @@ class RulesyncBackendTest(unittest.TestCase):
     def apply(self):
         return backend.apply(self.config, str(RULESYNC))
 
+    def frontmatter(self, path):
+        script = """const {createRequire} = require('node:module');
+const {readFileSync, realpathSync} = require('node:fs');
+const matter = createRequire(realpathSync(process.argv[1]))('gray-matter');
+process.stdout.write(JSON.stringify(matter(readFileSync(process.argv[2], 'utf8')).data));"""
+        result = subprocess.run([shutil.which("node") or "node", "-e", script,
+                                 str(RULESYNC), str(path)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_standard_license_survives_generation_and_reapply(self):
+        skill = self.src / "skills/demo"
+        source = skill / "SKILL.md"
+        source.write_text("---\nname: demo\ndescription: Demo\nlicense: MIT\n---\n# Demo\n",
+                          encoding="utf-8")
+        (skill / "LICENSE").write_bytes(b"Synthetic MIT license\n")
+        before = {path: (path.read_bytes(), path.stat().st_mode)
+                  for path in self.src.rglob("*") if path.is_file()}
+        plan = self.preview_matches_apply()
+        self.assertTrue(plan["changes"])
+        for directory in (".agents", ".grok", ".claude"):
+            placed = self.root / "out" / directory / "skills/demo"
+            self.assertEqual(self.frontmatter(placed / "SKILL.md"),
+                             {"name": "demo", "description": "Demo", "license": "MIT"})
+            self.assertTrue((placed / "SKILL.md").read_text().endswith("# Demo\n"))
+            for name in ("LICENSE", "reference.md", "tool.sh"):
+                self.assertEqual((placed / name).read_bytes(), (skill / name).read_bytes())
+                self.assertEqual((placed / name).stat().st_mode, (skill / name).stat().st_mode)
+        self.assertEqual(before, {path: (path.read_bytes(), path.stat().st_mode)
+                                  for path in self.src.rglob("*") if path.is_file()})
+        self.assertTrue(backend.check(self.config, str(RULESYNC)))
+        self.assertEqual(self.preview_matches_apply(), {"changes": [], "manifest": False})
+        self.assertFalse(self.apply())
+
+    def test_quoted_license_values_keep_yaml_meaning(self):
+        cases = (("quoted", '"true"', "true"),
+                 ("proprietary", '"Proprietary: see LICENSE # terms"', "Proprietary: see LICENSE # terms"),
+                 ("multiline", '"MIT\\n---\\nname: injected"', "MIT\n---\nname: injected"))
+        for name, value, expected in cases:
+            self.skill(name, "Quoted license")
+            (self.src / "skills" / name / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: Quoted license\nlicense: {value}\n---\n# License\n",
+                encoding="utf-8")
+        before = {path: path.read_bytes() for path in self.src.rglob("*") if path.is_file()}
+        self.assertTrue(self.apply())
+        for name, value, expected in cases:
+            for target in (".agents", ".grok", ".claude"):
+                path = self.root / "out" / target / "skills" / name / "SKILL.md"
+                self.assertEqual(self.frontmatter(path),
+                                 {"name": name, "description": "Quoted license", "license": expected})
+                self.assertTrue(path.read_text().endswith("# License\n"))
+        self.assertEqual(before, {path: path.read_bytes() for path in self.src.rglob("*") if path.is_file()})
+
+    def test_other_standard_field_loss_is_refused_before_output_writes(self):
+        self.set_targets(["codexcli"])
+        source = self.src / "skills/demo/SKILL.md"
+        fields = (("compatibility", "Requires Python 3.12"),
+                  ("metadata", "{author: Fixture}"),
+                  ("allowed-tools", "Read"))
+        for field, value in fields:
+            source.write_text(f"---\nname: demo\ndescription: Demo\n{field}: {value}\n---\n# Demo\n",
+                              encoding="utf-8")
+            before = source.read_bytes()
+            for operation in (backend.preview, backend.apply, backend.check):
+                with self.subTest(field=field, operation=operation.__name__):
+                    with self.assertRaisesRegex(backend.BackendError,
+                                                f"codexcli.*{field}|{field}.*codexcli"):
+                        operation(self.config, str(RULESYNC))
+                    self.assertFalse((self.root / "out").exists())
+                    self.assertEqual(source.read_bytes(), before)
+
+    def test_unreviewed_target_cannot_silently_drop_license(self):
+        self.set_targets(["cursor"])
+        source = self.src / "skills/demo/SKILL.md"
+        source.write_text("---\nname: demo\ndescription: Demo\nlicense: MIT\n---\n# Demo\n",
+                          encoding="utf-8")
+        for operation in (backend.preview, backend.apply):
+            with self.assertRaisesRegex(backend.BackendError, "cursor.*license|license.*cursor"):
+                operation(self.config, str(RULESYNC))
+            self.assertFalse((self.root / "out").exists())
+
+    def test_nonstandard_field_types_are_refused_before_output_writes(self):
+        self.set_targets(["claudecode"])
+        source = self.src / "skills/demo/SKILL.md"
+        for field, value in (("metadata", "{version: 1}"),
+                             ("compatibility", "{tools: [python]}"),
+                             ("allowed-tools", "[Read]"),
+                             ("license", "true")):
+            source.write_text(f"---\nname: demo\ndescription: Demo\n{field}: {value}\n---\n# Demo\n",
+                              encoding="utf-8")
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(backend.BackendError,
+                                            f"claudecode.*{field}|{field}.*claudecode"):
+                    self.apply()
+                self.assertFalse((self.root / "out").exists())
+
+    def test_target_overrides_and_skill_selection_keep_meaning(self):
+        source = self.src / "skills/demo/SKILL.md"
+        source.write_text("---\nname: demo\ndescription: Demo\nlicense: MIT\n"
+                          "codexcli:\n  short-description: Compact demo\n"
+                          "claudecode:\n  license: Apache-2.0\n---\n# Demo\n", encoding="utf-8")
+        self.skill("only-claude", "Claude only")
+        selected = self.src / "skills/only-claude/SKILL.md"
+        selected.write_text("---\nname: only-claude\ndescription: Claude only\n"
+                            "license: MIT\ntargets: [claudecode]\n---\n# Selected\n", encoding="utf-8")
+        self.assertTrue(self.apply())
+        out = self.root / "out"
+        self.assertEqual(self.frontmatter(out / ".agents/skills/demo/SKILL.md"),
+                         {"name": "demo", "description": "Demo", "license": "MIT",
+                          "metadata": {"short-description": "Compact demo"}})
+        self.assertEqual(self.frontmatter(out / ".claude/skills/demo/SKILL.md")["license"], "Apache-2.0")
+        self.assertEqual(self.frontmatter(out / ".grok/skills/demo/SKILL.md")["license"], "MIT")
+        self.assertTrue((out / ".claude/skills/only-claude/SKILL.md").is_file())
+        self.assertFalse((out / ".agents/skills/only-claude").exists())
+        self.assertFalse((out / ".grok/skills/only-claude").exists())
+
+    def test_generated_license_conflict_is_refused_before_output_writes(self):
+        self.set_targets(["codexcli"])
+        source = self.src / "skills/demo/SKILL.md"
+        source.write_text("---\nname: demo\ndescription: Demo\nlicense: MIT\n---\n# Demo\n",
+                          encoding="utf-8")
+        run = subprocess.run
+
+        def conflicting_generation(command, **kwargs):
+            result = run(command, **kwargs)
+            if "generate" in command and result.returncode == 0:
+                stage = Path(command[command.index("--output-roots") + 1])
+                generated = stage / ".agents/skills/demo/SKILL.md"
+                generated.write_text("---\nname: demo\ndescription: Demo\nlicense: BSD-3-Clause\n---\n# Demo\n",
+                                     encoding="utf-8")
+            return result
+
+        with patch.object(backend.subprocess, "run", side_effect=conflicting_generation):
+            with self.assertRaisesRegex(backend.BackendError, "codexcli.*license|license.*codexcli"):
+                self.apply()
+        self.assertFalse((self.root / "out").exists())
+
     def test_actual_generation_update_delete_noop_and_check(self):
         self.assertTrue(self.apply())
         out = self.root / "out"
