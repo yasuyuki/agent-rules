@@ -138,10 +138,14 @@ selected targets and output root in place. Run `agent-rules apply` and then
 `agent-rules check` with the same `--config` and `--rulesync` arguments you used
 for installation. Confirm that the managed agent files are gone before
 uninstalling the Python package with that virtual environment's Python and
-`-m pip uninstall agent-rules`. Removing a target from the configuration
-or uninstalling the package alone does not remove its output. Ownership
-metadata and the transaction lock remain in the output root; they are not
-agent instructions.
+`-m pip uninstall agent-rules`. Uninstalling the package alone does not remove
+its output. Ownership metadata and the transaction lock remain in the output
+root; they are not agent instructions.
+
+To stop generating for one target, remove it from `targets` and run `preview`,
+`apply` and `check`. Apply deletes the unedited files the previous applies
+recorded for that target and keeps output still generated for the remaining
+targets, such as a shared `AGENTS.md`.
 
 ### One-time handwritten-output handover
 
