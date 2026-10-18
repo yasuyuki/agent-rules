@@ -241,6 +241,17 @@ def _digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _output_mode(mode: int) -> int:
+    """Carry read and execute bits; drop group and other write.
+
+    Those write bits come from the umask of whoever made the source checkout or
+    ran generation, not from the declaration, so carrying them made identical
+    sources check differently. The kept bits are those Rulesync 16.39.1 carries
+    for executable files. Windows modes only reflect the read-only attribute.
+    """
+    return stat.S_IMODE(mode) & (0o777 if os.name == "nt" else 0o755)
+
+
 def _combine(combined: dict[str, tuple[bytes, int]], rel: str, value: tuple[bytes, int]) -> None:
     old = combined.get(rel)
     if old is not None and old != value:
@@ -292,7 +303,7 @@ def _antigravity_global_rules(config: dict) -> dict[str, tuple[bytes, int]]:
             if rel in placed:
                 raise BackendError(f"duplicate agy global rule name: {source.name}")
             data = ("---\ntrigger: always_on\n---\n" + body.lstrip("\n")).encode("utf-8")
-            placed[rel] = (data, stat.S_IMODE(source.stat().st_mode) & 0o777)
+            placed[rel] = (data, _output_mode(source.stat().st_mode))
     return placed
 
 
@@ -335,7 +346,7 @@ def _generate(config: dict, executable: str) -> dict[str, tuple[bytes, int]]:
                     # Rulesync 16.39.1 still writes the pre-1.3 root, which agy
                     # 1.3 moves once to ~/.gemini/config/skills/ and no longer reads.
                     rel = AGY_SKILLS + rel[len(AGY_LEGACY_SKILLS):]
-                value = (item.read_bytes(), stat.S_IMODE(item.stat().st_mode) & 0o777)
+                value = (item.read_bytes(), _output_mode(item.stat().st_mode))
                 _combine(combined, rel, value)
     if "grokcli" in config["targets"] and not config["global"] and "CLAUDE.md" in combined:
         raise BackendError("Grok also discovers CLAUDE.md; use non-root Claude rules to avoid duplicate policy")

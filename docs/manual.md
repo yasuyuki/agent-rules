@@ -64,6 +64,11 @@ file, a same-name skill, a link or a pending transaction, makes preview fail
 with exit code 1 and the reason on stderr instead of returning a list. The
 report contains paths only, never file contents.
 
+On POSIX an output keeps the read and execute bits it was generated with and
+never has group or other write, so the umask that created a source checkout does
+not change apply, check or preview. Output written by an adapter before this
+rule with group or other write shows once as `update`.
+
 Pass `--rulesync` to select an installed executable outside PATH. It must report
 16.39.1; applying never downloads software. For user scope, use a separate config
 with `global: true` and an explicit disposable HOME as `output_root` during
