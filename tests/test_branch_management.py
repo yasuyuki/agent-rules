@@ -689,6 +689,21 @@ class BranchManagementTests(unittest.TestCase):
         self.assertIn("first-parent", self.branch(
             "accept-remote-merge", "--task", "sideways", "--commit", feature, ok=False).stderr)
 
+        elsewhere = self.root / "elsewhere.git"
+        self.command("git", "init", "--bare", "--initial-branch=main", elsewhere)
+        direct_publisher = self.root / "publisher-elsewhere-direct"
+        self.command("git", "clone", self.remote, direct_publisher)
+        self.git_at(direct_publisher, "config", "user.name", "Publisher")
+        self.git_at(direct_publisher, "config", "user.email", "publisher@example.invalid")
+        self.git_at(direct_publisher, "-c", "core.editor=true", "merge", "--no-ff", "--no-edit", "origin/sideways")
+        direct = self.git_at(direct_publisher, "rev-parse", "HEAD").stdout.strip()
+        self.git_at(direct_publisher, "remote", "add", "elsewhere", elsewhere)
+        self.git_at(direct_publisher, "push", "elsewhere", "HEAD:refs/heads/main")
+        self.git("fetch", str(elsewhere), "refs/heads/main")
+        self.assertIn("first-parent", self.branch(
+            "accept-remote-merge", "--task", "sideways", "--commit", direct, ok=False).stderr)
+        self.assertEqual(self.git("rev-parse", "HEAD").stdout.strip(), local_main)
+
         publisher = self.root / "publisher-via-feature"
         self.command("git", "clone", self.remote, publisher)
         self.git_at(publisher, "config", "user.name", "Publisher")
@@ -696,10 +711,6 @@ class BranchManagementTests(unittest.TestCase):
         self.git_at(publisher, "-c", "core.editor=true", "merge", "--no-ff", "--no-edit", "origin/feature")
         self.git_at(publisher, "push", "origin", "HEAD:refs/heads/main")
         via_feature = self.git_at(publisher, "rev-parse", "HEAD").stdout.strip()
-        elsewhere = self.root / "elsewhere.git"
-        self.command("git", "init", "--bare", "--initial-branch=main", elsewhere)
-        self.git_at(publisher, "remote", "add", "elsewhere", elsewhere)
-        self.git_at(publisher, "push", "elsewhere", "HEAD:refs/heads/main")
         self.git("fetch", "origin")
         self.assertIn("second parent", self.branch(
             "accept-remote-merge", "--task", "sideways", "--commit", via_feature, ok=False).stderr)

@@ -974,8 +974,11 @@ Close a finished registration with `branch retire --repo REPO --task ID`. It
 removes the registered worktree and drops the registration; the branch and its
 commits are kept. "Finished" means the ledger's integration receipt, not
 `git branch --merged`: the receipt's source must equal both the registered tip
-and the branch's current commit, and its merge commit must be an ancestor of the
-registered destination. Work integrated into a registered topic is finished even
+and the branch's current commit. A receipt without `remote` requires its merge
+commit to be an ancestor of the local destination branch. A receipt with
+`remote` requires that same source and tip, and requires the merge commit to be
+on the first-parent history of the registered remote destination when `retire`
+runs. Work integrated into a registered topic is finished even
 though it never reached the default branch, and a branch merged somewhere else is
 not. Retirement is refused for the default-branch registration, the repository's
 own working tree, the checkout the command is run from, a checkout holding the
@@ -996,6 +999,19 @@ no-op once the directory is gone, and a stale administrative record is pruned
 (metadata only, never a file, and repository-wide). There is no bulk mode, no age
 or count criterion and no abandonment path; each retirement names one work
 identifier and is justified by that work's own integration receipt.
+
+Record a merge that already landed on the registered remote destination with
+`branch accept-remote-merge --repo REPO --task ID --commit MERGE`. This does
+not update the local destination branch or its checkout. Fetch that remote
+destination first. The command asks the registered remote which commit
+`refs/heads/<into>` is, and requires the fetched remote-tracking ref to match
+that answer. `MERGE` must have the registered tip as its second parent and must
+sit on that remote branch's first-parent history. A closed pull request, a
+merge into another branch, a squash, a cherry-pick, a different tip, an
+unanswered remote, or a fetched tip that disagrees with the remote is refused
+and writes nothing. The same command with the same merge returns the same
+receipt. `branch retire` asks the remote again, so a receipt whose merge is no
+longer on that first-parent history does not remove the worktree.
 
 A user-approved cherry-pick exception is registered in its destination topic with
 `branch allow-cherry-pick --repo PATH --commit SOURCE_SHA --approval USER_REFERENCE
