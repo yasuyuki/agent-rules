@@ -464,6 +464,81 @@ def begin(args):
     return output
 
 
+def commit_parents(repo, commit):
+    parts = git(repo, 'rev-list', '--parents', '-n', '1', commit).split()
+    if not parts or parts[0] != commit:
+        raise BranchError('missing commit: ' + commit)
+    return parts[1:]
+
+
+def advertised_head(repo, remote, branch):
+    if remote.startswith('-') or branch.startswith('-'):
+        raise BranchError('registered destination is not a remote branch')
+    ref = 'refs/heads/' + branch
+    try:
+        text = git(repo, 'ls-remote', remote, ref)
+    except BranchError:
+        raise BranchError('registered remote did not answer')
+    rows = [line.split() for line in text.splitlines() if line.strip()]
+    matched = [row[0] for row in rows if len(row) == 2 and row[1] == ref]
+    if len(matched) != 1:
+        raise BranchError('registered remote did not advertise the destination branch')
+    return matched[0]
+
+
+def on_first_parent(repo, tip, commit):
+    if commit == tip:
+        return True
+    return commit in git(repo, 'rev-list', '--first-parent', tip).splitlines()
+
+
+def remote_merge_receipt(repo, state, task, commit):
+    commit = oid(repo, commit)
+    parents = commit_parents(repo, commit)
+    if len(parents) != 2 or parents[1] != task['tip']:
+        raise BranchError('merge does not record the registered tip as its second parent')
+    destination = task['into']
+    remote = state['remote']
+    tip = advertised_head(repo, remote, destination)
+    local = git(repo, 'rev-parse', '--verify',
+                'refs/remotes/' + remote + '/' + destination + '^{commit}', optional=True)
+    if local != tip:
+        raise BranchError('fetch the registered remote destination before accepting its merge')
+    if not on_first_parent(repo, tip, commit):
+        raise BranchError('merge is not on the first-parent history of the registered remote destination')
+    return {'source': task['tip'], 'destination': destination, 'commit': commit, 'remote': remote}
+
+
+def integration_present(repo, state, done):
+    remote = done.get('remote')
+    if not remote:
+        return ancestor(repo, done['commit'], 'refs/heads/' + done['destination'])
+    if remote != state['remote']:
+        return False
+    tip = advertised_head(repo, remote, done['destination'])
+    local = git(repo, 'rev-parse', '--verify',
+                'refs/remotes/' + remote + '/' + done['destination'] + '^{commit}', optional=True)
+    if local != tip:
+        return False
+    parents = commit_parents(repo, done['commit'])
+    if len(parents) != 2 or parents[1] != done['source']:
+        return False
+    return on_first_parent(repo, tip, done['commit'])
+
+
+def assert_topic_idle(repo, task):
+    path = task['worktree']
+    if not Path(path).exists():
+        return
+    if not same_checkout(repo, path, task['branch']):
+        raise BranchError('registered worktree has changed')
+    lock = Path(git(path, 'rev-parse', '--path-format=absolute', '--git-path', 'locked'))
+    if lock.is_file():
+        raise BranchError('worktree is locked; preserve it and finish the holder first')
+    if git(path, 'status', '--porcelain', '--ignored'):
+        raise BranchError('checkout has uncommitted, untracked or ignored files; preserve and inspect')
+
+
 def retirement_checks(repo, state, key):
     """Everything that must hold before a finished registration is closed.
 
@@ -493,7 +568,7 @@ def retirement_checks(repo, state, key):
         raise BranchError('work is not integrated into its registered destination')
     if oid(repo, 'refs/heads/' + name) != task['tip']:
         raise BranchError('registered branch tip changed outside enforcement')
-    if not ancestor(repo, done['commit'], 'refs/heads/' + done['destination']):
+    if not integration_present(repo, state, done):
         raise BranchError('integration is not present in the destination history')
     for other, value in state['tasks'].items():
         if other != key and (value['depends_on'] == key or value['into'] == name):
@@ -502,11 +577,7 @@ def retirement_checks(repo, state, key):
             or any(ticket['task'] == key for ticket in state['merges'].values())
             or any(pick.startswith(name + ':') for pick in state['picks'])):
         raise BranchError('in-flight permit or prepared integration; finish or retry it first')
-    if Path(path).exists():
-        if not same_checkout(repo, path, name):
-            raise BranchError('registered worktree has changed')
-        if git(path, 'status', '--porcelain', '--ignored'):
-            raise BranchError('checkout has uncommitted, untracked or ignored files; preserve and inspect')
+    assert_topic_idle(repo, task)
     return task
 
 
@@ -569,6 +640,47 @@ def merge_valid(repo, state, name, ticket):
         if parent is not target and (not done or done['source'] != oid(repo, 'refs/heads/' + parent['branch'])
                                      or not ancestor(repo, done['commit'], ticket['old'])):
             raise BranchError('dependency must be integrated first into destination history')
+
+
+def accept_remote_merge(args):
+    repo = Path(args.repo).resolve()
+    with locked(repo) as (directory, state):
+        assert_install(repo, directory, state)
+        reconcile(repo, state)
+        key = args.task
+        task = state['tasks'].get(key)
+        if task is None:
+            raise BranchError('unregistered work item: ' + key)
+        if not task.get('retirement_guarded'):
+            raise BranchError('legacy/adopted registration needs dependency migration before retirement; keep checkout')
+        name = task['branch']
+        if name == state['default']:
+            raise BranchError('the default branch registration is not retired')
+        if Path(task['worktree']).resolve() == Path(main_worktree(repo)).resolve():
+            raise BranchError('the repository working tree is not retired')
+        for label, value in [('source', state['source']), ('python', state['python'])]:
+            if within(value, task['worktree']):
+                raise BranchError('registered ' + label + ' lives in this checkout; '
+                                  'rebind from another reviewed source first')
+        if oid(repo, 'refs/heads/' + name) != task['tip']:
+            raise BranchError('registered branch tip changed outside enforcement')
+        for other, value in state['tasks'].items():
+            if other != key and (value['depends_on'] == key or value['into'] == name):
+                raise BranchError('another registration depends on or integrates into this work: ' + other)
+        if (state['permits'].get(name) or state['merges'].get(name)
+                or any(ticket['task'] == key for ticket in state['merges'].values())
+                or any(pick.startswith(name + ':') for pick in state['picks'])):
+            raise BranchError('in-flight permit or prepared integration; finish or retry it first')
+        receipt = remote_merge_receipt(repo, state, task, args.commit)
+        existing = task.get('integrated')
+        if existing:
+            if existing != receipt:
+                raise BranchError('existing integration receipt differs')
+            return existing
+        assert_topic_idle(repo, task)
+        task['integrated'] = receipt
+        save(directory, state)
+        return receipt
 
 
 def prepare_merge(args):
@@ -876,7 +988,8 @@ def main(argv=None):
             return hook(argv[1], argv[2:])
         parser = argparse.ArgumentParser(description=__doc__)
         sub = parser.add_subparsers(dest='command', required=True)
-        for name in ('install', 'begin', 'check', 'retire', 'prepare-merge', 'allow-cherry-pick', 'allow-tag-push'):
+        for name in ('install', 'begin', 'check', 'retire', 'prepare-merge', 'accept-remote-merge',
+                     'allow-cherry-pick', 'allow-tag-push'):
             p = sub.add_parser(name)
             p.add_argument('--repo', default='.')
             p.add_argument('--json', action='store_true')
@@ -888,8 +1001,10 @@ def main(argv=None):
                 for flag in ('request', 'branch', 'worktree', 'base', 'into', 'depends-on'):
                     p.add_argument('--' + flag)
                 p.add_argument('--sync', action='store_true')
-            elif name in ('retire', 'prepare-merge'):
+            elif name in ('retire', 'prepare-merge', 'accept-remote-merge'):
                 p.add_argument('--task', required=True)
+                if name == 'accept-remote-merge':
+                    p.add_argument('--commit', required=True)
             elif name == 'allow-cherry-pick':
                 for flag in ('commit', 'approval', 'reason'):
                     p.add_argument('--' + flag, required=True)
@@ -898,7 +1013,8 @@ def main(argv=None):
                     p.add_argument('--' + flag, required=True)
         args = parser.parse_args(argv)
         value = {'install': install, 'begin': begin, 'check': check, 'retire': retire,
-                 'prepare-merge': prepare_merge, 'allow-cherry-pick': allow_pick,
+                 'prepare-merge': prepare_merge, 'accept-remote-merge': accept_remote_merge,
+                 'allow-cherry-pick': allow_pick,
                  'allow-tag-push': allow_tag_push}[args.command](args)
         if args.command == 'check' and not args.json:
             print('OK: registered worktrees and hooks agree' if value['ok'] else 'FAIL: ' + '; '.join(value['errors']))
