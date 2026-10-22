@@ -1461,5 +1461,130 @@ m._apply_reconcile(out, retained, owned)
         self.assertFalse((out / backend.JOURNAL).exists())
 
 
+def git(repo, *args):
+    run = subprocess.run(["git", "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+                          "-c", "commit.gpgsign=false", "-C", str(repo), *args], capture_output=True, text=True)
+    return run
+
+
+class GitSourceTest(unittest.TestCase):
+    setUp, tearDown, write_config, rule, skill = (RulesyncBackendTest.setUp, RulesyncBackendTest.tearDown,
+                                                  RulesyncBackendTest.write_config, RulesyncBackendTest.rule,
+                                                  RulesyncBackendTest.skill)
+
+    def commit(self, repo, message="accepted"):
+        for args in (("init", "-q"), ("add", "-A"), ("commit", "-qm", message)):
+            if args[0] != "init" or not (repo / ".git").exists():
+                self.assertEqual(git(repo, *args).returncode, 0)
+        return git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    def output(self):
+        return {path: (path.read_bytes(), path.stat().st_mtime_ns)
+                for path in (self.root / "out").rglob("*") if path.is_file()}
+
+    def refused(self, *expected):
+        before = self.output()
+        for operation in (backend.preview, backend.apply, backend.check):
+            # Refusal precedes generation, so skip the per-call version probe.
+            with (self.subTest(operation=operation.__name__), self.assertRaises(backend.BackendError) as caught,
+                  patch.object(backend, "_resolve_executable", return_value=str(RULESYNC))):
+                operation(self.config, str(RULESYNC))
+            for text in expected:
+                self.assertIn(text, str(caught.exception))
+        self.assertEqual(before, self.output())
+
+    def test_uncommitted_git_sources_are_refused_and_export_roots_are_unchanged(self):
+        (self.root / ".gitignore").write_text("*.local\n")
+        (self.root / "README.md").write_text("outside the selected root\n")
+        other = Path(self.temp.name) / "other ルール"
+        (other / "rules").mkdir(parents=True)
+        (other / "rules/b.md").write_text("---\ndescription: b\n---\n# From other checkout\n")
+        other_base = self.commit(other)
+        export = Path(self.temp.name) / "export"
+        (export / "rules").mkdir(parents=True)
+        (export / "rules/c.md").write_text("---\ndescription: c\n---\n# From export\n")
+        self.write_config(["src", str(export), str(other)])
+        self.config.write_text(self.config.read_text().replace('"codexcli", "claudecode", "grokcli"', '"codexcli"'))
+        base = self.commit(self.root)
+        self.assertTrue(backend.preview(self.config, str(RULESYNC))["changes"])
+        self.assertTrue(backend.apply(self.config, str(RULESYNC)))
+        self.assertTrue(backend.check(self.config, str(RULESYNC)))
+        agents = (self.root / "out/AGENTS.md").read_text()
+        for text in ("Hello", "From other checkout", "From export"):
+            self.assertIn(text, agents)
+
+        (self.root / "README.md").write_text("unrelated dirty file\n")
+        (self.root / "notes.txt").write_text("untracked outside the selected root\n")
+        (export / "rules/c.md").write_text("---\ndescription: c\n---\n# Export edit\n")
+        self.assertTrue(backend.apply(self.config, str(RULESYNC)))
+        self.assertIn("Export edit", (self.root / "out/AGENTS.md").read_text())
+
+        rule = self.src / "rules/a.md"
+        def edit():
+            rule.write_text("---\ndescription: a\n---\n# UNACCEPTED\n")
+        def conflict():
+            git(self.root, "checkout", "-q", "-b", "side")
+            edit()
+            git(self.root, "commit", "-qam", "side")
+            git(self.root, "checkout", "-q", "-")
+            rule.write_text("---\ndescription: a\n---\n# Other\n")
+            git(self.root, "commit", "-qam", "main")
+            self.assertNotEqual(git(self.root, "merge", "-q", "side").returncode, 0)
+        cases = (
+            ("staged", lambda: (edit(), git(self.root, "add", "src")), "staged src/rules/a.md"),
+            ("unstaged", edit, "unstaged src/rules/a.md"),
+            ("both", lambda: (edit(), git(self.root, "add", "src"), rule.write_text("again\n")), "staged+unstaged src/rules/a.md"),
+            ("untracked", lambda: (self.src / "rules/new ルール.md").write_text("new\n"), "untracked src/rules/new ルール.md"),
+            ("ignored", lambda: (self.src / "rules/secret.local").write_text("x\n"), "ignored src/rules/secret.local"),
+            ("deleted", lambda: (self.src / "skills/demo/reference.md").unlink(), "deleted src/skills/demo/reference.md"),
+            ("renamed", lambda: git(self.root, "mv", "src/rules/a.md", "src/rules/z.md"), "renamed from src/rules/a.md"),
+            ("nested", lambda: (git(self.src / "skills", "init", "-q", "nested"),
+                                (self.src / "skills/nested/SKILL.md").write_text("nested\n")), "untracked src/skills/nested/"),
+            ("unmerged", conflict, "unmerged src/rules/a.md"),
+            ("other checkout", lambda: (other / "rules/b.md").write_text("changed\n"), "unstaged rules/b.md"),
+            ("hidden deletion", lambda: (git(self.root, "update-index", "--skip-worktree", "src/rules/a.md"), rule.unlink()),
+             "differs from commit"),
+        )
+        for name, mutate, expected in cases:
+            with self.subTest(case=name):
+                mutate()
+                self.refused(expected, "commit and integrate")
+                git(self.root, "merge", "--abort")
+                git(self.root, "update-index", "--no-skip-worktree", "src/rules/a.md")
+                for repo, head in ((self.root, base), (other, other_base)):
+                    self.assertEqual(git(repo, "reset", "-q", "--hard", head).returncode, 0)
+                    self.assertEqual(git(repo, "clean", "-ffdxq", "--", ".").returncode if repo == other else
+                                     git(repo, "clean", "-ffdxq", "--", "src").returncode, 0)
+                    self.assertEqual(git(repo, "status", "--porcelain", "--ignored", "--", "src" if repo == self.root else ".").stdout, "")
+
+        rule.write_text("---\ndescription: a\n---\n# Accepted later\n")
+        self.commit(self.root)
+        self.assertTrue(backend.apply(self.config, str(RULESYNC)))
+        self.assertIn("Accepted later", (self.root / "out/AGENTS.md").read_text())
+        self.assertTrue(backend.check(self.config, str(RULESYNC)))
+
+    def test_edit_during_generation_is_not_distributed_and_git_failure_fails_closed(self):
+        self.write_config()
+        self.config.write_text(self.config.read_text().replace('"codexcli", "claudecode", "grokcli"', '"codexcli"'))
+        self.commit(self.root)
+        real = backend._git
+        def edit_before_archive(top, *args):
+            if args[0] == "archive":
+                self.rule("a", "UNACCEPTED")
+            return real(top, *args)
+        with patch.object(backend, "_git", side_effect=edit_before_archive):
+            self.assertTrue(backend.apply(self.config, str(RULESYNC)))
+        agents = (self.root / "out/AGENTS.md").read_text()
+        self.assertIn("Hello", agents)
+        self.assertNotIn("UNACCEPTED", agents)
+        with self.assertRaises(backend.BackendError) as caught:
+            backend.check(self.config, str(RULESYNC))
+        self.assertIn("unstaged src/rules/a.md", str(caught.exception))
+
+        (self.root / ".git").rename(self.root / "moved-git")
+        (self.root / ".git").write_text("gitdir: missing\n")
+        self.refused("git status failed")
+
+
 if __name__ == "__main__":
     unittest.main()

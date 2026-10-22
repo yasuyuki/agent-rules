@@ -138,6 +138,35 @@ class ProjectCliTests(unittest.TestCase):
                     self.assertTrue(all(not (workspace / rel).exists() for rel in owned))
                     self.assertEqual(sentinel.read_bytes(), b'leave this file intact\n')
 
+    def test_uncommitted_git_source_is_refused_by_installed_entry(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            rule = root / 'inputs/rules/policy.md'
+            rule.parent.mkdir(parents=True)
+            rule.write_text('---\nroot: false\n---\nAccepted policy.\n', encoding='utf-8')
+            config = root / 'placement.json'
+            config.write_text(json.dumps(dict(version=1, input_roots=['inputs'], targets=['codexcli'],
+                features=['rules'], output_root='project', **{'global': False})), encoding='utf-8')
+            for args in (['init', '-q'], ['add', '-A'], ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid',
+                                                          '-c', 'commit.gpgsign=false', 'commit', '-qm', 'accepted']):
+                subprocess.run(['git', *args], cwd=root, check=True, capture_output=True)
+            env = os.environ.copy()
+            env.pop('PYTHONPATH', None)
+            def run(command):
+                return subprocess.run([sys.executable, '-m', 'agent_rules_manager.project', command,
+                                       '--config', str(config)], cwd=root, env=env, text=True, capture_output=True)
+            result = run('apply')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            agents = root / 'project/AGENTS.md'
+            before = (agents.read_bytes(), agents.stat().st_mtime_ns)
+            rule.write_text('---\nroot: false\n---\nUnaccepted policy.\n', encoding='utf-8')
+            for command in ('preview', 'apply', 'check'):
+                result = run(command)
+                self.assertEqual((result.returncode, result.stdout), (1, ''), command)
+                self.assertIn('uncommitted source changes', result.stderr)
+                self.assertIn('unstaged inputs/rules/policy.md', result.stderr)
+            self.assertEqual(before, (agents.read_bytes(), agents.stat().st_mtime_ns))
+
     def test_explicit_sources_independent_install(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
