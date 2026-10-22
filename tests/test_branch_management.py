@@ -564,6 +564,149 @@ class BranchManagementTests(unittest.TestCase):
         sentinel.unlink()
         self.git_at(topic, "commit", "-m", "retried")
 
+    def publish_from(self, worktree, sha, onto, kind):
+        """Publish `sha` onto `onto` from a clone that has no branch hooks."""
+        branch = self.git_at(worktree, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        self.git_at(worktree, "push", "origin", branch)
+        publisher = self.root / ("publisher-%s-%s-%s" % (branch, onto, kind))
+        self.command("git", "clone", self.remote, publisher)
+        self.git_at(publisher, "config", "user.name", "Publisher")
+        self.git_at(publisher, "config", "user.email", "publisher@example.invalid")
+        if onto != "main":
+            self.git_at(publisher, "switch", "-c", onto, "origin/main")
+        if kind == "merge":
+            self.git_at(publisher, "-c", "core.editor=true", "merge", "--no-ff", "--no-edit", sha)
+        elif kind == "squash":
+            self.git_at(publisher, "merge", "--squash", sha)
+            self.git_at(publisher, "commit", "-m", "squash " + branch)
+        elif kind == "pick":
+            self.git_at(publisher, "cherry-pick", sha)
+        else:
+            self.fail("unknown publication " + kind)
+        self.git_at(publisher, "push", "origin", "HEAD:refs/heads/" + onto)
+        return self.git_at(publisher, "rev-parse", "HEAD").stdout.strip()
+
+    def test_accept_remote_merge_retires_without_moving_dirty_local_main(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        topic = Path(self.begin("source", branch="source")["worktree"])
+        (topic / "source-change").write_text("source\n", encoding="utf-8")
+        self.git_at(topic, "add", "source-change")
+        self.git_at(topic, "commit", "-m", "source-change")
+        tip = self.git_at(topic, "rev-parse", "HEAD").stdout.strip()
+        local_main = self.git("rev-parse", "HEAD").stdout.strip()
+        readme = self.repo / "README"
+        dirty = readme.read_text(encoding="utf-8") + "local edit\n"
+        readme.write_text(dirty, encoding="utf-8")
+        (self.repo / "kept-untracked").write_text("keep\n", encoding="utf-8")
+        status = self.git("status", "--porcelain", "--ignored").stdout
+
+        self.assertIn("not integrated", self.branch("retire", "--task", "source", ok=False).stderr)
+        self.assertTrue(topic.exists())
+        missing = self.branch("accept-remote-merge", "--task", "source", "--commit", tip, ok=False)
+        self.assertIn("second parent", missing.stderr)
+
+        merge = self.publish_from(topic, tip, "main", "merge")
+        unfetched = self.branch("accept-remote-merge", "--task", "source", "--commit", merge, ok=False)
+        self.assertIn("missing commit", unfetched.stderr)
+        self.git("fetch", "origin")
+        self.git("merge-base", "--is-ancestor", merge, "HEAD", ok=False)
+        self.git("merge-base", "--is-ancestor", merge, "origin/main")
+
+        receipt = json.loads(self.branch(
+            "accept-remote-merge", "--task", "source", "--commit", merge).stdout)
+        self.assertEqual(receipt["source"], tip)
+        self.assertEqual(receipt["commit"], merge)
+        self.assertEqual(receipt["destination"], "main")
+        self.assertEqual(receipt["remote"], "origin")
+        again = json.loads(self.branch(
+            "accept-remote-merge", "--task", "source", "--commit", merge).stdout)
+        self.assertEqual(again, receipt)
+        self.assertEqual(self.git("rev-parse", "HEAD").stdout.strip(), local_main)
+        self.assertEqual(readme.read_text(encoding="utf-8"), dirty)
+        self.assertEqual(self.git("status", "--porcelain", "--ignored").stdout, status)
+
+        self.git("worktree", "lock", str(topic))
+        self.assertIn("locked", self.branch("retire", "--task", "source", ok=False).stderr)
+        self.assertTrue(topic.exists())
+        self.git("worktree", "unlock", str(topic))
+        (topic / "notes").write_text("keep\n", encoding="utf-8")
+        self.assertIn("preserve and inspect", self.branch("retire", "--task", "source", ok=False).stderr)
+        self.assertTrue((topic / "notes").exists())
+        (topic / "notes").unlink()
+
+        base = self.git("rev-parse", merge + "^1").stdout.strip()
+        self.command("git", "--git-dir", str(self.remote), "update-ref", "refs/heads/main", base)
+        self.git("fetch", "origin")
+        self.assertIn("not present", self.branch("retire", "--task", "source", ok=False).stderr)
+        self.assertTrue(topic.exists())
+        hidden = self.root / "hidden-remote.git"
+        self.remote.rename(hidden)
+        self.assertIn("did not answer", self.branch("retire", "--task", "source", ok=False).stderr)
+        self.assertTrue(topic.exists())
+        hidden.rename(self.remote)
+        self.command("git", "--git-dir", str(self.remote), "update-ref", "refs/heads/main", merge)
+        self.git("fetch", "origin")
+
+        retired = json.loads(self.branch("retire", "--task", "source").stdout)
+        self.assertTrue(retired["branch_retained"])
+        self.assertFalse(topic.exists())
+        self.assertNotIn(str(topic), self.git("worktree", "list").stdout)
+        self.assertEqual(self.git("rev-parse", "refs/heads/source").stdout.strip(), tip)
+        self.assertEqual(self.git("rev-parse", "HEAD").stdout.strip(), local_main)
+        self.assertEqual(readme.read_text(encoding="utf-8"), dirty)
+        self.assertEqual((self.repo / "kept-untracked").read_text(encoding="utf-8"), "keep\n")
+        self.git("merge-base", "--is-ancestor", merge, "HEAD", ok=False)
+        checked = json.loads(self.branch("check", "--json").stdout)
+        self.assertTrue(checked["ok"], checked)
+        self.assertNotIn("source", checked["tasks"])
+
+    def test_accept_remote_merge_rejects_other_histories(self):
+        self.begin("integration", "adopt", branch="main", into="main")
+        topic = Path(self.begin("sideways", branch="sideways")["worktree"])
+        (topic / "sideways-change").write_text("sideways\n", encoding="utf-8")
+        self.git_at(topic, "add", "sideways-change")
+        self.git_at(topic, "commit", "-m", "sideways-change")
+        first = self.git_at(topic, "rev-parse", "HEAD").stdout.strip()
+        (topic / "later").write_text("later\n", encoding="utf-8")
+        self.git_at(topic, "add", "later")
+        self.git_at(topic, "commit", "-m", "later")
+        tip = self.git_at(topic, "rev-parse", "HEAD").stdout.strip()
+        local_main = self.git("rev-parse", "HEAD").stdout.strip()
+
+        partial = self.publish_from(topic, first, "partial", "merge")
+        self.git("fetch", "origin")
+        self.assertIn("second parent", self.branch(
+            "accept-remote-merge", "--task", "sideways", "--commit", partial, ok=False).stderr)
+
+        squashed = self.publish_from(topic, tip, "squashed", "squash")
+        picked = self.publish_from(topic, tip, "picked", "pick")
+        feature = self.publish_from(topic, tip, "feature", "merge")
+        self.git("fetch", "origin")
+        self.assertIn("second parent", self.branch(
+            "accept-remote-merge", "--task", "sideways", "--commit", squashed, ok=False).stderr)
+        self.assertIn("second parent", self.branch(
+            "accept-remote-merge", "--task", "sideways", "--commit", picked, ok=False).stderr)
+        self.assertIn("first-parent", self.branch(
+            "accept-remote-merge", "--task", "sideways", "--commit", feature, ok=False).stderr)
+
+        publisher = self.root / "publisher-via-feature"
+        self.command("git", "clone", self.remote, publisher)
+        self.git_at(publisher, "config", "user.name", "Publisher")
+        self.git_at(publisher, "config", "user.email", "publisher@example.invalid")
+        self.git_at(publisher, "-c", "core.editor=true", "merge", "--no-ff", "--no-edit", "origin/feature")
+        self.git_at(publisher, "push", "origin", "HEAD:refs/heads/main")
+        via_feature = self.git_at(publisher, "rev-parse", "HEAD").stdout.strip()
+        elsewhere = self.root / "elsewhere.git"
+        self.command("git", "init", "--bare", "--initial-branch=main", elsewhere)
+        self.git_at(publisher, "remote", "add", "elsewhere", elsewhere)
+        self.git_at(publisher, "push", "elsewhere", "HEAD:refs/heads/main")
+        self.git("fetch", "origin")
+        self.assertIn("second parent", self.branch(
+            "accept-remote-merge", "--task", "sideways", "--commit", via_feature, ok=False).stderr)
+        self.assertTrue(topic.exists())
+        self.assertEqual(self.git("rev-parse", "HEAD").stdout.strip(), local_main)
+        self.assertIn("sideways", json.loads(self.branch("check", "--json").stdout)["tasks"])
+
 
 if __name__ == "__main__":
     unittest.main()
