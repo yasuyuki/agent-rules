@@ -45,7 +45,7 @@ try {
     catch (error) { fail(id, 'generated frontmatter', error.message); }
     let changed = false;
     for (const [field, expected] of Object.entries(expectedFields)) {
-      if (field === 'license' && result[field] === undefined && ['codexcli', 'grokcli', 'claudecode'].includes(target)) {
+      if (field === 'license' && result[field] === undefined && ['codexcli', 'grokcli', 'claudecode', 'cursor', 'antigravity-cli'].includes(target)) {
         result[field] = expected;
         changed = true;
         continue;

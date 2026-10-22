@@ -196,7 +196,10 @@ The existing `tests/ci_runner.py` retains each case's outcome and elapsed time,
 plus available fixture/cleanup and outer Git/CLI measurements. Its `--help`
 describes local invocation. Timeouts preserve partial outcomes and terminate
 only owned test processes. Lifecycle tests use disposable Git repositories and
-independent package environments.
+independent package environments. A `--timeout` is a per-shard hang bound, not a
+duration target. The Rulesync step allows 600 seconds because the same tree took
+from 194 to over 305 seconds per shard depending on the runner
+([#51](https://github.com/yasuyuki/agent-rules/issues/51)).
 
 Before integration, run the checkout job's `tests/ci_runner.py` module
 selections locally with a Python 3.12 interpreter, the `requires-python` floor.

@@ -125,15 +125,23 @@ process.stdout.write(JSON.stringify(matter(readFileSync(process.argv[2], 'utf8')
                     self.assertFalse((self.root / "out").exists())
                     self.assertEqual(source.read_bytes(), before)
 
-    def test_unreviewed_target_cannot_silently_drop_license(self):
-        self.set_targets(["cursor"])
+    def test_cursor_and_antigravity_keep_license(self):
         source = self.src / "skills/demo/SKILL.md"
         source.write_text("---\nname: demo\ndescription: Demo\nlicense: MIT\n---\n# Demo\n",
                           encoding="utf-8")
-        for operation in (backend.preview, backend.apply):
-            with self.assertRaisesRegex(backend.BackendError, "cursor.*license|license.*cursor"):
-                operation(self.config, str(RULESYNC))
-            self.assertFalse((self.root / "out").exists())
+        for global_mode, placed in ((False, (".cursor/skills", ".agents/skills")),
+                                    (True, (".cursor/skills", ".gemini/config/skills"))):
+            with self.subTest(global_mode=global_mode):
+                shutil.rmtree(self.root / "out", ignore_errors=True)
+                self.set_targets(["cursor", "antigravity-cli"], global_mode)
+                self.config.write_text(self.config.read_text().replace('["rules", "skills"]', '["skills"]'))
+                self.assertTrue(self.apply())
+                for directory in placed:
+                    path = self.root / "out" / directory / "demo/SKILL.md"
+                    self.assertEqual(self.frontmatter(path),
+                                     {"name": "demo", "description": "Demo", "license": "MIT"})
+                    self.assertTrue(path.read_text().endswith("# Demo\n"))
+                self.assertTrue(backend.check(self.config, str(RULESYNC)))
 
     def test_nonstandard_field_types_are_refused_before_output_writes(self):
         self.set_targets(["claudecode"])
