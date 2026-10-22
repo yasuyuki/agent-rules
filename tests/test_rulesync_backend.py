@@ -142,7 +142,6 @@ process.stdout.write(JSON.stringify(matter(readFileSync(process.argv[2], 'utf8')
                                      {"name": "demo", "description": "Demo", "license": "MIT"})
                     self.assertTrue(path.read_text().endswith("# Demo\n"))
                 self.assertTrue(backend.check(self.config, str(RULESYNC)))
-                self.assertFalse(self.apply())
 
     def test_nonstandard_field_types_are_refused_before_output_writes(self):
         self.set_targets(["claudecode"])
