@@ -48,8 +48,10 @@ Retire only after confirming preservation, actual integration, target identity
 and the end of external use. Keep unintegrated work, registrations referenced as
 a dependency or integration destination, the repository itself, hook sources
 and runtimes. Keep usage leases distinct from Git administrative locks. Confirm
-both the checkout and its registration are gone while the branch and commits
-remain. Use the normal retire entry; forced deletion, unconditional unlock,
+both the checkout and its registration are gone. Retire itself keeps the branch
+and commits; deleting an integrated topic branch afterwards is decided only by
+an environment's explicit cleanup policy, never by retire or this skill. Use the
+normal retire entry; forced deletion, unconditional unlock,
 hand-edited ledgers, bulk integration of all branches and scheduled sweeps are
 outside it.
 
