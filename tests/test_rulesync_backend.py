@@ -1540,12 +1540,15 @@ class GitSourceTest(unittest.TestCase):
                                 (self.src / "skills/nested/SKILL.md").write_text("nested\n")), "untracked src/skills/nested/"),
             ("unmerged", conflict, "unmerged src/rules/a.md"),
             ("other checkout", lambda: (other / "rules/b.md").write_text("changed\n"), "unstaged rules/b.md"),
+            ("hidden deletion", lambda: (git(self.root, "update-index", "--skip-worktree", "src/rules/a.md"), rule.unlink()),
+             "differs from commit"),
         )
         for name, mutate, expected in cases:
             with self.subTest(case=name):
                 mutate()
                 self.refused(expected, "commit and integrate")
                 git(self.root, "merge", "--abort")
+                git(self.root, "update-index", "--no-skip-worktree", "src/rules/a.md")
                 for repo, head in ((self.root, base), (other, other_base)):
                     self.assertEqual(git(repo, "reset", "-q", "--hard", head).returncode, 0)
                     self.assertEqual(git(repo, "clean", "-ffdxq", "--", ".").returncode if repo == other else

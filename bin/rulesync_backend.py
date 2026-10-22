@@ -423,7 +423,9 @@ def _committed_roots(config: dict, temp: Path) -> list[Path]:
         if head is None:
             raise BackendError(f"Git-managed input root has no commit: {top}")
         snapshot = temp / "sources" / str(number)
-        present = [spec for spec in pathspecs if (top / spec).is_dir() and any(item.is_file() for item in _walk_plain(top / spec))]
+        # Read from the commit: a skip-worktree deletion is invisible to status.
+        tracked = _git(top, "ls-tree", "-r", "-z", "--name-only", head, "--", *pathspecs).decode("utf-8", "surrogateescape").split("\0")
+        present = [spec for spec in pathspecs if any(name.startswith(spec + "/") for name in tracked)]
         snapshot.mkdir(parents=True)
         if present:
             with tarfile.open(fileobj=io.BytesIO(_git(top, "archive", "--format=tar", head, "--", *present))) as archive:
@@ -440,7 +442,7 @@ def _committed_roots(config: dict, temp: Path) -> list[Path]:
                 listed = [{item.relative_to(base / feature).as_posix() for item in (_walk_plain(base / feature) if (base / feature).is_dir() else []) if item.is_file()} for base in (roots[index], committed)]
                 if listed[0] != listed[1]:
                     path = sorted(listed[0] ^ listed[1])[0]
-                    raise BackendError(f"Git-managed input root differs from commit {head}: {feature}/{path}")
+                    raise BackendError(f"Git-managed input root differs from commit {head}: {feature}/{path}; commit and integrate the source change through the task topic, then rerun")
             roots[index] = committed
     return roots
 
