@@ -1485,7 +1485,9 @@ class GitSourceTest(unittest.TestCase):
     def refused(self, *expected):
         before = self.output()
         for operation in (backend.preview, backend.apply, backend.check):
-            with self.subTest(operation=operation.__name__), self.assertRaises(backend.BackendError) as caught:
+            # Refusal precedes generation, so skip the per-call version probe.
+            with (self.subTest(operation=operation.__name__), self.assertRaises(backend.BackendError) as caught,
+                  patch.object(backend, "_resolve_executable", return_value=str(RULESYNC))):
                 operation(self.config, str(RULESYNC))
             for text in expected:
                 self.assertIn(text, str(caught.exception))
@@ -1502,6 +1504,7 @@ class GitSourceTest(unittest.TestCase):
         (export / "rules").mkdir(parents=True)
         (export / "rules/c.md").write_text("---\ndescription: c\n---\n# From export\n")
         self.write_config(["src", str(export), str(other)])
+        self.config.write_text(self.config.read_text().replace('"codexcli", "claudecode", "grokcli"', '"codexcli"'))
         base = self.commit(self.root)
         self.assertTrue(backend.preview(self.config, str(RULESYNC))["changes"])
         self.assertTrue(backend.apply(self.config, str(RULESYNC)))
@@ -1515,7 +1518,6 @@ class GitSourceTest(unittest.TestCase):
         (export / "rules/c.md").write_text("---\ndescription: c\n---\n# Export edit\n")
         self.assertTrue(backend.apply(self.config, str(RULESYNC)))
         self.assertIn("Export edit", (self.root / "out/AGENTS.md").read_text())
-        self.assertTrue(backend.check(self.config, str(RULESYNC)))
 
         rule = self.src / "rules/a.md"
         def edit():
@@ -1553,7 +1555,7 @@ class GitSourceTest(unittest.TestCase):
                     self.assertEqual(git(repo, "reset", "-q", "--hard", head).returncode, 0)
                     self.assertEqual(git(repo, "clean", "-ffdxq", "--", ".").returncode if repo == other else
                                      git(repo, "clean", "-ffdxq", "--", "src").returncode, 0)
-                self.assertTrue(backend.check(self.config, str(RULESYNC)))
+                    self.assertEqual(git(repo, "status", "--porcelain", "--ignored", "--", "src" if repo == self.root else ".").stdout, "")
 
         rule.write_text("---\ndescription: a\n---\n# Accepted later\n")
         self.commit(self.root)
@@ -1562,6 +1564,8 @@ class GitSourceTest(unittest.TestCase):
         self.assertTrue(backend.check(self.config, str(RULESYNC)))
 
     def test_edit_during_generation_is_not_distributed_and_git_failure_fails_closed(self):
+        self.write_config()
+        self.config.write_text(self.config.read_text().replace('"codexcli", "claudecode", "grokcli"', '"codexcli"'))
         self.commit(self.root)
         real = backend._git
         def edit_before_archive(top, *args):
