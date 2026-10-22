@@ -564,8 +564,7 @@ class BranchManagementTests(unittest.TestCase):
         sentinel.unlink()
         self.git_at(topic, "commit", "-m", "retried")
 
-    def publish_from(self, worktree, sha, onto, kind):
-        """Publish `sha` onto `onto` from a clone that has no branch hooks."""
+    def publish_from_unhooked_clone(self, worktree, sha, onto, kind):
         branch = self.git_at(worktree, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
         self.git_at(worktree, "push", "origin", branch)
         publisher = self.root / ("publisher-%s-%s-%s" % (branch, onto, kind))
@@ -605,7 +604,7 @@ class BranchManagementTests(unittest.TestCase):
         missing = self.branch("accept-remote-merge", "--task", "source", "--commit", tip, ok=False)
         self.assertIn("second parent", missing.stderr)
 
-        merge = self.publish_from(topic, tip, "main", "merge")
+        merge = self.publish_from_unhooked_clone(topic, tip, "main", "merge")
         unfetched = self.branch("accept-remote-merge", "--task", "source", "--commit", merge, ok=False)
         self.assertIn("missing commit", unfetched.stderr)
         self.git("fetch", "origin")
@@ -673,14 +672,14 @@ class BranchManagementTests(unittest.TestCase):
         tip = self.git_at(topic, "rev-parse", "HEAD").stdout.strip()
         local_main = self.git("rev-parse", "HEAD").stdout.strip()
 
-        partial = self.publish_from(topic, first, "partial", "merge")
+        partial = self.publish_from_unhooked_clone(topic, first, "partial", "merge")
         self.git("fetch", "origin")
         self.assertIn("second parent", self.branch(
             "accept-remote-merge", "--task", "sideways", "--commit", partial, ok=False).stderr)
 
-        squashed = self.publish_from(topic, tip, "squashed", "squash")
-        picked = self.publish_from(topic, tip, "picked", "pick")
-        feature = self.publish_from(topic, tip, "feature", "merge")
+        squashed = self.publish_from_unhooked_clone(topic, tip, "squashed", "squash")
+        picked = self.publish_from_unhooked_clone(topic, tip, "picked", "pick")
+        feature = self.publish_from_unhooked_clone(topic, tip, "feature", "merge")
         self.git("fetch", "origin")
         self.assertIn("second parent", self.branch(
             "accept-remote-merge", "--task", "sideways", "--commit", squashed, ok=False).stderr)

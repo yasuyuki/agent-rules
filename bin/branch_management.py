@@ -472,7 +472,6 @@ def commit_parents(repo, commit):
 
 
 def advertised_head(repo, remote, branch):
-    """Return the commit the registered remote currently advertises for `branch`."""
     if remote.startswith('-') or branch.startswith('-'):
         raise BranchError('registered destination is not a remote branch')
     ref = 'refs/heads/' + branch
@@ -494,12 +493,6 @@ def on_first_parent(repo, tip, commit):
 
 
 def remote_merge_receipt(repo, state, task, commit):
-    """Receipt for a merge that already exists on the registered remote destination.
-
-    The second parent must be the registered tip. The merge must be on the
-    first-parent history of the remote branch named by `into`. Squash,
-    cherry-pick, and a merge into any other branch do not match.
-    """
     commit = oid(repo, commit)
     parents = commit_parents(repo, commit)
     if len(parents) != 2 or parents[1] != task['tip']:
@@ -650,11 +643,6 @@ def merge_valid(repo, state, name, ticket):
 
 
 def accept_remote_merge(args):
-    """Record that the registered remote destination already merged this tip.
-
-    The local destination branch and its checkout stay as they are. The same
-    merge returns the same receipt. Refusal writes nothing.
-    """
     repo = Path(args.repo).resolve()
     with locked(repo) as (directory, state):
         assert_install(repo, directory, state)
