@@ -43,6 +43,15 @@ maintainer catalog is injected. Generic skills can be selected by pointing an
 input root at a separately obtained agent-skills checkout. A skill directory
 contains native `SKILL.md` plus its relative supporting files.
 
+An input root inside a Git checkout distributes only committed sources. If its
+selected feature trees have a staged, unstaged, untracked, ignored, deleted,
+renamed or unmerged path, `apply`, `check` and `preview` fail before writing and
+name each path with its kind; commit and integrate the change, then rerun.
+Changes elsewhere in the checkout do not count. Generation reads the commit seen
+by that same check, so an edit made while apply runs is not distributed. An
+input root outside any Git checkout, such as an export directory, is used as it
+is.
+
 ```console
 agent-rules apply --config rulesync-placement.json
 agent-rules check --config rulesync-placement.json

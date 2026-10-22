@@ -10,12 +10,14 @@ import argparse
 import base64
 from contextlib import contextmanager
 import hashlib
+import io
 import json
 import os
 import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -352,10 +354,102 @@ def _skill_frontmatter(config: dict, target: str, executable: str, files: dict[s
         raise BackendError(f"invalid skill frontmatter response for {target}: {exc}") from exc
 
 
+def _git_checkout(root: Path) -> tuple[Path, str] | None:
+    """Find the checkout whose `.git` is nearest to root, as Git discovery does."""
+    real = Path(os.path.realpath(root))
+    for top in (real, *real.parents):
+        marker = top / ".git"
+        if marker.exists() or _is_link_or_reparse(marker):
+            return top, "" if real == top else real.relative_to(top).as_posix()
+    return None
+
+
+def _git(top: Path, *args: str) -> bytes:
+    # Inherited GIT_* variables could point discovery at another repository.
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+    command = [shutil.which("git") or "git", "--no-optional-locks", "--literal-pathspecs", "-C", str(top), *args]
+    try:
+        run = subprocess.run(command, env=env, capture_output=True, check=False)
+    except OSError as exc:
+        raise BackendError(f"cannot run git for Git-managed input root {top}: {exc}") from exc
+    if run.returncode:
+        raise BackendError(f"git {args[0]} failed for Git-managed input root {top}: {run.stderr.decode('utf-8', 'replace').strip()}")
+    return run.stdout
+
+
+def _status_changes(output: bytes) -> tuple[str | None, list[str]]:
+    """Parse `git status --porcelain=v2 -z --branch` into HEAD and uncommitted paths."""
+    head, changes = None, []
+    records = iter(output.decode("utf-8", "surrogateescape").split("\0"))
+    for record in records:
+        if record.startswith("# branch.oid "):
+            oid = record[len("# branch.oid "):]
+            head = None if oid == "(initial)" else oid
+        elif record[:2] in ("1 ", "2 ", "u "):
+            fields = record.split(" ", {"1": 8, "2": 9, "u": 10}[record[0]])
+            index, worktree = fields[1]
+            kinds = ["unmerged"] if record[0] == "u" else []
+            kinds += ["staged"] if record[0] != "u" and index != "." else []
+            kinds += ["unstaged"] if record[0] != "u" and worktree != "." else []
+            kinds += ["deleted"] if "D" in fields[1] and record[0] != "u" else []
+            if record[0] == "2":
+                kinds.append(f"renamed from {next(records)}")
+            changes.append(f"{'+'.join(kinds)} {fields[-1]}")
+        elif record[:2] in ("? ", "! "):
+            changes.append(f"{'untracked' if record[0] == '?' else 'ignored'} {record[2:]}")
+        elif record and not record.startswith("# "):
+            raise BackendError(f"unrecognized git status record: {record!r}")
+    return head, changes
+
+
+def _committed_roots(config: dict, temp: Path) -> list[Path]:
+    """Return generation roots, replacing each Git-managed root by its HEAD content.
+
+    A Git-managed root with uncommitted, untracked or ignored feature files is
+    refused. Generating from the commit read with that same status, not from the
+    working tree, keeps concurrent edits out of the distributed bytes.
+    """
+    roots = list(config["_roots"])
+    checkouts: dict[Path, list[tuple[int, str]]] = {}
+    for index, root in enumerate(roots):
+        found = _git_checkout(root)
+        if found:
+            checkouts.setdefault(found[0], []).append((index, found[1]))
+    for number, (top, members) in enumerate(checkouts.items()):
+        pathspecs = [f"{prefix}/{feature}".lstrip("/") for _, prefix in members for feature in config["features"]]
+        head, changes = _status_changes(_git(top, "status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none", "--", *pathspecs))
+        if changes:
+            raise BackendError(f"Git-managed input root has uncommitted source changes in {top}: {'; '.join(changes)}; commit and integrate them through the task topic, then rerun")
+        if head is None:
+            raise BackendError(f"Git-managed input root has no commit: {top}")
+        snapshot = temp / "sources" / str(number)
+        present = [spec for spec in pathspecs if (top / spec).is_dir() and any(item.is_file() for item in _walk_plain(top / spec))]
+        snapshot.mkdir(parents=True)
+        if present:
+            with tarfile.open(fileobj=io.BytesIO(_git(top, "archive", "--format=tar", head, "--", *present))) as archive:
+                entries = archive.getmembers()
+                for entry in entries:
+                    if not (entry.isfile() or entry.isdir()):
+                        raise BackendError(f"Git-managed input root has a non-file source in {head}: {entry.name}")
+                archive.extractall(snapshot, entries, filter="data")
+        for index, prefix in members:
+            committed = snapshot / prefix
+            committed.mkdir(parents=True, exist_ok=True)
+            # A submodule or other content git archive omits must not vanish silently.
+            for feature in config["features"]:
+                listed = [{item.relative_to(base / feature).as_posix() for item in (_walk_plain(base / feature) if (base / feature).is_dir() else []) if item.is_file()} for base in (roots[index], committed)]
+                if listed[0] != listed[1]:
+                    path = sorted(listed[0] ^ listed[1])[0]
+                    raise BackendError(f"Git-managed input root differs from commit {head}: {feature}/{path}")
+            roots[index] = committed
+    return roots
+
+
 def _generate(config: dict, executable: str) -> dict[str, tuple[bytes, int]]:
     combined: dict[str, tuple[bytes, int]] = {}
     with tempfile.TemporaryDirectory(prefix="rulesync-backend-") as temp:
         temp_root = Path(temp)
+        config = {**config, "_roots": _committed_roots(config, temp_root)}
         for target in config["targets"]:
             features = config["features"]
             if target == "antigravity-cli" and config["global"] and "rules" in features:
