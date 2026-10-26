@@ -20,7 +20,7 @@ device, private music, embedding host, or player UI.
 
 ## Launch and doctor
 
-Run on Linux with Python 3.11+, Git, Cargo, Rust, and the target's native build
+Run on Linux with Python 3.14, Git, Cargo, Rust, and the target's native build
 dependencies already available. Use the target's documented host-Cargo route
 only where that environment permits it. Otherwise this recipe is blocked.
 It installs no toolchain, package, Docker image, or agent. Dependency downloads

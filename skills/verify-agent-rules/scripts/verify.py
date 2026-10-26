@@ -65,8 +65,8 @@ def command(argv, cwd):
 
 def doctor(repo, environment_repo=None):
     repo = reject_links(repo, "public input")
-    if sys.version_info < (3, 12):
-        raise ValueError("Python 3.12 or newer is required")
+    if sys.version_info < (3, 14):
+        raise ValueError("Python 3.14 or newer is required")
     for name in ("bin", "bin/place.py", "placement.json", "rules", "skills"):
         path = repo / name
         if path.is_symlink():

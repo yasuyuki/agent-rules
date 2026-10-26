@@ -7,7 +7,7 @@ name = "agent-rules"
 version = "0.1.0"
 description = "Safely place explicit rule and skill sources with pinned Rulesync"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = []

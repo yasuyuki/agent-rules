@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone agent self-report collector. Python 3.12+, standard library only."""
+"""Standalone agent self-report collector. Python 3.14, standard library only."""
 from __future__ import annotations
 
 import argparse

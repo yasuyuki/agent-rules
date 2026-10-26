@@ -16,7 +16,7 @@ The [feature index](features/README.md) defines the proven boundary.
 
 ## Run the browser proof
 
-Run on Linux with Python 3.12+, Git, Node.js, npm, and the Chromium runtime
+Run on Linux with Python 3.14, Git, Node.js, npm, and the Chromium runtime
 required by the target's pinned Playwright package. The host must already
 provide Chromium system libraries. This recipe needs npm registry and
 Playwright download access when their caches are empty. It installs no agent,

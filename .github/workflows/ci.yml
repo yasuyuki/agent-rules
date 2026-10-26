@@ -27,7 +27,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Classify the complete event range
         id: changes
         run: python tests/ci_changes.py
@@ -59,7 +59,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python: ["3.12", "3.14"]
+        python: ["3.14"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -79,7 +79,7 @@ jobs:
       - name: Source regression contracts
         run: python tests/ci_runner.py --output ci-results/source.json --timeout 300 test_grok_placement test_start_config test_inventory_adoption test_inventory_inspection test_agent_report test_workspace_entry test_ci_runner test_verification_skill test_environment_verification test_funkot_autodj_verification test_funkot_player_verification test_legacy_tip_repair
       - name: Windows isolated-user primitive for native E2E
-        if: matrix.os == 'windows-latest' && matrix.python == '3.12'
+        if: matrix.os == 'windows-latest'
         shell: pwsh
         run: ./tests/native_e2e_windows_isolation.ps1
       - name: Record resolved dependencies
@@ -106,7 +106,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python: ["3.12", "3.14"]
+        python: ["3.14"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -144,7 +144,6 @@ jobs:
           "$runtime/python" -m pip uninstall -y agent-rules
           "$runtime/python" -c "import importlib.util,sys; sys.exit(importlib.util.find_spec('agent_rules_manager') is not None)"
       - name: Smoke source installation with the same rule and skill fixture
-        if: matrix.python == '3.12'
         shell: bash
         run: |
           python -m venv "$RUNNER_TEMP/agent-rules-source-runtime"
@@ -185,13 +184,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python: ["3.12", "3.14"]
+        python: ["3.14"]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Require all verification results
         env:
           CI_NEEDS: ${{ toJSON(needs) }}

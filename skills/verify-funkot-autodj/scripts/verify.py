@@ -163,7 +163,7 @@ def verify(args):
     try:
         save()
         if not sys.platform.startswith("linux") or not all(shutil.which(x) for x in ("git", "cargo", "rustc")):
-            raise RuntimeError("Requires Linux, Python 3.11+, Git, Cargo and Rust")
+            raise RuntimeError("Requires Linux, Python 3.14, Git, Cargo and Rust")
         if Path(run(["git", "rev-parse", "--show-toplevel"]).strip()).resolve() != repo:
             raise RuntimeError("Select the Funkot repository root")
         record["revision"] = run(["git", "rev-parse", "HEAD"]).strip()

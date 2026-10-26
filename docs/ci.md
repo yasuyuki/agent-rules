@@ -23,7 +23,7 @@ consumer outputs in separate disposable projects and the combined output twice
 with new nonces. Each round uses the installed CLI for apply, check, unchanged
 reapply and empty-source rollback; it checks the ownership manifest, support
 file, unowned sentinel and refusal to repair a missing owned support file.
-Python 3.12 package jobs additionally install from the checkout with the public
+Package jobs additionally install from the checkout with the public
 `pip install .` route and run the same fixture. These are placement tests. They
 do not assert that a vendor CLI loaded or forgot the rule or skill.
 
@@ -181,7 +181,7 @@ runs are distinct evidence.
 
 [The workflow](../.github/workflows/ci.yml) owns exact commands, versions,
 partitions and installed-wheel selections. Full CI covers Windows/Linux and
-Python 3.12, with one checkout job and a separate package job per configuration. The two existing `test` gates require successful documentation
+Python 3.14, with one checkout job and a separate package job per configuration. The two existing `test` gates require successful documentation
 checks and either successful heavy matrices or their classification-authorized
 skip. Failures, cancellation and unexpected skips cannot satisfy them.
 
@@ -202,7 +202,7 @@ from 194 to over 305 seconds per shard depending on the runner
 ([#51](https://github.com/yasuyuki/agent-rules/issues/51)).
 
 Before integration, run the checkout job's `tests/ci_runner.py` module
-selections locally with a Python 3.12 interpreter, the `requires-python` floor.
+selections locally with Python 3.14, the only supported version.
 Use it as the lifecycle task validation.
 
 Read failing case output in the normal log and retained `ci-results-*` artifacts.
