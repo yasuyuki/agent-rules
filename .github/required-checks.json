@@ -1,10 +1,10 @@
 [
   {
     "app": "github-actions",
-    "name": "test (ubuntu-latest, 3.12)"
+    "name": "test (ubuntu-latest, 3.14)"
   },
   {
     "app": "github-actions",
-    "name": "test (windows-latest, 3.12)"
+    "name": "test (windows-latest, 3.14)"
   }
 ]
