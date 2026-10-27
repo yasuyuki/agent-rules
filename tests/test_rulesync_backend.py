@@ -1490,7 +1490,7 @@ class NpmVersionTest(unittest.TestCase):
         package = RULESYNC.parent.parent / "rulesync"
         self.entry = self.modules / "rulesync/dist/cli/index.js"
         self.entry.parent.mkdir(parents=True)
-        shutil.copyfile(package / "dist/cli/index.js", self.entry)
+        shutil.copy2(package / "dist/cli/index.js", self.entry)
         shutil.copyfile(package / "package.json", self.modules / "rulesync/package.json")
         (self.modules / ".bin").mkdir()
         self.shim = self.modules / ".bin" / RULESYNC.name
