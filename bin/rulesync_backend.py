@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -202,41 +203,145 @@ def _resolve_executable(config: dict, explicit: str | None) -> str:
     for candidate in candidates:
         executable = Path(candidate)
         if executable.is_file() and (os.name == "nt" or os.access(executable, os.X_OK)):
-            version = subprocess.run(_tool_command(str(executable), ["--version"]), text=True, capture_output=True, check=False)
-            if version.returncode == 0 and version.stdout.strip() == VERSION:
+            entry = _npm_entry(executable)
+            if entry is not None:
+                _check_npm_version(entry)
                 return str(executable)
-            raise BackendError(f"rulesync must be exactly {VERSION}: {executable}")
+            command = _tool_command(str(executable), ["--version"])
+            try:
+                version = subprocess.run(command, text=True, capture_output=True, check=False)
+            except OSError as exc:
+                raise BackendError(f"cannot run {executable} --version: {exc}") from exc
+            if version.returncode:
+                raise BackendError(f"{executable} --version exited {version.returncode}: {version.stderr.strip()}")
+            if version.stdout.strip() != VERSION:
+                raise BackendError(f"rulesync must be exactly {VERSION}, not {version.stdout.strip()!r}: {executable}")
+            return str(executable)
     raise BackendError("Rulesync executable not found; pass --rulesync or install the pinned local dependency")
+
+
+NPM_ENTRY = ("rulesync", "dist", "cli", "index.js")
+# The exact launch line npm's cmd-shim writes into node_modules/.bin/rulesync.cmd.
+NPM_CMD_LAUNCH = '"%_prog%"  "%dp0%\\..\\rulesync\\dist\\cli\\index.js" %*'
+
+
+def _npm_entry(executable: Path) -> Path | None:
+    """Return the npm package entry `_tool_command` runs for this executable.
+
+    Only a `.cmd` shim npm wrote (Windows) or a `.bin` symlink into the sibling
+    package (POSIX) qualifies. A link out of the package, another launcher or a
+    native executable returns None, so its own `--version` answers instead.
+    """
+    modules = executable.parent.parent
+    entry = modules.joinpath(*NPM_ENTRY)
+    if os.name == "nt" and executable.suffix.lower() == ".cmd":
+        if not entry.is_file():
+            raise BackendError("select an npm-installed Rulesync shim or a native executable")
+        if not executable.read_text(encoding="utf-8", errors="replace").rstrip().endswith(" & " + NPM_CMD_LAUNCH):
+            raise BackendError(f"Rulesync shim does not launch its sibling package entry: {executable}")
+    elif not (executable.parent.name == ".bin" and executable.is_symlink()
+              and Path(os.path.realpath(executable)) == Path(os.path.realpath(entry))):
+        return None
+    if Path(os.path.realpath(entry)) != Path(os.path.realpath(modules)).joinpath(*NPM_ENTRY):
+        return None
+    return entry
+
+
+def _check_npm_version(entry: Path) -> None:
+    """Read the version `rulesync --version` prints from the entry it runs.
+
+    Rulesync 16.39.1 prints `getVersion()`, a single string constant in that
+    entry. A launch would only load the same file to print it.
+    """
+    package = entry.parents[2] / "package.json"
+    try:
+        text = entry.read_bytes().decode("utf-8")
+        manifest = json.loads(package.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise BackendError(f"cannot read the Rulesync package version: {exc}") from exc
+    lines = text.split("\n")
+    constants = [re.fullmatch(r'const getVersion = \(\) => "([^"\\]*)";', line) for line in lines if line.startswith("const getVersion ")]
+    if (lines[0] != "#!/usr/bin/env node" or len(constants) != 1 or constants[0] is None
+            or '\tconst version = getVersion();\n\tprogram.name("rulesync")' not in text
+            or '.version(version, "-v, --version", "Show version")' not in text
+            or not isinstance(manifest, dict) or manifest.get("name") != "rulesync"):
+        raise BackendError(f"cannot confirm the Rulesync version in {entry}")
+    found = (constants[0][1], manifest.get("version"))
+    if found != (VERSION, VERSION):
+        raise BackendError(f"rulesync must be exactly {VERSION}, not {found!r}: {entry}")
 
 
 def _tool_command(executable: str, args: list[str]) -> list[str]:
     if os.name == "nt" and executable.lower().endswith(".cmd"):
         # Run the pinned npm entry with Node directly, avoiding cmd.exe's
         # reinterpretation of source paths containing shell metacharacters.
-        script = Path(executable).parent.parent / "rulesync" / "dist" / "cli" / "index.js"
+        script = Path(executable).parent.parent.joinpath(*NPM_ENTRY)
         if not script.is_file():
             raise BackendError("select an npm-installed Rulesync shim or a native executable")
         return [shutil.which("node") or "node", str(script), *args]
     return [executable, *args]
 
 
+# The (files, directory prefixes) each target may emit, by global mode.
+NAMESPACES = {
+    False: {
+        "cursor": ((), (".cursor/skills/", ".cursor/rules/")),
+        "antigravity-cli": (("AGENTS.md",), (".agents/skills/",)),
+        "codexcli": (("AGENTS.md",), (".agents/skills/",)),
+        "claudecode": (("CLAUDE.md",), (".claude/rules/", ".claude/skills/")),
+        "grokcli": (("AGENTS.md",), (".grok/rules/", ".grok/skills/")),
+        "opencode": (("AGENTS.md",), (".opencode/skills/",)),
+    },
+    True: {
+        "cursor": ((), (".cursor/skills/",)),
+        # GEMINI.md and the pre-1.3 skill root stay listed only so earlier
+        # manifests can retire them.
+        "antigravity-cli": ((".gemini/GEMINI.md",), (".gemini/config/rules/", AGY_SKILLS, AGY_LEGACY_SKILLS)),
+        "codexcli": ((".codex/AGENTS.md",), (".agents/skills/",)),
+        "claudecode": ((".claude/CLAUDE.md",), (".claude/rules/", ".claude/skills/")),
+        "grokcli": ((".grok/AGENTS.md",), (".grok/rules/", ".grok/skills/")),
+        "opencode": ((".config/opencode/AGENTS.md",), (".config/opencode/skills/",)),
+    },
+}
+
+
 def _allowed(target: str, rel: str, global_mode: bool = False) -> bool:
-    if target == "cursor":
-        return rel.startswith(".cursor/skills/") or (not global_mode and rel.startswith(".cursor/rules/"))
-    if target == "antigravity-cli":
-        if global_mode:
-            # GEMINI.md and the pre-1.3 skill root stay listed only so earlier
-            # manifests can retire them.
-            return rel == ".gemini/GEMINI.md" or rel.startswith((".gemini/config/rules/", AGY_SKILLS, AGY_LEGACY_SKILLS))
-        return rel == "AGENTS.md" or rel.startswith(".agents/skills/")
-    if target == "codexcli":
-        rule = ".codex/AGENTS.md" if global_mode else "AGENTS.md"
-        return rel == rule or rel.startswith(".agents/skills/")
-    if target == "claudecode":
-        return rel == (".claude/CLAUDE.md" if global_mode else "CLAUDE.md") or rel.startswith(".claude/rules/") or rel.startswith(".claude/skills/")
-    if target == "grokcli":
-        return rel == (".grok/AGENTS.md" if global_mode else "AGENTS.md") or rel.startswith(".grok/rules/") or rel.startswith(".grok/skills/")
-    return rel == (".config/opencode/AGENTS.md" if global_mode else "AGENTS.md") or rel.startswith(".config/opencode/skills/" if global_mode else ".opencode/skills/")
+    files, prefixes = NAMESPACES[global_mode][target]
+    return rel in files or rel.startswith(prefixes)
+
+
+def _namespaces_overlap(a: tuple, b: tuple) -> bool:
+    (files_a, prefixes_a), (files_b, prefixes_b) = a, b
+    return (bool(set(files_a) & set(files_b))
+            or any(rel.startswith(prefixes_b) for rel in files_a)
+            or any(rel.startswith(prefixes_a) for rel in files_b)
+            or any(x.startswith(y) or y.startswith(x) for x in prefixes_a for y in prefixes_b))
+
+
+def _generation_batches(config: dict) -> list[tuple[list[str], list[str]]]:
+    """Group targets into (features, targets) runs of one `rulesync generate`.
+
+    A run holds only targets with the same features whose namespaces are
+    disjoint, so every generated path has exactly one possible target. Targets
+    sharing a path (project AGENTS.md, .agents/skills/) stay in separate runs
+    whose outputs `_combine` compares.
+    """
+    batches: list[tuple[list[str], list[str]]] = []
+    namespaces = NAMESPACES[config["global"]]
+    for target in config["targets"]:
+        features = list(config["features"])
+        if target == "antigravity-cli" and config["global"]:
+            # `_antigravity_global_rules` places these rules instead.
+            features = [feature for feature in features if feature != "rules"]
+            if not features:
+                continue
+        for batch_features, members in batches:
+            if batch_features == features and not any(_namespaces_overlap(namespaces[target], namespaces[m]) for m in members):
+                members.append(target)
+                break
+        else:
+            batches.append((features, [target]))
+    return batches
 
 
 def _digest(data: bytes) -> str:
@@ -452,48 +557,53 @@ def _generate(config: dict, executable: str) -> dict[str, tuple[bytes, int]]:
     with tempfile.TemporaryDirectory(prefix="rulesync-backend-") as temp:
         temp_root = Path(temp)
         config = {**config, "_roots": _committed_roots(config, temp_root)}
-        for target in config["targets"]:
-            features = config["features"]
-            if target == "antigravity-cli" and config["global"] and "rules" in features:
-                for rel, value in _antigravity_global_rules(config).items():
-                    _combine(combined, rel, value)
-                features = [feature for feature in features if feature != "rules"]
-                if not features:
-                    continue
-            stage = temp_root / target / "out"
-            home = temp_root / target / "home"
+        if "antigravity-cli" in config["targets"] and config["global"] and "rules" in config["features"]:
+            for rel, value in _antigravity_global_rules(config).items():
+                _combine(combined, rel, value)
+        for number, (features, members) in enumerate(_generation_batches(config)):
+            label = ",".join(members)
+            stage = temp_root / str(number) / "out"
+            home = temp_root / str(number) / "home"
             stage.mkdir(parents=True)
             home.mkdir()
-            cmd = ["generate", "--targets", target, "--features", ",".join(features), "--input-roots", *map(str, config["_roots"]), "--output-roots", str(stage), "--silent"]
+            cmd = ["generate", "--targets", label, "--features", ",".join(features), "--input-roots", *map(str, config["_roots"]), "--output-roots", str(stage), "--silent"]
             if config["global"]:
                 cmd.append("--global")
             # Preserve only process essentials; redirect every known tool home so
             # native generation cannot discover or modify live configuration.
             env = {key: os.environ[key] for key in ("PATH", "SystemRoot", "COMSPEC", "HOMEDRIVE", "HOMEPATH", "TEMP", "TMP") if key in os.environ}
             env.update({"HOME": str(home), "USERPROFILE": str(home), "XDG_CONFIG_HOME": str(home / ".config"), "XDG_DATA_HOME": str(home / ".local/share"), "CODEX_HOME": str(home / ".codex"), "CLAUDE_CONFIG_DIR": str(home / ".claude"), "GROK_CONFIG_DIR": str(home / ".grok"), "OPENCODE_CONFIG_DIR": str(home / ".config" / "opencode")})
-            run = subprocess.run(_tool_command(executable, cmd), cwd=temp_root, env=env, text=True, capture_output=True, check=False)
+            try:
+                run = subprocess.run(_tool_command(executable, cmd), cwd=temp_root, env=env, text=True, capture_output=True, check=False)
+            except OSError as exc:
+                raise BackendError(f"cannot run Rulesync for {label}: {exc}") from exc
             if run.returncode:
-                raise BackendError(f"Rulesync generation failed for {target}: {(run.stderr or run.stdout).strip()}")
+                raise BackendError(f"Rulesync generation failed for {label} (exit {run.returncode}): {(run.stderr or run.stdout).strip()}")
             # In global mode Rulesync deliberately writes below HOME and ignores
             # output-roots.  HOME is our staging root, so reconcile that tree.
             generated_root = home if config["global"] else stage
-            target_files: dict[str, tuple[bytes, int]] = {}
+            per_target: dict[str, dict[str, tuple[bytes, int]]] = {target: {} for target in members}
             for item in _walk_plain(generated_root):
                 if not item.is_file():
                     continue
                 rel = item.relative_to(generated_root).as_posix()
-                if not _allowed(target, rel, config["global"]):
-                    raise BackendError(f"Rulesync emitted unsupported path for {target}: {rel}")
+                owners = [target for target in members if _allowed(target, rel, config["global"])]
+                if not owners:
+                    raise BackendError(f"Rulesync emitted unsupported path for {label}: {rel}")
+                if len(owners) > 1:
+                    raise BackendError(f"one Rulesync run cannot attribute {rel} among {label}")
+                target = owners[0]
                 if target == "antigravity-cli" and rel.startswith(AGY_LEGACY_SKILLS):
                     # Rulesync 16.39.1 still writes the pre-1.3 root, which agy
                     # 1.3 moves once to ~/.gemini/config/skills/ and no longer reads.
                     rel = AGY_SKILLS + rel[len(AGY_LEGACY_SKILLS):]
                 value = (item.read_bytes(), _output_mode(item.stat().st_mode))
-                _combine(target_files, rel, value)
-            if "skills" in features:
-                _skill_frontmatter(config, target, executable, target_files)
-            for rel, value in target_files.items():
-                _combine(combined, rel, value)
+                _combine(per_target[target], rel, value)
+            for target, target_files in per_target.items():
+                if "skills" in features:
+                    _skill_frontmatter(config, target, executable, target_files)
+                for rel, value in target_files.items():
+                    _combine(combined, rel, value)
     if "grokcli" in config["targets"] and not config["global"] and "CLAUDE.md" in combined:
         raise BackendError("Grok also discovers CLAUDE.md; use non-root Claude rules to avoid duplicate policy")
     return combined

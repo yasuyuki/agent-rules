@@ -100,7 +100,9 @@ moves the old skill root once on first start; restore those files to the owned
 paths before that apply, or it reports them as externally modified. Combine all selected targets in one
 config per output root: that root has one ownership manifest.
 
-Rulesync generates each target in an isolated staging directory. Shared output
+Rulesync generates in isolated staging directories. One run covers several
+targets only when no two of them can write the same path; targets that share a
+path, such as project `AGENTS.md`, are generated separately. Shared output
 paths must have identical contents across targets; conflicting `AGENTS.md`
 content is rejected rather than resolved by target order. Use identical shared
 policy for Codex, Grok, and OpenCode, with Claude-specific fragments separately targeted.

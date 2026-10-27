@@ -18,9 +18,10 @@ and `--help` outside the source tree as CI does. This distinguishes packaged
 code/data from imports accidentally satisfied by the checkout.
 
 The installed-entry test also creates one nonce-bearing rule and one skill with
-a relative support file from `tests/fixtures/native-e2e/`. It tests the four
-consumer outputs in separate disposable projects and the combined output twice
-with new nonces. Each round uses the installed CLI for apply, check, unchanged
+a relative support file from `tests/fixtures/native-e2e/`. It tests the Claude,
+Codex and Cursor outputs and their combination, each in a separate disposable
+project with new nonces. Antigravity's project output is Codex's, and without a
+vendor CLI it has no other path. Each round uses the installed CLI for apply, check, unchanged
 reapply and empty-source rollback; it checks the ownership manifest, support
 file, unowned sentinel and refusal to repair a missing owned support file.
 These are placement tests. They do not assert that a vendor CLI loaded or

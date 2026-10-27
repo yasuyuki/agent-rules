@@ -1469,6 +1469,244 @@ m._apply_reconcile(out, retained, owned)
         self.assertFalse((out / backend.JOURNAL).exists())
 
 
+def launches(kind):
+    """Count `subprocess.run` calls whose argv contains `kind`, still running them."""
+    calls = []
+    real = subprocess.run
+    def counted(argv, *args, **kwargs):
+        if kind in argv:
+            calls.append(list(argv))
+        return real(argv, *args, **kwargs)
+    return calls, patch.object(backend.subprocess, "run", side_effect=counted)
+
+
+class NpmVersionTest(unittest.TestCase):
+    """The npm install's version is read from the entry `_tool_command` runs."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.modules = self.root / "node_modules"
+        package = RULESYNC.parent.parent / "rulesync"
+        self.entry = self.modules / "rulesync/dist/cli/index.js"
+        self.entry.parent.mkdir(parents=True)
+        shutil.copyfile(package / "dist/cli/index.js", self.entry)
+        shutil.copyfile(package / "package.json", self.modules / "rulesync/package.json")
+        (self.modules / ".bin").mkdir()
+        self.shim = self.modules / ".bin" / RULESYNC.name
+        if os.name == "nt":
+            shutil.copyfile(RULESYNC, self.shim)
+        else:
+            self.shim.symlink_to("../rulesync/dist/cli/index.js")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def resolve(self):
+        return backend._resolve_executable({}, str(self.shim))
+
+    def refused(self, pattern):
+        with self.assertRaisesRegex(backend.BackendError, pattern):
+            self.resolve()
+
+    def replace(self, path, old, new):
+        data = path.read_bytes()
+        self.assertIn(old, data)
+        path.write_bytes(data.replace(old, new))
+
+    def test_pinned_and_copied_npm_installs_resolve_without_launching(self):
+        with patch.object(backend.subprocess, "run", side_effect=AssertionError("launched")):
+            self.assertEqual(backend._resolve_executable({}, str(RULESYNC)), str(RULESYNC))
+            self.assertEqual(self.resolve(), str(self.shim))
+            self.assertEqual(self.resolve(), str(self.shim))
+
+    def test_every_call_rereads_the_version(self):
+        self.assertEqual(self.resolve(), str(self.shim))
+        self.replace(self.entry, b'const getVersion = () => "16.39.1";', b'const getVersion = () => "16.39.2";')
+        self.refused("must be exactly 16.39.1")
+
+    def test_wrong_missing_or_ambiguous_version_is_refused(self):
+        original = self.entry.read_bytes()
+        constant = b'const getVersion = () => "16.39.1";'
+        for case, data, pattern in (
+                ("other constant", original.replace(constant, b'const getVersion = () => "16.40.0";'), "must be exactly"),
+                ("no constant", original.replace(constant, b'const getVersion = () => readVersion();'), "cannot confirm"),
+                ("two constants", original.replace(constant, constant + b"\n" + constant), "cannot confirm"),
+                ("other flag", original.replace(b'"-v, --version"', b'"-V, --print-version"'), "cannot confirm"),
+                ("other launcher", original.replace(b"#!/usr/bin/env node", b"#!/usr/bin/env deno", 1), "cannot confirm"),
+                ("CRLF entry", original.replace(b"\n", b"\r\n"), "cannot confirm")):
+            with self.subTest(case=case):
+                self.entry.write_bytes(data)
+                self.refused(pattern)
+        self.entry.write_bytes(original)
+        package = self.modules / "rulesync/package.json"
+        self.replace(package, b'"version": "16.39.1"', b'"version": "16.39.2"')
+        self.refused("must be exactly")
+        self.replace(package, b'"name": "rulesync"', b'"name": "other"')
+        self.refused("cannot confirm")
+        package.unlink()
+        self.refused("cannot read")
+
+    def test_missing_entry_is_not_a_placement(self):
+        self.entry.unlink()
+        self.refused("npm-installed Rulesync shim" if os.name == "nt" else "not found")
+
+    @unittest.skipUnless(os.name == "nt", "npm writes a .cmd shim only on Windows")
+    def test_shim_that_launches_something_else_is_refused(self):
+        self.replace(self.shim, b'"%dp0%\\..\\rulesync\\dist\\cli\\index.js"', b'"%dp0%\\..\\other\\index.js"')
+        self.refused("does not launch its sibling package entry")
+
+    def test_entry_reached_through_a_link_asks_the_cli(self):
+        outside = self.root / "outside"
+        shutil.move(self.modules / "rulesync", outside)
+        if os.name == "nt":
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(self.modules / "rulesync"), str(outside)], check=True, capture_output=True)
+        else:
+            (self.modules / "rulesync").symlink_to(outside, target_is_directory=True)
+        for answer, pattern in (("16.39.1", None), ("16.39.2", "must be exactly 16.39.1, not '16.39.2'")):
+            answered = subprocess.CompletedProcess([], 0, answer + "\n", "")
+            with self.subTest(answer=answer), patch.object(backend.subprocess, "run", return_value=answered) as run:
+                if pattern:
+                    self.refused(pattern)
+                else:
+                    self.assertEqual(self.resolve(), str(self.shim))
+                self.assertIn("--version", run.call_args.args[0])
+
+    def test_node_absent_fails_generation_with_its_cause(self):
+        source = self.root / "src"
+        (source / "rules").mkdir(parents=True)
+        (source / "rules/a.md").write_text("---\ndescription: a\n---\n# A\n")
+        config = self.root / "config.json"
+        config.write_text(json.dumps({"version": 1, "input_roots": ["src"], "targets": ["codexcli"], "output_root": "out",
+                                      "global": False, "features": ["rules"]}))
+        empty = self.root / "no-node"
+        empty.mkdir()
+        with patch.dict(os.environ, {"PATH": str(empty)}), patch.object(backend.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(backend.BackendError, "cannot run Rulesync for codexcli|exit 127"):
+                backend.apply(config, str(self.shim))
+        self.assertFalse((self.root / "out/AGENTS.md").exists())
+
+
+class NativeVersionTest(unittest.TestCase):
+    """An executable npm did not install still answers `--version` itself."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.native = Path(self.temp.name) / ("rulesync.bat" if os.name == "nt" else "rulesync")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def native_script(self, output, code):
+        if os.name == "nt":
+            self.native.write_text(f"@echo {output}\r\n@exit /b {code}\r\n")
+        else:
+            self.native.write_text(f"#!/bin/sh\necho {output}\nexit {code}\n")
+            self.native.chmod(0o755)
+
+    def test_version_answer_and_launch_failure_are_reported_distinctly(self):
+        self.native_script("16.39.1", 0)
+        calls, counting = launches("--version")
+        with counting:
+            self.assertEqual(backend._resolve_executable({}, str(self.native)), str(self.native))
+        self.assertEqual(len(calls), 1)
+        self.native_script("16.39.2", 0)
+        with self.assertRaisesRegex(backend.BackendError, "must be exactly 16.39.1, not '16.39.2'"):
+            backend._resolve_executable({}, str(self.native))
+        self.native_script("env: node: No such file or directory 1>&2" if os.name == "nt" else "'env: node: No such file or directory' >&2", 127)
+        with self.assertRaises(backend.BackendError) as caught:
+            backend._resolve_executable({}, str(self.native))
+        self.assertIn("exited 127", str(caught.exception))
+        self.assertIn("env: node: No such file or directory", str(caught.exception))
+        self.assertNotIn("must be exactly", str(caught.exception))
+        with patch.object(backend.subprocess, "run", side_effect=PermissionError("denied")):
+            with self.assertRaisesRegex(backend.BackendError, "cannot run .* --version: denied"):
+                backend._resolve_executable({}, str(self.native))
+
+
+class GenerationBatchTest(unittest.TestCase):
+    """One `rulesync generate` covers only targets that cannot write the same path."""
+
+    ALL = ["codexcli", "claudecode", "grokcli", "opencode", "cursor", "antigravity-cli"]
+    AGENTS_MD = {"codexcli", "grokcli", "opencode", "antigravity-cli"}
+
+    setUp, tearDown, write_config, rule, skill = (RulesyncBackendTest.setUp, RulesyncBackendTest.tearDown,
+                                                  RulesyncBackendTest.write_config, RulesyncBackendTest.rule,
+                                                  RulesyncBackendTest.skill)
+
+    def load(self, targets, global_mode, features=("rules", "skills")):
+        self.config.write_text(json.dumps({"version": 1, "input_roots": ["src"], "targets": targets, "output_root": "out",
+                                           "global": global_mode, "features": list(features)}))
+        return backend._load_config(self.config)
+
+    def test_project_targets_sharing_agents_md_never_share_a_run(self):
+        batches = backend._generation_batches(self.load(self.ALL, False))
+        self.assertEqual(batches, [(["rules", "skills"], ["codexcli", "claudecode", "cursor"]), (["rules", "skills"], ["grokcli"]),
+                                   (["rules", "skills"], ["opencode"]), (["rules", "skills"], ["antigravity-cli"])])
+        for _, members in batches:
+            self.assertLessEqual(len(self.AGENTS_MD & set(members)), 1, members)
+        self.assertEqual(backend._generation_batches(self.load(["grokcli", "cursor", "codexcli"], False)),
+                         [(["rules", "skills"], ["grokcli", "cursor"]), (["rules", "skills"], ["codexcli"])])
+
+    def test_global_runs_split_only_by_features(self):
+        self.assertEqual(backend._generation_batches(self.load(self.ALL, True)),
+                         [(["rules", "skills"], ["codexcli", "claudecode", "grokcli", "opencode", "cursor"]),
+                          (["skills"], ["antigravity-cli"])])
+        self.assertEqual(backend._generation_batches(self.load(["antigravity-cli"], True, ["rules"])), [])
+
+    def test_overlap_covers_files_prefixes_and_nesting(self):
+        overlap = backend._namespaces_overlap
+        self.assertTrue(overlap((("AGENTS.md",), ()), (("AGENTS.md",), ())))
+        self.assertTrue(overlap(((".gemini/GEMINI.md",), ()), ((), (".gemini/",))))
+        self.assertTrue(overlap(((), (".agents/",)), ((), (".agents/skills/",))))
+        self.assertFalse(overlap((("CLAUDE.md",), (".claude/rules/",)), (("AGENTS.md",), (".agents/skills/",))))
+        self.assertFalse(overlap(((), (".claude/",)), ((), (".claude-other/",))))
+
+    def generated(self, targets, global_mode, per_target):
+        config = self.load(targets, global_mode)
+        batches = backend._generation_batches(config)
+        if per_target:
+            batches = [(features, [target]) for features, members in batches for target in members]
+        calls, counting = launches("generate")
+        with counting, patch.object(backend, "_generation_batches", return_value=batches):
+            files = backend._generate(config, str(RULESYNC))
+        return files, len(calls)
+
+    def test_batched_generation_equals_per_target_generation(self):
+        # Non-root rules make opencode emit unsupported settings and a root Claude
+        # rule is refused beside Grok, so each kind goes only where it is placed.
+        (self.src / "rules/a.md").write_text('---\ndescription: a\nroot: true\ntargets: ["codexcli", "grokcli", "opencode", "antigravity-cli", "cursor"]\n---\n# Root\n')
+        (self.src / "rules/b.md").write_text('---\ndescription: b\ntargets: ["claudecode", "cursor"]\n---\n# Restricted\n')
+        self.skill("licensed", "Licensed")
+        skill = self.src / "skills/licensed/SKILL.md"
+        skill.write_text(skill.read_text().replace("description: Licensed\n", "description: Licensed\nlicense: MIT\n"))
+        for global_mode, targets, runs in ((False, ["codexcli", "claudecode", "cursor"], 1),
+                                           (False, self.ALL, 4), (True, self.ALL, 2)):
+            with self.subTest(global_mode=global_mode, targets=targets):
+                batched, batched_runs = self.generated(targets, global_mode, False)
+                separate, separate_runs = self.generated(targets, global_mode, True)
+                self.assertEqual((batched_runs, separate_runs), (runs, len(targets)))
+                self.assertEqual(sorted(batched), sorted(separate))
+                self.assertEqual(batched, separate)
+                for target in targets:
+                    self.assertTrue(any(backend._allowed(target, rel, global_mode) for rel in batched), target)
+
+    def test_a_run_sharing_a_path_fails_closed(self):
+        (self.src / "rules/a.md").write_text("---\ndescription: a\nroot: true\n---\n# Shared\n")
+        config = self.load(["codexcli", "grokcli"], False)
+        with patch.object(backend, "_generation_batches", return_value=[(["rules", "skills"], ["codexcli", "grokcli"])]):
+            with self.assertRaisesRegex(backend.BackendError, "cannot attribute AGENTS.md among codexcli,grokcli"):
+                backend._generate(config, str(RULESYNC))
+
+    def test_conflict_between_runs_is_still_explicit(self):
+        (self.src / "rules/a.md").write_text("---\ndescription: a\nroot: true\ntargets: [codexcli]\n---\n# Codex\n")
+        (self.src / "rules/g.md").write_text("---\ndescription: g\nroot: true\ntargets: [grokcli]\n---\n# Grok\n")
+        config = self.load(["codexcli", "cursor", "grokcli"], False)
+        self.assertEqual([members for _, members in backend._generation_batches(config)], [["codexcli", "cursor"], ["grokcli"]])
+        with self.assertRaisesRegex(backend.BackendError, "shared-output conflict for AGENTS.md"):
+            backend._generate(config, str(RULESYNC))
+
+
 def git(repo, *args):
     run = subprocess.run(["git", "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
                           "-c", "commit.gpgsign=false", "-C", str(repo), *args], capture_output=True, text=True)
