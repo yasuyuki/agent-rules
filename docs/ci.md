@@ -23,9 +23,27 @@ consumer outputs in separate disposable projects and the combined output twice
 with new nonces. Each round uses the installed CLI for apply, check, unchanged
 reapply and empty-source rollback; it checks the ownership manifest, support
 file, unowned sentinel and refusal to repair a missing owned support file.
-Package jobs additionally install from the checkout with the public
-`pip install .` route and run the same fixture. These are placement tests. They
-do not assert that a vendor CLI loaded or forgot the rule or skill.
+These are placement tests. They do not assert that a vendor CLI loaded or
+forgot the rule or skill.
+
+Package jobs also install from the checkout with the public `pip install .`
+route into another clean environment. Instead of repeating the fixture, they run
+[install_equivalence.py](../tests/install_equivalence.py) against the tested
+wheel environment. Both interpreters must import the package from their own
+site-packages outside the checkout and report the same Python build and
+installed distributions. Every site-packages file must have the same bytes.
+Each `RECORD` must match the files actually present, with no unrecorded file in
+the distribution's directories. Each console launcher must start its own
+interpreter and otherwise hold the same stub and script. The only excluded
+differences are `direct_url.json` (the PEP 610 install origin), `RECORD`'s own
+hashes of those files, bytecode caches, the launcher's interpreter path and the
+timestamps pip writes into a Windows launcher. The source launcher then runs
+`--version` and `--help`, and both installations are uninstalled.
+`tests/test_install_equivalence.py` builds disposable installations and
+requires a failure for a missing, changed or extra file, a `RECORD` that
+disagrees with a file, changed entry-point metadata, a missing or altered
+launcher, an import from outside site-packages, a different version, an extra
+distribution and a different Python build.
 
 ## Native CLI acceptance (#19)
 
@@ -188,7 +206,8 @@ skip. Failures, cancellation and unexpected skips cannot satisfy them.
 | Boundary | Evidence |
 | --- | --- |
 | Source behavior | Current source, placement, inventory, optional-hook and workspace-entry contracts |
-| Installed distribution | Build/metadata and project CLI end-to-end checks; imports must resolve outside the checkout |
+| Installed distribution | Build/metadata and project CLI end-to-end checks on the wheel; imports must resolve outside the checkout |
+| Source installation | Byte equivalence with the tested wheel installation, plus its own launcher start; no repeated placement round trip |
 | Selection and documentation | Whole-range classification, intentional/abnormal skips, and maintained local reference tests |
 | Real environment behavior | Separate authorized host acceptance; fixture/byte checks do not establish native agent loading or UI delivery |
 
@@ -200,6 +219,12 @@ independent package environments. A `--timeout` is a per-shard hang bound, not a
 duration target. The Rulesync step allows 600 seconds because the same tree took
 from 194 to over 305 seconds per shard depending on the runner
 ([#51](https://github.com/yasuyuki/agent-rules/issues/51)).
+The step passes `tests/ci_checkout_weights.json` to `--timings`. It holds the
+Windows case durations of main run
+[40323009910](https://github.com/yasuyuki/agent-rules/actions/runs/40323009910);
+Windows checkout is the job that ends last. Cases missing from it are scheduled
+first with the largest weight, so a new or renamed case is never dropped
+([#56](https://github.com/yasuyuki/agent-rules/issues/56)).
 
 Before integration, run the checkout job's `tests/ci_runner.py` module
 selections locally with Python 3.14, the only supported version.
@@ -258,7 +283,7 @@ those contracts run once per OS/Python configuration in partition 0. Platform
 case skips remain explicit in the JSON. Checkout artifacts now include the
 partition number; package artifacts have a separate name.
 
-`tests/ci_checkout_weights.json` contains only test IDs and relative weights
+At that time `tests/ci_checkout_weights.json` contained only test IDs and relative weights
 from integrated main run #125 (`34764799630`, `8bc1e6a`). For each of Windows
 3.10 and 3.12, case duration is normalized by the suite total; the larger of the
 two normalized observations is used. Longest-weight-first assignment breaks
