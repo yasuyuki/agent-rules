@@ -73,7 +73,7 @@ jobs:
       - name: Install fixed external lifecycle for checkout compatibility contracts
         run: python -m pip install "workspace-lifecycle @ https://github.com/yasuyuki/workspace-lifecycle/archive/fdd4f16a11e095b8ea49c8a7d40ff49307ed738d.zip"
       - name: Rulesync safety contract
-        run: python tests/ci_runner.py --output ci-results/rulesync.json --timeout 600 --workers 2 --timings tests/ci_checkout_weights.json test_rulesync_backend test_rulesync_export
+        run: python tests/ci_runner.py --output ci-results/rulesync.json --timeout 600 --workers 2 --timings tests/ci_checkout_weights-${{ matrix.os }}.json test_rulesync_backend test_rulesync_export
       - name: Placement and rules contract
         run: python tests/ci_runner.py --output ci-results/rules.json --timeout 300 --command python tests/test_rules.py
       - name: Source regression contracts

@@ -219,12 +219,13 @@ independent package environments. A `--timeout` is a per-shard hang bound, not a
 duration target. The Rulesync step allows 600 seconds because the same tree took
 from 194 to over 305 seconds per shard depending on the runner
 ([#51](https://github.com/yasuyuki/agent-rules/issues/51)).
-The step passes `tests/ci_checkout_weights.json` to `--timings`. It holds the
-Windows case durations of main run
-[40323009910](https://github.com/yasuyuki/agent-rules/actions/runs/40323009910);
-Windows checkout is the job that ends last. Cases missing from it are scheduled
-first with the largest weight, so a new or renamed case is never dropped
-([#56](https://github.com/yasuyuki/agent-rules/issues/56)).
+The step passes `tests/ci_checkout_weights-<os>.json` to `--timings`. Each file
+holds that OS's case durations from main run
+[40323009910](https://github.com/yasuyuki/agent-rules/actions/runs/40323009910).
+One shared file cannot balance both, because Linux-only cases take about 70
+seconds on Ubuntu and are skipped on Windows. Cases missing from a file are
+scheduled first with the largest weight, so a new or renamed case is never
+dropped ([#56](https://github.com/yasuyuki/agent-rules/issues/56)).
 
 Before integration, run the checkout job's `tests/ci_runner.py` module
 selections locally with Python 3.14, the only supported version.
