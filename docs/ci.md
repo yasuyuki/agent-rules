@@ -220,9 +220,12 @@ independent package environments. A `--timeout` is a per-shard hang bound, not a
 duration target. The Rulesync step allows 600 seconds because the same tree took
 from 194 to over 305 seconds per shard depending on the runner
 ([#51](https://github.com/yasuyuki/agent-rules/issues/51)).
+The step runs three workers. With two, the Windows step stayed above 160 seconds
+per shard and kept the run over its 330-second target
+([#60](https://github.com/yasuyuki/agent-rules/issues/60)).
 The step passes `tests/ci_checkout_weights-<os>.json` to `--timings`. Each file
 holds that OS's case durations from main run
-[40323009910](https://github.com/yasuyuki/agent-rules/actions/runs/40323009910).
+[40532783015](https://github.com/yasuyuki/agent-rules/actions/runs/40532783015).
 One shared file cannot balance both, because Linux-only cases take 64 to 82
 seconds per run on Ubuntu and are skipped on Windows. Cases missing from a file are
 scheduled first with the largest weight, so a new or renamed case is never
