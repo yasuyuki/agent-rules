@@ -10,7 +10,7 @@ player's `AGENTS.md` and `verification/README.md`. The shared editing source is
 `verification/source_switch/SKILL.md` is its byte-identical distribution.
 Update both together through their registered tasks.
 
-The product audit anchor is `72b2e733217f8b1c1c76dc7e1b8def766fcc18a8`, with
+The product audit anchor is `4d49996e3d7c6062de0773ccf3c8c4804a818674`, with
 adopted core `a5fa36a399c9f09ecbd7638ce4f144b016d059f7`. These identify the last
 reviewed implementation, not permission to substitute that core for the current
 `funkot-core.commit`. Read every intervening covered change before advancing the
@@ -78,7 +78,8 @@ table current. Replay a trace in actual Rust before labeling it a product bug.
 The existing native regressions cover failed saves with real core fences,
 pre/post-rename process interruption, delayed same-path/different-ID claims,
 receipt replay, and failed preload followed by Select, OFF and QueueMove, including valid saved normal/playlist current
-retention before Play.
+retention before Play. Legacy current/reservation overlap is covered by native
+exact-ID retirement tests, outside the finite initial states.
 Preserve their failure-before/fix-after evidence. Keep regression and product
 fix commits separate from verification changes.
 
