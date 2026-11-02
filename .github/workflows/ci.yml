@@ -70,6 +70,7 @@ jobs:
         with:
           node-version: "24"
       - run: npm ci --ignore-scripts
+      - run: npm run bundle
       - name: Install fixed external lifecycle for checkout compatibility contracts
         run: python -m pip install "workspace-lifecycle @ https://github.com/yasuyuki/workspace-lifecycle/archive/fdd4f16a11e095b8ea49c8a7d40ff49307ed738d.zip"
       - name: Rulesync safety contract
@@ -117,6 +118,7 @@ jobs:
         with:
           node-version: "24"
       - run: npm ci --ignore-scripts
+      - run: npm run bundle
       - run: python -m pip install build twine
       - run: python -m build
       - name: Validate distribution metadata

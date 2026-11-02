@@ -17,6 +17,7 @@ On Linux:
 python3 -m venv .venv
 .venv/bin/python -m pip install .
 npm ci --ignore-scripts
+npm run bundle
 ```
 
 On Windows PowerShell:
@@ -25,6 +26,7 @@ On Windows PowerShell:
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install .
 npm.cmd ci --ignore-scripts
+npm.cmd run bundle
 ```
 
 Create native Rulesync sources and an explicit placement configuration using the

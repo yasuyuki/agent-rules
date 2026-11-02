@@ -1573,6 +1573,20 @@ class NpmVersionTest(unittest.TestCase):
                     self.assertEqual(self.resolve(), str(self.shim))
                 self.assertIn("--version", run.call_args.args[0])
 
+    def test_absent_bundle_runs_the_entry_and_a_different_one_is_refused(self):
+        self.assertEqual(backend._tool_command(str(self.shim), ["--version"])[1], str(self.entry))
+        bundle = self.root.joinpath(*backend.BUNDLE)
+        bundle.parent.mkdir()
+        bundle.write_text("console.log('16.39.1');\n")
+        with self.assertRaisesRegex(backend.BackendError, "bundle does not match this adapter"):
+            backend._tool_command(str(self.shim), ["--version"])
+        if os.name != "nt":
+            real = RULESYNC.parent.parent.parent.joinpath(*backend.BUNDLE)
+            bundle.unlink()
+            bundle.symlink_to(real)
+            with self.assertRaisesRegex(backend.BackendError, "bundle does not match this adapter"):
+                backend._tool_command(str(self.shim), ["--version"])
+
     def test_node_absent_fails_generation_with_its_cause(self):
         source = self.root / "src"
         (source / "rules").mkdir(parents=True)
@@ -1706,6 +1720,25 @@ class GenerationBatchTest(unittest.TestCase):
         self.assertEqual([members for _, members in backend._generation_batches(config)], [["codexcli", "cursor"], ["grokcli"]])
         with self.assertRaisesRegex(backend.BackendError, "shared-output conflict for AGENTS.md"):
             backend._generate(config, str(RULESYNC))
+
+    def test_the_pinned_bundle_runs_and_generates_what_the_entry_does(self):
+        bundle = RULESYNC.parent.parent.parent.joinpath(*backend.BUNDLE)
+        self.assertTrue(bundle.is_file(), f"run npm run bundle beside {RULESYNC.parent.parent}")
+        command = backend._tool_command(str(RULESYNC), ["--version"])
+        self.assertEqual(command[1], str(bundle))
+        self.assertEqual(subprocess.run(command, capture_output=True, text=True, check=True).stdout.strip(), backend.VERSION)
+        (self.src / "rules/a.md").write_text('---\ndescription: a\nroot: true\ntargets: ["codexcli", "grokcli", "opencode", "antigravity-cli", "cursor"]\n---\n# Root\n')
+        (self.src / "rules/b.md").write_text('---\ndescription: b\ntargets: ["claudecode", "cursor"]\n---\n# Restricted\n')
+        self.skill("licensed", "Licensed")
+        for global_mode in (False, True):
+            with self.subTest(global_mode=global_mode):
+                config = self.load(self.ALL, global_mode)
+                calls, counting = launches(str(bundle))
+                with counting:
+                    bundled = backend._generate(config, str(RULESYNC))
+                self.assertEqual(len(calls), len(backend._generation_batches(config)))
+                with patch.object(backend, "_rulesync_script", side_effect=lambda entry: entry):
+                    self.assertEqual(backend._generate(config, str(RULESYNC)), bundled)
 
     def test_skill_frontmatter_is_checked_once_per_batch(self):
         (self.src / "rules/a.md").write_text('---\ndescription: a\nroot: true\ntargets: ["codexcli", "grokcli", "opencode", "antigravity-cli", "cursor"]\n---\n# Root\n')

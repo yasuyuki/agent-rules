@@ -272,6 +272,31 @@ def _check_npm_version(entry: Path) -> None:
         raise BackendError(f"rulesync must be exactly {VERSION}, not {found!r}: {entry}")
 
 
+BUNDLE = ("rulesync-bundle", "rulesync.mjs")
+# The output of `npm run bundle` for package-lock.json. The lock stays the pin;
+# this digest only admits the one file esbuild derives from it.
+BUNDLE_SHA256 = "24d413f5a41a978649ebcadc283ae02499b31d1bf73864d2ecc633a676d60740"
+
+
+def _rulesync_script(entry: Path) -> Path:
+    """Return the bundle built beside this npm install, or the entry without one.
+
+    Loading the entry opens hundreds of package files, which is most of a
+    generation run. A bundle that differs from the pinned digest is refused,
+    not skipped, so a stale or altered build cannot pass unnoticed.
+    """
+    bundle = entry.parents[4].joinpath(*BUNDLE)
+    try:
+        data = bundle.read_bytes()
+    except FileNotFoundError:
+        return entry
+    except OSError as exc:
+        raise BackendError(f"cannot read the Rulesync bundle {bundle}: {exc}") from exc
+    if _is_link_or_reparse(bundle) or hashlib.sha256(data).hexdigest() != BUNDLE_SHA256:
+        raise BackendError(f"Rulesync bundle does not match this adapter; rebuild it with npm run bundle or remove it: {bundle}")
+    return bundle
+
+
 def _tool_command(executable: str, args: list[str]) -> list[str]:
     if os.name == "nt" and executable.lower().endswith(".cmd"):
         # Run the pinned npm entry with Node directly, avoiding cmd.exe's
@@ -279,8 +304,11 @@ def _tool_command(executable: str, args: list[str]) -> list[str]:
         script = Path(executable).parent.parent.joinpath(*NPM_ENTRY)
         if not script.is_file():
             raise BackendError("select an npm-installed Rulesync shim or a native executable")
-        return [shutil.which("node") or "node", str(script), *args]
-    return [executable, *args]
+    else:
+        script = _npm_entry(Path(executable))
+        if script is None:
+            return [executable, *args]
+    return [shutil.which("node") or "node", str(_rulesync_script(script)), *args]
 
 
 # The (files, directory prefixes) each target may emit, by global mode.

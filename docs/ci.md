@@ -167,7 +167,7 @@ actual authenticated evidence are recorded in Issue #19. GitHub-hosted jobs are
 destroyed after each run; they are not persistent managed agent environments,
 so the workspace's runtime inventory does not list them.
 
-Run `npm ci --ignore-scripts`, then `python tests/test_rulesync_backend.py` and
+Run `npm ci --ignore-scripts` and `npm run bundle`, then `python tests/test_rulesync_backend.py` and
 `python tests/test_rulesync_export.py` for real pinned-backend generation,
 ownership, conflict, deletion, check and rollback coverage. The tests use only
 disposable HOME/project roots.

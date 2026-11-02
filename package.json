@@ -1,7 +1,11 @@
 {
   "private": true,
   "description": "Pinned rule and skill generation backend",
+  "scripts": {
+    "bundle": "esbuild node_modules/rulesync/dist/cli/index.js --bundle --platform=node --format=esm --main-fields=module,main --legal-comments=eof --log-level=warning \"--banner:js=import{createRequire as __cr}from'module';const require=__cr(import.meta.url);\" --outfile=rulesync-bundle/rulesync.mjs"
+  },
   "dependencies": {
+    "esbuild": "0.25.12",
     "rulesync": "16.39.1"
   }
 }

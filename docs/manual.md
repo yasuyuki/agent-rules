@@ -10,7 +10,10 @@ use the installed executable path from the README when it is not on PATH.
 ## Project rules and skills
 
 Use Python 3.14 and the pinned Rulesync 16.39.1 executable installed by
-`npm ci --ignore-scripts` from this checkout. The Python wheel only includes the
+`npm ci --ignore-scripts` from this checkout. `npm run bundle` then writes
+`rulesync-bundle/rulesync.mjs`, which starts generation faster. The adapter runs
+it only when its digest matches and runs the npm entry when it is absent; a
+bundle with another digest is refused. The Python wheel only includes the
 project entry and staging adapter; runtime, Git hooks, catalogs and optional
 review tooling are checkout-only until their separate extraction is complete.
 

@@ -1,0 +1,5 @@
+# Rulesync runs from a bundle pinned by digest; the npm lock stays the pin
+
+Nearly all of one `rulesync generate` run was Node opening the hundreds of package files Rulesync 16.39.1 loads, so every check, apply and preview paid it once per generation batch. `npm run bundle` now uses esbuild, locked like Rulesync, to write one file beside the npm install, and the adapter runs that file only when its SHA-256 equals `BUNDLE_SHA256`. On Windows the safety suites took 157.3 s for 81 tests with the npm entry and 126.4 s for 83 tests with the bundle (#72).
+
+Trust still starts at `package-lock.json`: the bundle is derived from it deterministically and admitted by digest, the way `VERSION` admits the entry. Without a bundle the adapter runs the npm entry as before. A bundle with another digest is refused rather than skipped, so a stale build after a lock change fails until it is rebuilt and the constant is updated. The bundle is not committed (it would redistribute third-party code) and is not built on first use (check would then write to the install).
