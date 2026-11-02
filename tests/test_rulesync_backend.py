@@ -1469,6 +1469,106 @@ m._apply_reconcile(out, retained, owned)
         self.assertFalse(other.exists())
         self.assertFalse((out / backend.JOURNAL).exists())
 
+    def renumbered_fixture(self):
+        out, root, desired, owned, retained = self.removed_skill_fixture()
+        backend._apply_reconcile(out, retained, owned)
+        manifest = out / backend.MANIFEST
+        value = json.loads(manifest.read_text())
+        device = root.stat().st_dev
+        for record in value["skill_directories"]:
+            for entry in record["directories"]:
+                self.assertEqual(entry["device"], device)
+                entry["device"] = device + 1
+        manifest.write_bytes((json.dumps(value, sort_keys=True, indent=2) + "\n").encode())
+        config = backend._load_config(self.config)
+        return out, root, desired, retained, manifest, config
+
+    def test_renumbered_device_of_output_filesystem_keeps_ownership(self):
+        out, root, desired, retained, manifest, config = self.renumbered_fixture()
+        before = manifest.read_bytes()
+        state = backend._read_manifest(out, config)
+        backend._validate_reconcile(out, retained, state, config)
+        self.assertFalse(backend._apply_reconcile(out, retained, state))
+        self.assertEqual(manifest.read_bytes(), before)
+        state = backend._validate_reconcile(out, desired, backend._read_manifest(out, config), config)
+        self.assertTrue(backend._apply_reconcile(out, desired, state))
+        self.assertEqual((root / "SKILL.md").read_bytes(), b"skill")
+
+    def test_device_change_off_the_output_filesystem_is_refused(self):
+        out, root, desired, retained, manifest, config = self.renumbered_fixture()
+        state = backend._read_manifest(out, config)
+        with patch.object(backend, "_output_device", return_value=root.stat().st_dev + 2):
+            with self.assertRaisesRegex(backend.BackendError, "identity changed"):
+                backend._validate_reconcile(out, retained, state, config)
+        with patch.object(backend.os.path, "ismount", return_value=True):
+            with self.assertRaisesRegex(backend.BackendError, "identity changed"):
+                backend._validate_reconcile(out, retained, state, config)
+
+    def test_device_and_inode_change_is_refused(self):
+        out, root, desired, retained, manifest, config = self.renumbered_fixture()
+        self.renumber(out, delta=0, inode_delta=1)
+        with self.assertRaisesRegex(backend.BackendError, "identity changed"):
+            backend._validate_reconcile(out, retained, backend._read_manifest(out, config), config)
+
+    def legacy_agy_fixture(self):
+        data = json.loads(self.config.read_text())
+        data.update({"global": True, "targets": ["antigravity-cli"]})
+        self.config.write_text(json.dumps(data))
+        config = backend._load_config(self.config)
+        out = self.root / "agy-home"
+        out.mkdir()
+        mode = 0o666 if os.name == "nt" else 0o644
+        current = {backend.AGY_SKILLS + "demo/SKILL.md": (b"current", mode)}
+        legacy = {backend.AGY_LEGACY_SKILLS + "demo/SKILL.md": (b"legacy", mode),
+                  backend.AGY_LEGACY_SKILLS + "demo/references/deep.md": (b"support", mode)}
+        backend._apply_reconcile(out, {**current, **legacy}, {})
+        owned = {rel: {"sha256": backend._digest(data), "mode": m} for rel, (data, m) in {**current, **legacy}.items()}
+        # An earlier adapter retired the files but kept the empty tree and its record.
+        with patch.object(backend, "AGY_LEGACY_SKILLS", "not-a-legacy-root/"):
+            backend._apply_reconcile(out, current, owned)
+        root = out / backend.AGY_LEGACY_SKILLS / "demo"
+        self.assertTrue((root / "references").is_dir())
+        return out, root, current, config
+
+    def renumber(self, out, delta=1, inode_delta=0):
+        manifest = out / backend.MANIFEST
+        value = json.loads(manifest.read_text())
+        for record in value["skill_directories"]:
+            for entry in record["directories"]:
+                entry["device"] += delta
+                entry["inode"] += inode_delta
+        manifest.write_bytes(json.dumps(value, sort_keys=True, indent=2).encode() + b"\n")
+
+    def test_apply_removes_abandoned_legacy_agy_tree(self):
+        out, root, current, config = self.legacy_agy_fixture()
+        self.renumber(out)  # the operator case: recorded before a WSL restart renumbered the disk
+        state = backend._validate_reconcile(out, current, backend._read_manifest(out, config), config)
+        abandoned = []
+        backend._skill_directory_state(out, current, state, abandoned=abandoned)
+        self.assertEqual([record["path"] for record in abandoned], [backend.AGY_LEGACY_SKILLS + "demo"])
+        _, _, _, planned, _, manifest_needs = backend._plan(out, current, state)
+        self.assertTrue(manifest_needs)
+        self.assertEqual(planned, abandoned)
+        self.assertTrue(root.exists())
+        self.assertTrue(backend._apply_reconcile(out, current, state))
+        self.assertFalse(root.exists())
+        self.assertTrue(root.parent.is_dir())
+        self.assertNotIn("skill_directories", json.loads((out / backend.MANIFEST).read_text()))
+        state = backend._validate_reconcile(out, current, backend._read_manifest(out, config), config)
+        self.assertFalse(backend._apply_reconcile(out, current, state))
+        self.assertEqual((out / backend.AGY_SKILLS / "demo/SKILL.md").read_bytes(), b"current")
+
+    def test_abandoned_legacy_agy_tree_with_foreign_contents_is_kept(self):
+        out, root, current, config = self.legacy_agy_fixture()
+        foreign = root / "references" / "notes.md"
+        foreign.write_text("mine")
+        manifest = (out / backend.MANIFEST).read_bytes()
+        state = backend._read_manifest(out, config)
+        with self.assertRaisesRegex(backend.BackendError, "unowned contents"):
+            backend._apply_reconcile(out, current, state)
+        self.assertEqual(foreign.read_text(), "mine")
+        self.assertEqual((out / backend.MANIFEST).read_bytes(), manifest)
+
 
 def launches(kind):
     """Count `subprocess.run` calls whose argv contains `kind`, still running them."""

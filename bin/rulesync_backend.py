@@ -685,13 +685,32 @@ def _directory_identity(path: Path) -> dict:
             "mode": stat.S_IMODE(info.st_mode) & 0o777}
 
 
+def _output_device(output: Path) -> int:
+    return output.stat().st_dev
+
+
+def _same_directory(output: Path, rel: str, recorded: dict) -> bool:
+    """The recorded directory, allowing only a renumbered device of the output's own filesystem.
+
+    WSL can assign its ext4 disk another device number on each boot, so st_dev is
+    not stable across restarts. Inode and mode must still match, and a changed
+    device must be the output's current one at a path that is not a mount point,
+    so a directory from another filesystem is still refused.
+    """
+    path = output / rel
+    current = _directory_identity(path)
+    if (current["inode"], current["mode"]) != (recorded["inode"], recorded["mode"]):
+        return False
+    if current["device"] == recorded["device"]:
+        return True
+    return current["device"] == _output_device(output) and not os.path.ismount(path)
+
+
 def _validate_skill_directory_tree(output: Path, record: dict, allowed_files=()) -> None:
     expected = {entry["path"]: entry for entry in record["directories"]}
     root = output / record["path"]
     for rel, entry in expected.items():
-        identity = _directory_identity(output / rel)
-        identity["path"] = rel
-        if identity != entry:
+        if not _same_directory(output, rel, entry):
             raise BackendError(f"owned skill directory identity changed: {rel}")
     actual = {record["path"]}
     for path in _walk_plain(root):
@@ -722,8 +741,9 @@ def _retired_skill_absence(output: Path, record: dict) -> dict | None:
                 proof[path] = None
             else:
                 raise BackendError(f"retired skill directory is not absent: {path}")
-        device = next(entry["device"] for entry in record["directories"]
-                      if entry["path"] == record["path"])
+        # Ancestors inside the output stay on its filesystem. Compare with its current
+        # device rather than the recorded one, which a WSL restart can renumber.
+        device = _output_device(output)
         mountpoints = set()
         if sys.platform.startswith("linux"):
             lines = Path("/proc/self/mountinfo").read_text().splitlines()
@@ -758,7 +778,15 @@ def _retired_skill_absence(output: Path, record: dict) -> dict | None:
     return proof
 
 
-def _skill_directory_state(output: Path, desired: dict, owned: dict, retired: list | None = None) -> list[dict]:
+def _skill_directory_state(output: Path, desired: dict, owned: dict, retired: list | None = None,
+                           abandoned: list | None = None) -> list[dict]:
+    """Directory records to keep in the manifest.
+
+    `retired` collects deselected records whose tree is already absent. `abandoned`
+    collects unchanged trees under the pre-1.3 agy root that are empty or hold only
+    files this apply deletes: the adapter never writes there again, so their
+    provenance has no re-add to protect and apply removes them.
+    """
     previous = {record["path"]: record for record in getattr(owned, "skill_directories", [])}
     stale = set(owned) - set(desired)
     affected = {root for root in _skill_roots(owned)
@@ -766,12 +794,13 @@ def _skill_directory_state(output: Path, desired: dict, owned: dict, retired: li
     records = []
     for root in sorted(set(previous) | affected):
         files = {rel for rel in owned if rel.startswith(root + "/")}
-        if retired is not None and root in previous and not files and not any(rel.startswith(root + "/") for rel in desired):
+        deselected = root in previous and not files and not any(rel.startswith(root + "/") for rel in desired)
+        if retired is not None and deselected:
             proof = _retired_skill_absence(output, previous[root])
             if proof is not None:
                 retired.append((previous[root], proof))
                 continue
-        known = {entry["path"]: entry for entry in previous.get(root, {}).get("directories", [])}
+        known ={entry["path"]: entry for entry in previous.get(root, {}).get("directories", [])}
         directories = {root}
         for rel in files:
             parent = Path(rel).parent
@@ -784,6 +813,11 @@ def _skill_directory_state(output: Path, desired: dict, owned: dict, retired: li
             known[rel] = entry
         record = {"path": root, "directories": [known[rel] for rel in sorted(known)]}
         _validate_skill_directory_tree(output, record, files)
+        if (abandoned is not None and root.startswith(AGY_LEGACY_SKILLS)
+                and not any(rel.startswith(root + "/") for rel in desired)):
+            # Every owned file here is stale, so this apply leaves the tree empty.
+            abandoned.append(record)
+            continue
         records.append(record if root in affected else previous[root])
     return records
 
@@ -1011,16 +1045,32 @@ def _plan(output: Path, desired: dict[str, tuple[bytes, int]], owned: dict[str, 
     stale = set(owned) - set(desired)
     writes = {rel: value for rel, value in desired.items() if rel not in owned or _actual(output / rel) != (_digest(value[0]), value[1])}
     manifest = output / MANIFEST
-    retired = []
-    directory_records = _skill_directory_state(output, desired, owned, retired)
+    retired, abandoned = [], []
+    directory_records = _skill_directory_state(output, desired, owned, retired, abandoned)
     manifest_data = _manifest_bytes(desired, directory_records)
     manifest_needs = not manifest.exists() or manifest.read_bytes() != manifest_data
-    return stale, writes, retired, manifest_data, manifest_needs
+    return stale, writes, retired, abandoned, manifest_data, manifest_needs
+
+
+def _remove_abandoned(output: Path, abandoned: list[dict]) -> None:
+    """Remove empty abandoned trees after the manifest no longer owns them.
+
+    A failure here leaves only empty, unowned directories under a root the
+    adapter no longer writes; the committed manifest stays consistent.
+    """
+    for record in abandoned:
+        try:
+            _validate_skill_directory_tree(output, record)
+            for entry in sorted(record["directories"], key=lambda e: len(Path(e["path"]).parts), reverse=True):
+                (output / entry["path"]).rmdir()
+        except (BackendError, OSError) as exc:
+            raise BackendError(f"apply committed, but abandoned skill directory remains: {record['path']}: {exc}") from exc
 
 
 def _apply_reconcile(output: Path, desired: dict[str, tuple[bytes, int]], owned: dict[str, dict]) -> bool:
     # Preserve old directories and their ACLs; only files and manifest are journaled.
-    stale, writes, retired, manifest_data, manifest_needs = _plan(output, desired, owned)
+    # The one exception is abandoned pre-1.3 agy trees, removed once the manifest drops them.
+    stale, writes, retired, abandoned, manifest_data, manifest_needs = _plan(output, desired, owned)
     manifest = output / MANIFEST
     if not stale and not writes and not manifest_needs:
         return False
@@ -1053,6 +1103,8 @@ def _apply_reconcile(output: Path, desired: dict[str, tuple[bytes, int]], owned:
             for record, proof in retired:
                 if _retired_skill_absence(output, record) != proof:
                     raise BackendError(f"retired skill directory ancestry changed: {record['path']}")
+            for record in abandoned:
+                _validate_skill_directory_tree(output, record)
             _write_atomic(manifest, manifest_data, 0o600)
         journal.unlink()
     except BaseException as exc:
@@ -1066,6 +1118,7 @@ def _apply_reconcile(output: Path, desired: dict[str, tuple[bytes, int]], owned:
         except BaseException as rollback:
             raise BackendError(f"apply failed: {exc}; rollback failed: {rollback}") from rollback
         raise exc
+    _remove_abandoned(output, abandoned)
     return True
 
 
@@ -1217,6 +1270,10 @@ def check(config_path: str | Path, rulesync: str | None = None) -> bool:
     owned = _validate_reconcile(output, desired, _read_manifest(output, config), config)
     if set(owned) != set(desired):
         return False
+    abandoned = []
+    _skill_directory_state(output, desired, owned, abandoned=abandoned)
+    if abandoned:
+        return False
     return all(_actual(output / rel) == (_digest(data), mode) for rel, (data, mode) in desired.items())
 
 
@@ -1230,9 +1287,10 @@ def preview(config_path: str | Path, rulesync: str | None = None) -> dict:
     _assert_plain_output(output)
     _recover(output, config, readonly=True)
     owned = _validate_reconcile(output, desired, _read_manifest(output, config), config, allow_absent_retired=True)
-    stale, writes, _, _, manifest_needs = _plan(output, desired, owned)
+    stale, writes, _, abandoned, _, manifest_needs = _plan(output, desired, owned)
     changes = [{"path": rel, "operation": "update" if rel in owned else "add"} for rel in writes]
     changes += [{"path": rel, "operation": "delete"} for rel in stale]
+    changes += [{"path": record["path"], "operation": "remove-directory"} for record in abandoned]
     return {"changes": sorted(changes, key=lambda change: change["path"]), "manifest": manifest_needs}
 
 

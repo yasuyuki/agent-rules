@@ -69,7 +69,8 @@ locking the output root:
 ```
 
 `changes` lists only changed paths, sorted by path; each `operation` is `add`,
-`update` (bytes or mode differ) or `delete`. An empty list means apply would
+`update` (bytes or mode differ), `delete` or `remove-directory` (an abandoned
+skill tree, described below). An empty list means apply would
 change no output. `manifest` is true when apply would also rewrite the ownership
 manifest. A conflict that apply refuses, such as an unowned or externally edited
 file, a same-name skill, a link or a pending transaction, makes preview fail
@@ -128,7 +129,15 @@ leaves directories and their ACLs in place. Re-adding the skill requires the
 same plain directory tree; foreign contents, replacement directories and links
 are refused. Partial support-file removals retain the same provenance. Directory
 identities unavailable on a filesystem block reuse rather than weakening the
-unowned-directory check.
+unowned-directory check. An identity is the device, inode and mode. A device
+number alone may change when the directory is on the output root's current
+filesystem and is not a mount point, because WSL can renumber its disk on each
+boot. A changed inode or mode, or another filesystem, is still refused.
+
+The pre-1.3 agy skill root `.gemini/antigravity-cli/skills/` is never written
+again, so its owned trees have no re-add to protect. Apply drops their records
+and removes the unchanged directories once they are empty, in the same apply
+that deletes their last owned files; check reports false until it has.
 
 This manifest extension requires this adapter revision on the single existing
 writer. Earlier v1 manifests remain readable; older adapters reject the new
