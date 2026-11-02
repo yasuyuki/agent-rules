@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
 import io
@@ -560,6 +561,7 @@ def _generate(config: dict, executable: str) -> dict[str, tuple[bytes, int]]:
         if "antigravity-cli" in config["targets"] and config["global"] and "rules" in config["features"]:
             for rel, value in _antigravity_global_rules(config).items():
                 _combine(combined, rel, value)
+        batches = []
         for number, (features, members) in enumerate(_generation_batches(config)):
             label = ",".join(members)
             stage = temp_root / str(number) / "out"
@@ -573,37 +575,45 @@ def _generate(config: dict, executable: str) -> dict[str, tuple[bytes, int]]:
             # native generation cannot discover or modify live configuration.
             env = {key: os.environ[key] for key in ("PATH", "SystemRoot", "COMSPEC", "HOMEDRIVE", "HOMEPATH", "TEMP", "TMP") if key in os.environ}
             env.update({"HOME": str(home), "USERPROFILE": str(home), "XDG_CONFIG_HOME": str(home / ".config"), "XDG_DATA_HOME": str(home / ".local/share"), "CODEX_HOME": str(home / ".codex"), "CLAUDE_CONFIG_DIR": str(home / ".claude"), "GROK_CONFIG_DIR": str(home / ".grok"), "OPENCODE_CONFIG_DIR": str(home / ".config" / "opencode")})
-            try:
-                run = subprocess.run(_tool_command(executable, cmd), cwd=temp_root, env=env, text=True, capture_output=True, check=False)
-            except OSError as exc:
-                raise BackendError(f"cannot run Rulesync for {label}: {exc}") from exc
-            if run.returncode:
-                raise BackendError(f"Rulesync generation failed for {label} (exit {run.returncode}): {(run.stderr or run.stdout).strip()}")
-            # In global mode Rulesync deliberately writes below HOME and ignores
-            # output-roots.  HOME is our staging root, so reconcile that tree.
-            generated_root = home if config["global"] else stage
-            per_target: dict[str, dict[str, tuple[bytes, int]]] = {target: {} for target in members}
-            for item in _walk_plain(generated_root):
-                if not item.is_file():
-                    continue
-                rel = item.relative_to(generated_root).as_posix()
-                owners = [target for target in members if _allowed(target, rel, config["global"])]
-                if not owners:
-                    raise BackendError(f"Rulesync emitted unsupported path for {label}: {rel}")
-                if len(owners) > 1:
-                    raise BackendError(f"one Rulesync run cannot attribute {rel} among {label}")
-                target = owners[0]
-                if target == "antigravity-cli" and rel.startswith(AGY_LEGACY_SKILLS):
-                    # Rulesync 16.39.1 still writes the pre-1.3 root, which agy
-                    # 1.3 moves once to ~/.gemini/config/skills/ and no longer reads.
-                    rel = AGY_SKILLS + rel[len(AGY_LEGACY_SKILLS):]
-                value = (item.read_bytes(), _output_mode(item.stat().st_mode))
-                _combine(per_target[target], rel, value)
-            for target, target_files in per_target.items():
-                if "skills" in features:
-                    _skill_frontmatter(config, target, executable, target_files)
-                for rel, value in target_files.items():
-                    _combine(combined, rel, value)
+            batches.append((features, members, label, stage, home, _tool_command(executable, cmd), env))
+        # Each batch writes only its own stage and HOME, and nearly all of a run is
+        # Node loading Rulesync, so the runs start together. Their outputs are still
+        # checked and combined in batch order, as when one ran after another.
+        with ThreadPoolExecutor(max(1, len(batches))) as pool:
+            runs = [pool.submit(subprocess.run, command, cwd=temp_root, env=env, text=True, capture_output=True, check=False)
+                    for *_, command, env in batches]
+            for (features, members, label, stage, home, _, _), future in zip(batches, runs):
+                try:
+                    run = future.result()
+                except OSError as exc:
+                    raise BackendError(f"cannot run Rulesync for {label}: {exc}") from exc
+                if run.returncode:
+                    raise BackendError(f"Rulesync generation failed for {label} (exit {run.returncode}): {(run.stderr or run.stdout).strip()}")
+                # In global mode Rulesync deliberately writes below HOME and ignores
+                # output-roots.  HOME is our staging root, so reconcile that tree.
+                generated_root = home if config["global"] else stage
+                per_target: dict[str, dict[str, tuple[bytes, int]]] = {target: {} for target in members}
+                for item in _walk_plain(generated_root):
+                    if not item.is_file():
+                        continue
+                    rel = item.relative_to(generated_root).as_posix()
+                    owners = [target for target in members if _allowed(target, rel, config["global"])]
+                    if not owners:
+                        raise BackendError(f"Rulesync emitted unsupported path for {label}: {rel}")
+                    if len(owners) > 1:
+                        raise BackendError(f"one Rulesync run cannot attribute {rel} among {label}")
+                    target = owners[0]
+                    if target == "antigravity-cli" and rel.startswith(AGY_LEGACY_SKILLS):
+                        # Rulesync 16.39.1 still writes the pre-1.3 root, which agy
+                        # 1.3 moves once to ~/.gemini/config/skills/ and no longer reads.
+                        rel = AGY_SKILLS + rel[len(AGY_LEGACY_SKILLS):]
+                    value = (item.read_bytes(), _output_mode(item.stat().st_mode))
+                    _combine(per_target[target], rel, value)
+                for target, target_files in per_target.items():
+                    if "skills" in features:
+                        _skill_frontmatter(config, target, executable, target_files)
+                    for rel, value in target_files.items():
+                        _combine(combined, rel, value)
     if "grokcli" in config["targets"] and not config["global"] and "CLAUDE.md" in combined:
         raise BackendError("Grok also discovers CLAUDE.md; use non-root Claude rules to avoid duplicate policy")
     return combined

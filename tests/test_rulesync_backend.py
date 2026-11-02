@@ -6,6 +6,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -1705,6 +1706,26 @@ class GenerationBatchTest(unittest.TestCase):
         self.assertEqual([members for _, members in backend._generation_batches(config)], [["codexcli", "cursor"], ["grokcli"]])
         with self.assertRaisesRegex(backend.BackendError, "shared-output conflict for AGENTS.md"):
             backend._generate(config, str(RULESYNC))
+
+    def test_runs_overlap_and_the_first_failing_batch_is_reported(self):
+        config = self.load(self.ALL, False)
+        labels = [",".join(members) for _, members in backend._generation_batches(config)]
+        last_done = threading.Event()
+        real = subprocess.run
+        def failing(argv, *args, **kwargs):
+            if "generate" not in argv:
+                return real(argv, *args, **kwargs)
+            label = argv[argv.index("--targets") + 1]
+            if label == labels[0]:
+                overlapped = last_done.wait(60)
+                return subprocess.CompletedProcess(argv, 3, "", "first" if overlapped else "ran alone")
+            if label == labels[-1]:
+                last_done.set()
+            return subprocess.CompletedProcess(argv, 4, "", "later")
+        with patch.object(backend.subprocess, "run", side_effect=failing):
+            with self.assertRaises(backend.BackendError) as caught:
+                backend._generate(config, str(RULESYNC))
+        self.assertEqual(str(caught.exception), f"Rulesync generation failed for {labels[0]} (exit 3): first")
 
 
 def git(repo, *args):
