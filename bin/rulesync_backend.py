@@ -415,7 +415,8 @@ def _antigravity_global_rules(config: dict) -> dict[str, tuple[bytes, int]]:
     return placed
 
 
-def _skill_frontmatter(config: dict, target: str, executable: str, files: dict[str, tuple[bytes, int]]) -> None:
+def _skill_frontmatter(config: dict, executable: str, per_target: dict[str, dict[str, tuple[bytes, int]]]) -> None:
+    """Check and complete the generated skill frontmatter of one batch with one Node run."""
     roots = {
         "codexcli": ".agents/skills/", "claudecode": ".claude/skills/",
         "grokcli": ".grok/skills/", "cursor": ".cursor/skills/",
@@ -430,34 +431,49 @@ def _skill_frontmatter(config: dict, target: str, executable: str, files: dict[s
                 source = item / "SKILL.md"
                 if item.is_dir() and source.is_file():
                     sources.append({"id": item.name, "sourceBase64": base64.b64encode(source.read_bytes()).decode("ascii")})
-    paths = {}
-    for rel in files:
-        if rel.startswith(roots[target]):
-            parts = rel[len(roots[target]):].split("/")
-            if len(parts) == 2 and parts[1] == "SKILL.md":
-                paths[parts[0]] = rel
-    if not sources and not paths:
+    paths: dict[str, dict[str, str]] = {}
+    for target, files in per_target.items():
+        found = {}
+        for rel in files:
+            if rel.startswith(roots[target]):
+                parts = rel[len(roots[target]):].split("/")
+                if len(parts) == 2 and parts[1] == "SKILL.md":
+                    found[parts[0]] = rel
+        if sources or found:
+            paths[target] = found
+    if not paths:
         return
-    request = {"target": target, "sources": sources, "generated": [
-        {"id": name, "generatedBase64": base64.b64encode(files[rel][0]).decode("ascii")}
-        for name, rel in paths.items()
+    label = ",".join(paths)
+    request = {"sources": sources, "targets": [
+        {"target": target, "generated": [
+            {"id": name, "generatedBase64": base64.b64encode(per_target[target][rel][0]).decode("ascii")}
+            for name, rel in found.items()]}
+        for target, found in paths.items()
     ]}
     try:
         run = subprocess.run([shutil.which("node") or "node", str(Path(__file__).with_name("skill_frontmatter.cjs")), executable],
                              input=json.dumps(request), text=True, capture_output=True, encoding="utf-8", check=False)
     except OSError as exc:
-        raise BackendError(f"cannot inspect skill frontmatter for {target}: {exc}") from exc
+        raise BackendError(f"cannot inspect skill frontmatter for {label}: {exc}") from exc
     if run.returncode:
-        raise BackendError(f"cannot preserve skill frontmatter for {target}: {run.stderr.strip()}")
+        raise BackendError(f"cannot preserve skill frontmatter for {label}: {run.stderr.strip()}")
     try:
-        generated = json.loads(run.stdout)["generated"]
-        if {entry["id"] for entry in generated} != set(paths) or len(generated) != len(paths):
-            raise ValueError("unexpected skill identities")
-        for entry in generated:
-            rel = paths[entry["id"]]
-            files[rel] = (base64.b64decode(entry["generatedBase64"], validate=True), files[rel][1])
+        responses = json.loads(run.stdout)["targets"]
+        if [response["target"] for response in responses] != list(paths):
+            raise ValueError("unexpected targets")
     except (ValueError, KeyError, TypeError) as exc:
-        raise BackendError(f"invalid skill frontmatter response for {target}: {exc}") from exc
+        raise BackendError(f"invalid skill frontmatter response for {label}: {exc}") from exc
+    for response in responses:
+        target, found, files = response["target"], paths[response["target"]], per_target[response["target"]]
+        try:
+            generated = response["generated"]
+            if {entry["id"] for entry in generated} != set(found) or len(generated) != len(found):
+                raise ValueError("unexpected skill identities")
+            for entry in generated:
+                rel = found[entry["id"]]
+                files[rel] = (base64.b64decode(entry["generatedBase64"], validate=True), files[rel][1])
+        except (ValueError, KeyError, TypeError) as exc:
+            raise BackendError(f"invalid skill frontmatter response for {target}: {exc}") from exc
 
 
 def _git_checkout(root: Path) -> tuple[Path, str] | None:
@@ -609,9 +625,9 @@ def _generate(config: dict, executable: str) -> dict[str, tuple[bytes, int]]:
                         rel = AGY_SKILLS + rel[len(AGY_LEGACY_SKILLS):]
                     value = (item.read_bytes(), _output_mode(item.stat().st_mode))
                     _combine(per_target[target], rel, value)
-                for target, target_files in per_target.items():
-                    if "skills" in features:
-                        _skill_frontmatter(config, target, executable, target_files)
+                if "skills" in features:
+                    _skill_frontmatter(config, executable, per_target)
+                for target_files in per_target.values():
                     for rel, value in target_files.items():
                         _combine(combined, rel, value)
     if "grokcli" in config["targets"] and not config["global"] and "CLAUDE.md" in combined:

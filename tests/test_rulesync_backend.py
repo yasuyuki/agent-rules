@@ -1707,6 +1707,25 @@ class GenerationBatchTest(unittest.TestCase):
         with self.assertRaisesRegex(backend.BackendError, "shared-output conflict for AGENTS.md"):
             backend._generate(config, str(RULESYNC))
 
+    def test_skill_frontmatter_is_checked_once_per_batch(self):
+        (self.src / "rules/a.md").write_text('---\ndescription: a\nroot: true\ntargets: ["codexcli", "grokcli", "opencode", "antigravity-cli", "cursor"]\n---\n# Root\n')
+        (self.src / "rules/b.md").write_text('---\ndescription: b\ntargets: ["claudecode", "cursor"]\n---\n# Restricted\n')
+        self.skill("licensed", "Licensed")
+        skill = self.src / "skills/licensed/SKILL.md"
+        skill.write_text(skill.read_text().replace("description: Licensed\n", "description: Licensed\nlicense: MIT\n"))
+        helper = str(Path(backend.__file__).with_name("skill_frontmatter.cjs"))
+        for global_mode in (False, True):
+            with self.subTest(global_mode=global_mode):
+                config = self.load(self.ALL, global_mode)
+                calls, counting = launches(helper)
+                with counting:
+                    files = backend._generate(config, str(RULESYNC))
+                self.assertEqual(len(calls), len(backend._generation_batches(config)))
+                licensed = [rel for rel in files if rel.endswith("licensed/SKILL.md")]
+                self.assertTrue(licensed)
+                for rel in licensed:
+                    self.assertIn(b"license: MIT", files[rel][0], rel)
+
     def test_runs_overlap_and_the_first_failing_batch_is_reported(self):
         config = self.load(self.ALL, False)
         labels = [",".join(members) for _, members in backend._generation_batches(config)]
