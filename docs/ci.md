@@ -167,10 +167,19 @@ actual authenticated evidence are recorded in Issue #19. GitHub-hosted jobs are
 destroyed after each run; they are not persistent managed agent environments,
 so the workspace's runtime inventory does not list them.
 
-Run `npm ci --ignore-scripts` and `npm run bundle`, then `python tests/test_rulesync_backend.py` and
-`python tests/test_rulesync_export.py` for real pinned-backend generation,
-ownership, conflict, deletion, check and rollback coverage. The tests use only
-disposable HOME/project roots.
+Run `npm ci --ignore-scripts` and `npm run bundle`, then run the CI Rulesync
+selection for real pinned-backend generation, ownership, conflict, deletion,
+check and rollback coverage. The tests use only disposable HOME/project roots.
+Put `--output` outside the checkout, which does not ignore it:
+
+```console
+python tests/ci_runner.py --output <outside>/rulesync.json --timeout 600 --workers 8 --timings tests/ci_checkout_weights-windows-latest.json test_rulesync_backend test_rulesync_export
+```
+
+Failed cases print their output on stderr. On the 32-thread Windows controller
+this took 28 s, against 131 s for the same cases run serially with `unittest`;
+12 workers took longer than 8
+([#75](https://github.com/yasuyuki/agent-rules/issues/75)).
 
 For legacy declaration placement/composition behavior, use the existing
 [verification skill](../skills/verify-agent-rules/SKILL.md). It drives disposable
