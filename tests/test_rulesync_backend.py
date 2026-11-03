@@ -763,7 +763,7 @@ m._write_atomic = crash
 m.apply(sys.argv[2], sys.argv[3])
 """
         child_env = os.environ.copy()
-        result = subprocess.run([sys.executable, "-c", script, str(ROOT / "bin/rulesync_backend.py"), str(self.config), str(RULESYNC)], env=child_env)
+        result = subprocess.run([sys.executable, "-B", "-c", script, str(ROOT / "bin/rulesync_backend.py"), str(self.config), str(RULESYNC)], env=child_env)
         self.assertEqual(result.returncode, 23)
         with self.assertRaisesRegex(backend.BackendError, "pending Rulesync transaction"):
             backend.check(self.config, str(RULESYNC))
@@ -1033,7 +1033,7 @@ def crash(path, *args, **kwargs):
 pathlib.Path.unlink = crash
 m.apply(sys.argv[2], sys.argv[3])
 """
-        result = subprocess.run([sys.executable, "-c", script, str(ROOT / "bin/rulesync_backend.py"), str(self.config), str(RULESYNC)])
+        result = subprocess.run([sys.executable, "-B", "-c", script, str(ROOT / "bin/rulesync_backend.py"), str(self.config), str(RULESYNC)])
         self.assertEqual(result.returncode, 23)
         self.assertNotIn("skill_directories", json.loads(manifest.read_text()))
         with self.assertRaisesRegex(backend.BackendError, "pending Rulesync transaction"):
@@ -1114,7 +1114,7 @@ retained_path = '.agents/skills/category/other/SKILL.md'
 retained = {retained_path: (b'retained', owned[retained_path]['mode'])}
 m._apply_reconcile(out, retained, owned)
 """
-        result = subprocess.run([sys.executable, "-c", script, str(ROOT / "bin/rulesync_backend.py"), str(out), json.dumps(owned)])
+        result = subprocess.run([sys.executable, "-B", "-c", script, str(ROOT / "bin/rulesync_backend.py"), str(out), json.dumps(owned)])
         self.assertEqual(result.returncode, 23)
         self.assertTrue(root.exists())
         backend._recover(out, backend._load_config(self.config))

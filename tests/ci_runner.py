@@ -232,7 +232,9 @@ def _pid_alive(pid):
 
 
 def _child_command(output, timeout, ids):
-    return [sys.executable, str(Path(__file__).resolve()), '--_child', '--output', str(output),
+    # A worker without -B would leave .pyc files that make a lifecycle finish refuse the checkout.
+    no_bytecode = ['-B'] if sys.dont_write_bytecode else []
+    return [sys.executable, *no_bytecode, str(Path(__file__).resolve()), '--_child', '--output', str(output),
             '--timeout', str(timeout), *ids]
 
 

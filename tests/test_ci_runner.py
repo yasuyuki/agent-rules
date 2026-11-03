@@ -80,6 +80,26 @@ class SetupError(unittest.TestCase):
                 ['synthetic_ci_tests.Cases.test_fail', 'synthetic_ci_tests.Cases.test_skip']])
             self.assertIn('ci_runner start', result.stderr)
 
+    def test_parent_without_bytecode_writes_none_from_its_workers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, 'imported_helper.py').write_text('VALUE = 1\n', encoding='utf-8')
+            Path(directory, 'bytecode_ci_tests.py').write_text(
+                'import unittest\nimport imported_helper\n\n'
+                'class Cases(unittest.TestCase):\n'
+                '    def test_a(self): self.assertEqual(imported_helper.VALUE, 1)\n'
+                '    def test_b(self): self.assertEqual(imported_helper.VALUE, 1)\n',
+                encoding='utf-8')
+            environment = {key: value for key, value in os.environ.items()
+                           if key != 'PYTHONDONTWRITEBYTECODE'}
+            environment['PYTHONPATH'] = directory + os.pathsep + str(SOURCE.parent)
+            result = subprocess.run([sys.executable, '-B', str(SOURCE), '--output',
+                                     str(Path(directory) / 'out' / 'metrics.json'),
+                                     '--timeout', '10', '--workers', '2', 'bytecode_ci_tests'],
+                                    env=environment, text=True, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((Path(directory) / '__pycache__').exists())
+
     def test_lpt_assigns_skewed_timings_and_partitions_all_ids_once(self):
         ids = ['case.%s' % name for name in ('a', 'b', 'c', 'd', 'e')]
         with tempfile.TemporaryDirectory() as directory:
