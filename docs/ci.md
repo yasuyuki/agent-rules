@@ -159,9 +159,7 @@ The Linux pilot deliberately fails on missing secrets, CLI version drift,
 unreadable tool binaries, lost source isolation, missing terminal evidence or
 rollback residue. Authenticated Linux runs have begun, but the native acceptance
 conditions are not yet satisfied; see Issue #19 for run evidence and failures.
-CI separately checks the Windows local-user/ACL isolation
-primitive without credentials or a model call. It does not yet cover Windows native execution, supported
-user scope.
+Windows native execution and supported user scope are not covered yet.
 Those cells are `blocked`/`unverified`, not PASS, until their implementation and
 actual authenticated evidence are recorded in Issue #19. GitHub-hosted jobs are
 destroyed after each run; they are not persistent managed agent environments,
@@ -226,15 +224,18 @@ plus available fixture/cleanup and outer Git/CLI measurements. Its `--help`
 describes local invocation. Timeouts preserve partial outcomes and terminate
 only owned test processes. Lifecycle tests use disposable Git repositories and
 independent package environments. A `--timeout` is a per-shard hang bound, not a
-duration target. The Rulesync step allows 600 seconds because the same tree took
+duration target. The checkout step allows 600 seconds because the same tree took
 from 194 to over 305 seconds per shard depending on the runner
 ([#51](https://github.com/yasuyuki/agent-rules/issues/51)).
 The step runs three workers. With two, the Windows step stayed above 160 seconds
 per shard and kept the run over its 330-second target
 ([#60](https://github.com/yasuyuki/agent-rules/issues/60)).
-The step passes `tests/ci_checkout_weights-<os>.json` to `--timings`. Each file
+The step runs the Rulesync and source regression modules in one weighted pool,
+so short source cases fill the shards instead of running after them
+([#77](https://github.com/yasuyuki/agent-rules/issues/77)).
+It passes `tests/ci_checkout_weights-<os>.json` to `--timings`. Each file
 holds that OS's case durations from main run
-[40532783015](https://github.com/yasuyuki/agent-rules/actions/runs/40532783015).
+[41781359845](https://github.com/yasuyuki/agent-rules/actions/runs/41781359845).
 One shared file cannot balance both, because Linux-only cases take 64 to 82
 seconds per run on Ubuntu and are skipped on Windows. Cases missing from a file are
 scheduled first with the largest weight, so a new or renamed case is never

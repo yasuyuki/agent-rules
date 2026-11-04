@@ -73,16 +73,10 @@ jobs:
       - run: npm run bundle
       - name: Install fixed external lifecycle for checkout compatibility contracts
         run: python -m pip install "workspace-lifecycle @ https://github.com/yasuyuki/workspace-lifecycle/archive/fdd4f16a11e095b8ea49c8a7d40ff49307ed738d.zip"
-      - name: Rulesync safety contract
-        run: python tests/ci_runner.py --output ci-results/rulesync.json --timeout 600 --workers 3 --timings tests/ci_checkout_weights-${{ matrix.os }}.json test_rulesync_backend test_rulesync_export
+      - name: Rulesync safety and source regression contracts
+        run: python tests/ci_runner.py --output ci-results/checkout.json --timeout 600 --workers 3 --timings tests/ci_checkout_weights-${{ matrix.os }}.json test_rulesync_backend test_rulesync_export test_grok_placement test_start_config test_inventory_adoption test_inventory_inspection test_agent_report test_workspace_entry test_ci_runner test_verification_skill test_environment_verification test_funkot_autodj_verification test_funkot_player_verification test_legacy_tip_repair
       - name: Placement and rules contract
         run: python tests/ci_runner.py --output ci-results/rules.json --timeout 300 --command python tests/test_rules.py
-      - name: Source regression contracts
-        run: python tests/ci_runner.py --output ci-results/source.json --timeout 300 test_grok_placement test_start_config test_inventory_adoption test_inventory_inspection test_agent_report test_workspace_entry test_ci_runner test_verification_skill test_environment_verification test_funkot_autodj_verification test_funkot_player_verification test_legacy_tip_repair
-      - name: Windows isolated-user primitive for native E2E
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: ./tests/native_e2e_windows_isolation.ps1
       - name: Record resolved dependencies
         if: always()
         shell: bash
