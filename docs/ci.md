@@ -187,6 +187,10 @@ Use `python tests/test_rules.py` for loader/projection regressions and
 The [acceptance record](verification-skill.md) identifies past demonstrations
 and unverified surfaces.
 
+After changing the transaction, recovery or rollback in `bin/rulesync_backend.py`,
+run the [TLA+ transaction check](../skills/verify-rulesync-transaction/SKILL.md).
+It needs Java and a pinned `tla2tools.jar`, so CI does not run it.
+
 ## Documentation and regression selection
 
 Run `python tests/docs_check.py` locally for the same maintained local reference
