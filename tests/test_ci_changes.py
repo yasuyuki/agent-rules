@@ -1,4 +1,3 @@
-"""Selection uses full Git ranges and only admits classification-authorized skips."""
 import importlib.util
 import itertools
 import json

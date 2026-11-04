@@ -1,4 +1,3 @@
-"""Saved launch inputs publish completely and never replace another writer."""
 import importlib.util
 import json
 import os

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Repair one approved legacy task tip without changing its Git worktree."""
 from __future__ import annotations
 
 import argparse

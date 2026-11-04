@@ -48,7 +48,6 @@ def tree(root):
 
 
 def reject_links(path, label):
-    """Reject a lexical path with a link in any component before reading it."""
     path = Path(path).absolute()
     current = Path(path.anchor)
     for part in path.parts[1:]:

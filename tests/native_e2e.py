@@ -1,9 +1,3 @@
-"""Authenticated native probes for an isolated Linux Actions VM.
-
-The controller owns the fixture and expected values. Vendor processes run as a
-different, unprivileged local user and can only see the consumer workspace.
-This is intentionally separate from the authentication-free package gate.
-"""
 from __future__ import annotations
 
 import argparse
@@ -39,7 +33,6 @@ def _safe_wire_name(value: object) -> str:
 
 @contextmanager
 def codex_wire_metadata():
-    """Forward a real authenticated Responses call; retain only fixed-shape metadata."""
     calls: list[dict[str, object]] = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -260,7 +253,6 @@ def decode_events(vendor: str, stdout: str, proof_name: str | None = None) -> tu
 
 
 def terminal_json(text: str):
-    """Parse an entire JSON reply, optionally enclosed by one Markdown fence."""
     lines = text.strip().splitlines()
     if len(lines) >= 3 and lines[0].lower() in ("```json", "```") and lines[-1] == "```":
         text = "\n".join(lines[1:-1])
@@ -278,7 +270,6 @@ def answer(text: str, challenge: str, field: str, expected: str | None) -> bool:
 
 
 def negative_rule_issue(text: str, challenge: str, used_tool: bool) -> str | None:
-    """Describe a failed negative probe without exposing model output or nonces."""
     try:
         value = terminal_json(text)
     except (ValueError, TypeError):
@@ -295,7 +286,6 @@ def negative_rule_issue(text: str, challenge: str, used_tool: bool) -> str | Non
 
 
 def skill_answer_issue(text: str, challenge: str, expected: str) -> str | None:
-    """Categorize terminal skill evidence without retaining its contents."""
     try:
         value = terminal_json(text)
     except (ValueError, TypeError):
@@ -312,7 +302,6 @@ def skill_answer_issue(text: str, challenge: str, expected: str) -> str | None:
 
 
 def claude_terminal_issue(stdout: str) -> str:
-    """Summarize the terminal event without including model text or API errors."""
     events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
     results = [event for event in events if event.get("type") == "result"]
     if len(results) != 1:
@@ -324,7 +313,6 @@ def claude_terminal_issue(stdout: str) -> str:
 
 
 def claude_structure_diagnostics(stdout: str) -> dict[str, bool]:
-    """Retain only shape evidence when the rule result is not machine-readable."""
     events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
     results = [event for event in events if event.get("type") == "result"]
     raw = results[0].get("result", "") if len(results) == 1 else ""
@@ -340,7 +328,6 @@ def claude_structure_diagnostics(stdout: str) -> dict[str, bool]:
 
 
 def claude_skill_diagnostics(stdout: str, skill_name: str) -> dict[str, object]:
-    """Classify native skill boundaries without retaining prompts or tool payloads."""
     discovered = None
     calls: dict[str, tuple[str, bool]] = {}
     completed: set[str] = set()
@@ -478,7 +465,6 @@ def claude_skill_diagnostics(stdout: str, skill_name: str) -> dict[str, object]:
 
 
 def codex_command_diagnostics(stdout: str, proof_name: str, stderr: str = "") -> dict[str, object]:
-    """Report command activity without retaining commands or their output."""
     events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
     items = [event.get("item", {}) for event in events
              if event.get("type") in ("item.started", "item.completed")]
@@ -640,7 +626,6 @@ def run_native(vendor: str, cli: Path, model: str, workspace: Path, user: str,
 
 
 def codex_skill_listed(cli: Path, workspace: Path, user: str, home: Path, name: str) -> bool:
-    """Check the isolated Codex prompt inventory, never exposing its contents."""
     node = shutil.which("node")
     if not node:
         raise RuntimeError("Node.js is required for Codex skill inventory")
@@ -659,7 +644,6 @@ def codex_skill_listed(cli: Path, workspace: Path, user: str, home: Path, name: 
 
 def codex_tool_probe(cli: Path, model: str, workspace: Path, user: str,
                      home: Path, api_base_url: str | None = None) -> dict[str, object]:
-    """Prove a fresh, pre-placement CLI turn executed Python and wrote a file."""
     challenge = secrets.token_hex(16)
     proof = workspace / f"tool-probe-{secrets.token_hex(8)}.txt"
     python_command = ("python3 -c 'from pathlib import Path; "

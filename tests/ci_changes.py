@@ -15,7 +15,6 @@ def git(root, *args):
 
 
 def classify(root, changes):
-    """Only known explanatory Markdown additions/modifications can omit regression."""
     if not changes:
         return {'full': True, 'readme': False}
     readme = False
@@ -72,7 +71,6 @@ def selection(root, event_name, event):
 
 
 def gate(needs):
-    """An intentional skip is valid only after successful, explicit classification."""
     light = needs.get('documentation', {})
     full = light.get('outputs', {}).get('full')
     return (light.get('result') == 'success' and full in ('true', 'false')

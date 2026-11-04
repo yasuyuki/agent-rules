@@ -1,4 +1,3 @@
-"""Negative controls for the structured native-result verifier (no model calls)."""
 import json
 import io
 import http.client

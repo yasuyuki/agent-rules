@@ -1,9 +1,3 @@
-"""Bounded lifecycle checks for one environment inventory record.
-
-This module owns no placement data and performs no probes, starts, or repairs.
-``place_module`` is deliberately injected so this public helper does not import
-the command module which will eventually call it.
-"""
 from __future__ import annotations
 
 import shutil
@@ -23,7 +17,6 @@ DEFAULT_BINDING = "environment-inventory-required"
 
 
 def _context(value):
-    """Accept the stable named form as well as place.load_context's tuple."""
     if isinstance(value, dict):
         required = ("placement", "rules", "sites", "workspaces", "locations", "exceptions", "skills")
         missing = [key for key in required if key not in value]
@@ -56,7 +49,6 @@ def _agent_value(reference, sources, placement):
 
 
 def _agent_sites(agent, sources):
-    """Placement site IDs used by this agent, for narrowly scoped byte checks."""
     result = set()
     for key in ("principal", "configRoot"):
         reference = agent.get(key, {})
@@ -67,7 +59,6 @@ def _agent_sites(agent, sources):
 
 
 def _declared_placement_sites(environment, sources, declaration_path):
-    """Return the environment's explicit sites from this declaration only."""
     result = set()
     for reference in environment_inventory._environment_refs(environment):
         if not isinstance(reference, dict):

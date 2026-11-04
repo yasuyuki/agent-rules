@@ -1,4 +1,3 @@
-# Prove the Windows hosted-runner primitive before using it for native probes.
 $ErrorActionPreference = 'Stop'
 $name = 'nativee2e' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $secret = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(24))

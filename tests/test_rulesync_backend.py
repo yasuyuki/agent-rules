@@ -748,9 +748,9 @@ process.stdout.write(JSON.stringify(matter(readFileSync(process.argv[2], 'utf8')
 
     def test_hard_exit_transaction_recovers_before_retry(self):
         self.assertTrue(self.apply())
-        (self.src / "rules/a.md").unlink()  # stale owned deletion
-        self.rule("b", "After crash")       # then a replacement write
-        self.skill("new", "New skill")      # creates previously absent output skill dirs
+        (self.src / "rules/a.md").unlink()
+        self.rule("b", "After crash")
+        self.skill("new", "New skill")
         script = """
 import importlib.util, os, sys
 spec = importlib.util.spec_from_file_location('backend', sys.argv[1])
@@ -1571,7 +1571,6 @@ m._apply_reconcile(out, retained, owned)
 
 
 def launches(kind):
-    """Count `subprocess.run` calls whose argv contains `kind`, still running them."""
     calls = []
     real = subprocess.run
     def counted(argv, *args, **kwargs):

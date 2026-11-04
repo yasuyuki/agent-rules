@@ -1,4 +1,3 @@
-"""Create a harmless proof using this skill's relative support resource."""
 import argparse
 import json
 from pathlib import Path

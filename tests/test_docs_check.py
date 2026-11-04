@@ -1,4 +1,3 @@
-"""Tests for the deliberately small local Markdown reference checker."""
 import importlib.util
 import os
 from pathlib import Path
@@ -41,7 +40,7 @@ class DocsCheckTests(unittest.TestCase):
             target = Path(directory) / "docs/renamed.md"
             self.write(directory, "docs/renamed.md", "# Former target\n")
             self.track(directory)
-            target.unlink()  # A rename/deletion must recheck this unchanged index.
+            target.unlink()
             problems = checker.check_documents(directory)
         self.assertEqual([(problem.message, problem.target) for problem in problems],
                          [("missing local target", "docs/renamed.md")])

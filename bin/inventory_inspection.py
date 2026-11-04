@@ -1,4 +1,3 @@
-"""Read-only validation of Grok's official workspace inspection output."""
 import json
 import os
 import subprocess
@@ -9,7 +8,6 @@ def _absolute(path):
 
 
 def _requested_path(path):
-    """Return an absolute path without changing the caller's spelling."""
     return os.path.normpath(os.path.abspath(os.fspath(path)))
 
 

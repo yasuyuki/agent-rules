@@ -1,4 +1,3 @@
-"""Portable tests for the read-only Grok inspection helper."""
 import importlib.util
 import json
 import os

@@ -1,11 +1,3 @@
-"""Check bounded, maintained Markdown links without fetching the network.
-
-Supported links are ordinary inline ``[label](relative/path.md#heading)`` links
-and fragment-only ``[label](#heading)`` links.  The checker intentionally does
-not interpret reference-style links, HTML, URLs, absolute paths, or Markdown
-extensions.  Fenced and inline code are excluded so examples do not become
-documentation dependencies.
-"""
 from __future__ import annotations
 
 import re
@@ -33,7 +25,6 @@ class Problem:
 
 
 def _tracked_markdown(root):
-    """Return tracked Markdown files in the documented source roots."""
     try:
         result = subprocess.run(
             ["git", "-C", str(root), "ls-files", "-z", "--", "*.md"],
@@ -51,7 +42,6 @@ def _is_maintained(path):
 
 
 def _without_fences(text):
-    """Strip ordinary fenced blocks while retaining prose, including inline code."""
     lines = []
     marker = None
     for line in text.splitlines():
@@ -69,7 +59,6 @@ def _without_fences(text):
 
 
 def _without_code(text):
-    """Strip fenced and inline-code examples before finding supported links."""
     return INLINE_CODE.sub("", _without_fences(text))
 
 
@@ -99,7 +88,6 @@ def _headings(path):
 
 
 def _local_target(source, raw, root):
-    """Return a supported local target, or None for deliberate exclusions."""
     target = unquote(raw)
     if (not target or target.startswith(("http:", "https:", "mailto:", "//", "/"))
             or ":" in target.split("#", 1)[0] or "{" in target or "}" in target
@@ -116,7 +104,6 @@ def _local_target(source, raw, root):
 
 
 def check_documents(root):
-    """Return broken supported local Markdown references in maintained docs."""
     root = Path(root).resolve()
     problems = []
     for source in _tracked_markdown(root):

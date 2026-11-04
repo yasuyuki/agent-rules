@@ -1,4 +1,3 @@
-"""Regression checks for inventory readiness and target-only normal start."""
 from pathlib import Path
 import importlib.util
 import json

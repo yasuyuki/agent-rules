@@ -1,8 +1,3 @@
-"""Small, bounded unittest runner for CI matrix shards.
-
-It deliberately records only test identities, outcomes, and timings.  Test
-output stays on the normal stderr stream and is never copied into metrics.
-"""
 import argparse
 import json
 import math
@@ -40,7 +35,6 @@ def _flatten(suite):
 
 
 def collect(names):
-    """Collect explicit unittest names, preserving each module's load_tests hook."""
     loader = unittest.TestLoader()
     ids = [test_id for name in names for test_id in _flatten(loader.loadTestsFromName(name))]
     if loader.errors:
@@ -60,7 +54,6 @@ def _metadata():
 
 
 def _safe_metrics(metrics):
-    """Metrics are numeric observations, never test output or arbitrary text."""
     fields = ('gitCommandCount', 'gitCommandSeconds', 'cliCommandCount', 'cliCommandSeconds',
               'fixtureSeconds', 'cleanupSeconds')
     if isinstance(metrics, dict) and set(metrics) - set(fields):
@@ -252,7 +245,6 @@ def _last_test(data):
 
 
 def load_timings(path):
-    """Read optional per-test estimates, treating every bad value as unknown."""
     if not path:
         return {}, 1.0
     try:
@@ -278,7 +270,6 @@ def load_timings(path):
 
 
 def assign_buckets(ids, bucket_count, timings=None):
-    """Deterministically assign every ID once with longest-processing-time first."""
     weights, fallback = load_timings(timings)
     buckets = [[] for unused in range(bucket_count)]
     loads = [0.0] * bucket_count
@@ -361,7 +352,6 @@ def run_parent(ids, output, workers, timeout, timings=None, shard_count=1, shard
 
 
 def run_command(command, output, timeout):
-    """Run one script-style stage with the same owned-tree timeout boundary."""
     started = time.monotonic()
     kwargs = {'stdin': subprocess.DEVNULL}
     if os.name == 'nt':

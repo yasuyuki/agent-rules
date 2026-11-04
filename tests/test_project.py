@@ -1,4 +1,3 @@
-"""Installed-wheel entry and dependency boundary, outside the source checkout."""
 from pathlib import Path
 import json
 import os
@@ -14,7 +13,6 @@ FIXTURE = Path(__file__).parent / 'fixtures/native-e2e'
 
 
 def native_probe_sources(root, run_id):
-    """Keep expected values outside the consumer workspace and vary each run."""
     source = root / 'inputs'
     rule_dir = source / 'rules'
     skill_dir = source / 'skills' / f'e2e-probe-{run_id}'

@@ -60,7 +60,6 @@ def probe(python, module):
 
 
 def launcher(path, executable):
-    """Return the launcher without the interpreter path and the zip timestamps pip writes."""
     data = path.read_bytes()
     try:
         archive = zipfile.ZipFile(path)

@@ -166,8 +166,6 @@ def filter_locations(locations, workspaces, site=None, workspace=None, scope=Non
 
 
 def artifact_applies(artifact_id, location, exceptions):
-    """Shared gate for both managed kinds: an EXCEPTIONS row wins, otherwise the
-    location's own requirement decides."""
     key = (artifact_id, location["id"])
     if key in exceptions:
         return exceptions[key]["requirement"] == "required"
@@ -286,7 +284,6 @@ def is_link(path):
 
 
 def managed_skill_dirs(directory):
-    """Child directories of a managed skills root that this projection owns."""
     if not directory.is_dir():
         return []
     return [
@@ -445,7 +442,6 @@ def detect_cli(site, spec):
 
 
 def hooks_errors(location, target, placement):
-    """An existing hooks file still has to declare hooks."""
     kind = placement["tools"].get(location["tool"], {}).get("hooks", {}).get("kind")
     if kind == "none":
         return ["%s: %s has no hooks surface" % (location["id"], location["tool"])]
@@ -779,7 +775,6 @@ def check_catalog(args):
 
 
 def classify_work(args):
-    """Classify work without probing or changing any environment."""
     try:
         results = work_classification.classify(
             args.catalog, args.work, args.prefer_environment
@@ -794,7 +789,6 @@ def classify_work(args):
 
 
 def inventory_bindings(args, context):
-    """Read validated binding rows without resolving other environments."""
     declaration = Path(args.declaration).resolve()
     text = declaration.read_text(encoding="utf-8")
     if "<!-- BEGIN INVENTORY TSV -->" not in text:
@@ -811,7 +805,6 @@ def inventory_bindings(args, context):
 
 
 def inventory_binding(args, context, site_id):
-    """Resolve one site's three-column inventory binding."""
     declaration = Path(args.declaration).resolve()
     rows = inventory_bindings(args, context)
     if rows is None:
@@ -846,7 +839,6 @@ def current_runtime(context):
 
 def inventory_preflight(args, context, site_id, *, resolver=shutil.which,
                         mode="normal", constructing_agent=None, target_tool=None, selected_locations=None):
-    """Check one target before start, or every registered CLI for readiness."""
     binding = inventory_binding(args, context, site_id)
     if binding is None:
         if mode == "readiness":
@@ -873,7 +865,6 @@ def inventory_preflight(args, context, site_id, *, resolver=shutil.which,
 
 
 def _inventory_site_runtime(context, site_id):
-    """Require this process to be the declared site before catalog mutation."""
     site = context[2][site_id]
     actual = current_runtime(context)
     host_matches = actual.get("host") == site.get("host") or (
@@ -886,7 +877,6 @@ def _inventory_site_runtime(context, site_id):
 
 
 def _inventory_runtime(context, site_id, tool):
-    """Also require this tool's derived configuration root."""
     if tool not in context[0]["tools"]:
         raise PlacementError("unknown tool: " + tool)
     _inventory_site_runtime(context, site_id)
@@ -898,7 +888,6 @@ def _inventory_runtime(context, site_id, tool):
 
 
 def _inventory_claim_scope(context, site_id, environment_id):
-    """Scope a durable claim to the verified runtime that owns this site."""
     host = current_runtime(context).get("host")
     if not isinstance(host, str) or not host:
         raise PlacementError("selected site does not match the current runtime")
@@ -920,7 +909,6 @@ def _inventory_locations(context, site_id, tool):
 
 
 def _inventory_output_paths(context, locations):
-    """The finite managed outputs that readiness actually observes."""
     placement, _rules, sites, workspaces, _all, _exceptions, _selected, _skills = context
     files, sections = expected_writes(context[1], placement, locations, context[5], sites, workspaces, context[7])
     targets = list(files) + list(sections)
@@ -951,7 +939,6 @@ def _inventory_loader_inputs(args):
 
 
 def _catalog_placement_source(document, catalog_path, declaration, site_id, environment_id):
-    """Find the one catalog source/reference derived from this declaration/site."""
     if document.get("schemaVersion") != 1 or not isinstance(document.get("sources"), dict) or not isinstance(document.get("environments"), list):
         raise PlacementError("catalog schemaVersion, sources, or environments is invalid")
     declaration = Path(declaration).resolve()
@@ -1003,7 +990,6 @@ def _registered_agent(tool, source_id, site_id):
 
 
 def _head_tracked_bytes(branch_management, repo, relative, label):
-    """Return a regular tracked file's bytes from the registered checkout HEAD."""
     relative = Path(relative)
     if relative.is_absolute() or ".." in relative.parts:
         raise PlacementError("%s is outside the registered checkout" % label)
@@ -1018,7 +1004,6 @@ def _head_tracked_bytes(branch_management, repo, relative, label):
 
 
 def _declared_catalog_update(head_catalog, environment_id, agent):
-    """Derive the sole permitted uncommitted declaration from HEAD bytes."""
     try:
         document = json.loads(head_catalog)
     except (TypeError, ValueError) as exc:
@@ -1238,7 +1223,6 @@ def inventory_activate(args, *, resolver=shutil.which):
 
 
 def inspect_registered_agents(context, site, *, resolver=shutil.which, runner=subprocess.run):
-    """Inspect discovery in declared direct workspaces before any model job."""
     placement, rules, sites, workspaces, locations, exceptions, _selected, skills = context
     grok = [loc for loc in locations.values()
             if loc['tool'] == 'grok' and site_of(loc, workspaces) == site]
@@ -1268,7 +1252,6 @@ def inspect_registered_agents(context, site, *, resolver=shutil.which, runner=su
 
 
 def inventory_adopt(args, *, resolver=shutil.which, runner=subprocess.run):
-    """Apply a committed catalog's runtime inputs and save adoption in launch config."""
     from types import SimpleNamespace
     started = time.monotonic()
     host = start_config(args)
@@ -1364,7 +1347,6 @@ def inventory_adopt(args, *, resolver=shutil.which, runner=subprocess.run):
 
 
 def save_start_config(args):
-    """Save validated launch inputs once, without replacing existing settings."""
     context = load_context(args)
     # Resolve every declaration row before publishing inputs; no placement or
     # process is changed by this operation.
@@ -1432,7 +1414,6 @@ def save_start_config(args):
 
 
 def start_config(args):
-    """Resolve the deliberately selected start configuration, if any."""
     explicit = getattr(args, "config", None)
     declaration = getattr(args, "declaration", None)
     rules = getattr(args, "rules", None)

@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""A small, deliberately conservative Rulesync 16.39.1 adapter.
-
-The adapter treats Rulesync as a compiler: it is run in a throw-away directory
-and only its rules/skills output is reconciled into the configured tree.
-"""
 from __future__ import annotations
 
 import argparse
@@ -396,7 +391,6 @@ def _combine(combined: dict[str, tuple[bytes, int]], rel: str, value: tuple[byte
 
 
 def _rule_targets(text: str) -> list[str]:
-    """Read `targets` from Rulesync rule frontmatter; absent means every target."""
     if not text.startswith("---\n") or "\n---\n" not in text:
         return ["*"]
     header = text[4:text.index("\n---\n")].split("\n")
@@ -444,7 +438,6 @@ def _antigravity_global_rules(config: dict) -> dict[str, tuple[bytes, int]]:
 
 
 def _skill_frontmatter(config: dict, executable: str, per_target: dict[str, dict[str, tuple[bytes, int]]]) -> None:
-    """Check and complete the generated skill frontmatter of one batch with one Node run."""
     roots = {
         "codexcli": ".agents/skills/", "claudecode": ".claude/skills/",
         "grokcli": ".grok/skills/", "cursor": ".cursor/skills/",
@@ -505,7 +498,6 @@ def _skill_frontmatter(config: dict, executable: str, per_target: dict[str, dict
 
 
 def _git_checkout(root: Path) -> tuple[Path, str] | None:
-    """Find the checkout whose `.git` is nearest to root, as Git discovery does."""
     real = Path(os.path.realpath(root))
     for top in (real, *real.parents):
         marker = top / ".git"
@@ -528,7 +520,6 @@ def _git(top: Path, *args: str) -> bytes:
 
 
 def _status_changes(output: bytes) -> tuple[str | None, list[str]]:
-    """Parse `git status --porcelain=v2 -z --branch` into HEAD and uncommitted paths."""
     head, changes = None, []
     records = iter(output.decode("utf-8", "surrogateescape").split("\0"))
     for record in records:
@@ -1041,7 +1032,6 @@ def _restore(backups: dict[Path, tuple[bytes, int] | None]) -> None:
 
 
 def _plan(output: Path, desired: dict[str, tuple[bytes, int]], owned: dict[str, dict]):
-    """Read-only reconcile plan shared by apply and preview."""
     stale = set(owned) - set(desired)
     writes = {rel: value for rel, value in desired.items() if rel not in owned or _actual(output / rel) != (_digest(value[0]), value[1])}
     manifest = output / MANIFEST
@@ -1224,7 +1214,6 @@ def _write_handover_backup(backup: Path, output: Path, plan_files: dict[str, dic
 
 
 def handover(config_path: str | Path, plan_path: str | Path, rulesync: str | None = None) -> bool:
-    """Transfer explicitly reviewed handwritten outputs to Rulesync exactly once."""
     config = _load_config(config_path)
     executable = _resolve_executable(config, rulesync)
     desired = _generate(config, executable)
@@ -1278,7 +1267,6 @@ def check(config_path: str | Path, rulesync: str | None = None) -> bool:
 
 
 def preview(config_path: str | Path, rulesync: str | None = None) -> dict:
-    """List what apply would change, without writing or locking the output."""
     config = _load_config(config_path)
     executable = _resolve_executable(config, rulesync)
     desired = _generate(config, executable)

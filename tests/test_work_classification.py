@@ -1,4 +1,3 @@
-"""Synthetic coverage for the read-only work/environment classifier."""
 import importlib.util
 import json
 from pathlib import Path

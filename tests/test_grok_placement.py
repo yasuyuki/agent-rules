@@ -1,4 +1,3 @@
-"""Focused Grok descriptor coverage using only temporary public fixtures."""
 
 from __future__ import annotations
 

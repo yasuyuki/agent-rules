@@ -1,4 +1,3 @@
-"""Regression checks for the disposable public placement verification helper."""
 
 from __future__ import annotations
 

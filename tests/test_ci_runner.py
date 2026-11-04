@@ -1,4 +1,3 @@
-"""Behavioral tests for the CI unittest orchestrator."""
 import importlib.util
 import json
 import os

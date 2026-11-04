@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""Legacy declaration input and section helpers for pinned runtime consumers.
-
-New project placement uses rulesync_backend; this module is not packaged.
-"""
 
 import json
 import os

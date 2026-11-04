@@ -1,4 +1,3 @@
-"""Bind runtime adoption to the existing saved launch inputs, not a second catalog."""
 from __future__ import annotations
 
 import hashlib
@@ -67,7 +66,6 @@ def identity(place, args, context, site, source_ref='HEAD'):
 
 
 def write_state(place, config, original, document, facts, state):
-    """CAS the singleton adoption member under the caller's catalog lock."""
     inventory = place.environment_inventory
     inventory.snapshot_inputs([config])
     if config.read_bytes() != original:
@@ -107,7 +105,6 @@ def write_state(place, config, original, document, facts, state):
 
 
 def effective_active(place, args, context, site):
-    """None means legacy inputs; False means a present but stale/pending adoption."""
     document = getattr(args, '_start_document', {})
     if document.get('version') != 2:
         return None

@@ -1,4 +1,3 @@
-"""Bounded contract tests for the standalone agent report collector."""
 import importlib.util
 import json
 from pathlib import Path

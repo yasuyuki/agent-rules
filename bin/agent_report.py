@@ -166,7 +166,6 @@ def argv(value, allow_empty=False):
 
 
 def load_platforms(directories, target):
-    """Validate every adapter and prepare arguments before running any CLI."""
     groups = [("builtin", get_platforms())]
     for directory in directories:
         root = Path(directory).resolve(strict=True)

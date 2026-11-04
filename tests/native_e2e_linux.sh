@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Prepare a disposable GitHub-hosted Linux VM for an authenticated native cell.
 set -euo pipefail
 
 scenario=${1:?scenario required}

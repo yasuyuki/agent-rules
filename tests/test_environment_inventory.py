@@ -1,4 +1,3 @@
-"""Focused regressions for private environment-catalog resolution."""
 
 from pathlib import Path
 import importlib.util

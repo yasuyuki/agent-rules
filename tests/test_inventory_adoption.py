@@ -1,4 +1,3 @@
-"""Real-Git coverage for source-bound runtime adoption."""
 import importlib.util
 import json
 from pathlib import Path

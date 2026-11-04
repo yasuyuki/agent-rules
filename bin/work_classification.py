@@ -1,9 +1,3 @@
-"""Pure, read-only classification of declared work against an environment catalog.
-
-This module deliberately does not probe, launch, install, transfer, or mutate
-anything.  It combines the catalog's declared capabilities with a work JSON
-document so a controller can decide which phase needs another environment.
-"""
 from __future__ import annotations
 
 import json
@@ -126,7 +120,6 @@ def _readiness(phase, record):
 
 
 def _eligible(phase, record):
-    """Return eligibility separately from technical capability assessment."""
     unmet = []
     explicit = record["id"] in phase["environment"]["ids"]
     mode = phase["environment"]["mode"]

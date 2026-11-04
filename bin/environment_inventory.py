@@ -1,10 +1,3 @@
-"""Read and validate a private environment inventory without owning its data.
-
-The public format deliberately contains references rather than copied machine
-settings.  Version 1 accepts placement TSV sources and JSON sources whose
-values are selected by JSON Pointer.  It is safe to import this module from a
-launcher: ``check_catalog`` performs no writes and probing is opt-in.
-"""
 from __future__ import annotations
 
 import json
@@ -27,7 +20,6 @@ class CatalogError(RuntimeError):
 
 
 def _is_link(path):
-    """Recognize both POSIX links and Windows directory junctions."""
     if path.is_symlink():
         return True
     if hasattr(os.path, "isjunction"):
@@ -102,7 +94,6 @@ def _assert_snapshots(snapshots):
 
 
 def snapshot_loader_inputs(rule_dirs, skill_dirs):
-    """Snapshot precisely the source entries the public rule/skill loaders read."""
     def directory(path):
         path = Path(path).absolute()
         if _is_link(path) or any(_is_link(parent) for parent in path.parents) or not path.is_dir():
@@ -149,7 +140,6 @@ def _assert_loader_inputs(snapshot):
 
 @contextmanager
 def locked_catalog(path, owner_scope):
-    """Read one catalog while holding its sibling advisory operation lock."""
     if not isinstance(owner_scope, str) or not owner_scope:
         raise CatalogError("catalog operation scope is invalid")
     # A catalog environment may not be live in two runtime clones.  Include
@@ -256,7 +246,6 @@ def locked_catalog(path, owner_scope):
 
 
 def replace_catalog(catalog, expected_bytes, document, snapshots, loader_inputs=None):
-    """Atomically save a checked catalog, preserving unrelated JSON members."""
     try:
         catalog = _safe_existing_path(catalog, "catalog")
         _assert_snapshots(snapshots)
@@ -306,7 +295,6 @@ def replace_catalog(catalog, expected_bytes, document, snapshots, loader_inputs=
 
 
 def validate_capabilities(value, environment_id="?"):
-    """Validate optional, declarative capability metadata without probing it."""
     if value is None:
         value = {}
     if not isinstance(value, dict):
@@ -542,7 +530,6 @@ def _environment_refs(item):
 
 
 def _referenced_source_ids(environments):
-    """Return every source that influences selected catalog environments."""
     source_ids = set()
     for item in environments:
         if not isinstance(item, dict):
@@ -804,7 +791,6 @@ def probe_records(records, runner=subprocess.run, platform_name=None, report_unr
 
 def check_catalog(path, environment_id=None, probe=False, runner=subprocess.run,
                   agent_descriptor=None, site_id=None):
-    """Return ``(errors, records)`` for callers such as start preflight."""
     try:
         _catalog, sources, records = load_catalog(
             path, probe=probe, runner=runner, environment_id=environment_id,

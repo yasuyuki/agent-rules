@@ -1,4 +1,3 @@
-"""Source/wheel installation equivalence must reject every runtime difference."""
 from pathlib import Path
 import io
 import os

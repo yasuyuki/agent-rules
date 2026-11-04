@@ -1,4 +1,3 @@
-"""One canonical policy source; export only native input, never consumer files."""
 from pathlib import Path
 import importlib.util
 import tempfile

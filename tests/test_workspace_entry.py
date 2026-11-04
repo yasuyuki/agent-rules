@@ -1,4 +1,3 @@
-"""The placement CLI exposes no workspace mutation compatibility command."""
 from pathlib import Path
 import subprocess
 import sys
