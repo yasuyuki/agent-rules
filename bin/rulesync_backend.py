@@ -989,6 +989,14 @@ def _recover(output: Path, config: dict, readonly: bool = False) -> None:
             if directory == output or not any(directory in path.parents for path in restore):
                 raise ValueError()
             directories.append(directory)
+        # A process killed inside _write_atomic leaves its temporary file, which
+        # would keep a created directory from rmdir and fail skill validation.
+        for path in [*restore, output / MANIFEST]:
+            pattern = re.compile(rf"\.{re.escape(path.name)}\.rulesync-tmp-[a-z0-9_]{{8}}")
+            if path.parent.is_dir():
+                for leftover in path.parent.iterdir():
+                    if pattern.fullmatch(leftover.name) and not _is_link_or_reparse(leftover) and leftover.is_file():
+                        leftover.unlink()
         _restore(restore)
         for directory in reversed(directories):
             if directory.exists():

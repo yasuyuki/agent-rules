@@ -10,7 +10,7 @@ Files == {"rule", "skill"}
 Vals == {"absent", "old", "new", "user"}
 Recorded == {"absent", "old", "new"}
 Mutations == {"none", "skip-unowned-check", "recover-skip-conflict",
-              "no-journal", "proposed-temp-cleanup"}
+              "no-journal", "no-temp-cleanup"}
 
 VARIABLES
     disk,      \* content of each output path; "user" is anything the adapter did not write
@@ -71,21 +71,22 @@ Init ==
 StartApply ==
     /\ pc = "idle"
     /\ pc' = IF jr.on THEN "recover" ELSE "validate"
-    /\ tmpD' = IF jr.on /\ Mutation = "proposed-temp-cleanup" THEN 0 ELSE tmpD
-    /\ UNCHANGED <<disk, dExists, mf, want, jr, plan, todo, crashes, faults,
+    /\ UNCHANGED <<disk, dExists, tmpD, mf, want, jr, plan, todo, crashes, faults,
                    edits, lost, stuck, userEver, touched, snap>>
 
 \* _recover: every journaled path must still hold its before or after bytes.
+\* Then it deletes the .<name>.rulesync-tmp-* files beside the journaled paths.
 RecoverCheck ==
     /\ pc = "recover"
     /\ IF /\ Mutation # "recover-skip-conflict"
           /\ \/ \E f \in jr.files : disk[f] \notin {jr.before[f], jr.after[f]}
              \/ jr.mfTouched /\ mf \notin {jr.mfBefore, jr.mfAfter}
-       THEN Refuse /\ UNCHANGED todo
+       THEN Refuse /\ UNCHANGED <<todo, tmpD>>
        ELSE /\ pc' = "rrestore"
             /\ todo' = jr.files \cup (IF jr.mfTouched THEN {"M"} ELSE {})
+            /\ tmpD' = IF Mutation = "no-temp-cleanup" THEN tmpD ELSE 0
             /\ UNCHANGED stuck
-    /\ UNCHANGED <<disk, dExists, tmpD, mf, want, jr, plan, crashes, faults,
+    /\ UNCHANGED <<disk, dExists, mf, want, jr, plan, crashes, faults,
                    edits, lost, userEver, touched, snap>>
 
 \* _restore: unlink, skip, or _write_atomic each backup. "M" is the manifest.

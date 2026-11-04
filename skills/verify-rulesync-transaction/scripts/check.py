@@ -18,16 +18,16 @@ TLC_VERSION = "1.7.4"
 TLC_SHA256 = "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
 BOUNDS = {"MaxCrashes": 2, "MaxFaults": 1, "MaxUserEdits": 1}
 
-# (variant, invariant, expected). "finding" is a violation of the current code
-# that is reported, not hidden; it turns into a mismatch once the code is fixed.
+# (variant, invariant, expected). Use "finding" for a violation of the current
+# code that is reported, not hidden; it turns into a mismatch once fixed.
 RUNS = [
     ("none", "NoClobber", "pass"),
     ("none", "AllOrNothing", "pass"),
-    ("none", "NoStuck", "finding"),
+    ("none", "NoStuck", "pass"),
     ("skip-unowned-check", "NoClobber", "violated"),
     ("recover-skip-conflict", "NoClobber", "violated"),
     ("no-journal", "AllOrNothing", "violated"),
-    ("proposed-temp-cleanup", "NoStuck", "pass"),
+    ("no-temp-cleanup", "NoStuck", "violated"),
 ]
 
 

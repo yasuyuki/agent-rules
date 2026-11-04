@@ -771,6 +771,45 @@ m.apply(sys.argv[2], sys.argv[3])
         self.assertIn("After crash", (self.root / "out/AGENTS.md").read_text())
         self.assertTrue((self.root / "out/.agents/skills/new/SKILL.md").is_file())
 
+    def test_hard_exit_inside_atomic_write_recovers_without_manual_cleanup(self):
+        config = backend._load_config(self.config)
+        mode = 0o666 if os.name == "nt" else 0o644
+        script = """
+import importlib.util, json, os, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('backend', sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+out = Path(sys.argv[2]); config = m._load_config(sys.argv[3])
+desired = {rel: (data.encode(), int(sys.argv[5])) for rel, data in json.loads(sys.argv[4]).items()}
+replace = os.replace
+def killed(source, target):
+    if Path(target).name == 'SKILL.md': os._exit(23)
+    replace(source, target)
+m.os.replace = killed
+m._apply_reconcile(out, desired, m._read_manifest(out, config))
+"""
+        for name, second in (("new skill", {".agents/skills/demo/SKILL.md": "v1", ".agents/skills/new/SKILL.md": "n1"}),
+                             ("updated skill", {".agents/skills/demo/SKILL.md": "v2"})):
+            with self.subTest(name):
+                out = self.root / name.replace(" ", "-")
+                out.mkdir()
+                backend._apply_reconcile(out, {".agents/skills/demo/SKILL.md": (b"v1", mode)}, {})
+                unrelated = out / ".AGENTS.md.rulesync-tmp-abcd1234"
+                unrelated.write_text("not journaled")
+                result = subprocess.run([sys.executable, "-B", "-c", script, str(ROOT / "bin/rulesync_backend.py"), str(out),
+                                         str(self.config), json.dumps(second), str(mode)])
+                self.assertEqual(result.returncode, 23)
+                self.assertTrue(any(".rulesync-tmp-" in path.name for path in (out / ".agents/skills").rglob("*")))
+                desired = {rel: (data.encode(), mode) for rel, data in second.items()}
+                with backend._output_lock(out):
+                    backend._recover(out, config)
+                    owned = backend._validate_reconcile(out, desired, backend._read_manifest(out, config), config)
+                    self.assertTrue(backend._apply_reconcile(out, desired, owned))
+                self.assertFalse(any(".rulesync-tmp-" in path.name for path in (out / ".agents/skills").rglob("*")))
+                self.assertTrue(unrelated.is_file())
+                for rel, data in second.items():
+                    self.assertEqual((out / rel).read_text(), data)
+
 
     def test_retired_skill_actual_generation_can_readd(self):
         self.skill("generic", "Retained")
