@@ -73,7 +73,7 @@ def main() -> int:
                         help=f"tla2tools.jar {TLC_VERSION}; default $TLA2TOOLS")
     parser.add_argument("--java", default=os.environ.get("JAVA", "java"),
                         help="Java 11+ executable; default $JAVA or java on PATH")
-    parser.add_argument("--out", help="new directory for TLC outputs; default a fresh temporary directory")
+    parser.add_argument("--out", help="new directory that keeps each job's tlc.out; without it outputs are deleted")
     args = parser.parse_args()
     if not args.tla2tools:
         parser.error("pass --tla2tools or set TLA2TOOLS")
@@ -81,17 +81,23 @@ def main() -> int:
     if not jar.is_file() or sha256(jar) != TLC_SHA256:
         print(f"blocked: {jar} is not tla2tools.jar {TLC_VERSION} (sha256 {TLC_SHA256})", file=sys.stderr)
         return 2
-    out = Path(args.out) if args.out else Path(tempfile.mkdtemp(prefix="rulesync-transaction-tlc-"))
-    out.mkdir(parents=True, exist_ok=bool(not args.out))
+    if args.out:
+        out = Path(args.out)
+        out.mkdir(parents=True)
+        return run_all(args.java, jar, out)
+    with tempfile.TemporaryDirectory(prefix="rulesync-transaction-tlc-") as temporary:
+        return run_all(args.java, jar, Path(temporary))
+
+
+def run_all(java: str, jar: Path, out: Path) -> int:
     mismatches = 0
     for variant, invariant, expected in RUNS:
-        actual, detail = run_tlc(args.java, jar, out, variant, invariant)
+        actual, detail = run_tlc(java, jar, out, variant, invariant)
         wanted = "violated" if expected == "finding" else expected
         ok = actual == wanted
         mismatches += not ok
         label = "KNOWN FINDING" if ok and expected == "finding" else ("ok" if ok else "MISMATCH")
         print(f"{label:13} {variant:22} {invariant:13} expected {expected:8} got {actual} ({detail})")
-    print(f"outputs: {out}")
     return 1 if mismatches else 0
 
 

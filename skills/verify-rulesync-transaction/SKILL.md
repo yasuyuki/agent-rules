@@ -72,7 +72,8 @@ On the Windows controller, in PowerShell:
 ```
 
 The script runs seven TLC jobs, one invariant each, in about 10 seconds. It prints
-one line per job and the directory that keeps each job's `tlc.out`. It exits 0
+one line per job. Pass `--out <new directory>` to keep each job's `tlc.out`;
+without it the outputs are deleted after the run. It exits 0
 when every job matched its expectation, 1 on any `MISMATCH`, and 2 when the jar
 is missing or wrong.
 
@@ -117,7 +118,7 @@ because it now passes. Change its expectation to `pass` in `scripts/check.py`.
 Read each violation and each passing model with the `/statechart` skill on
 `RulesyncTransaction.tla` and `RulesyncTransaction.cfg`. It gives the shortest
 path to each broken invariant in plain words and charts the passing states.
-The raw TLC trace is in `<outputs>/<mutation>-<invariant>/tlc.out`.
+With `--out`, the raw TLC trace is in `<out>/<mutation>-<invariant>/tlc.out`.
 
 Decide whether a violation is a product bug or a modeling error before you act:
 
