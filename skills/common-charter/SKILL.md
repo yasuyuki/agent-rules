@@ -1,6 +1,6 @@
 ---
 name: common-charter
-description: Charter shared by every product and environment repository the owner manages. Read before changing a product's API, CLI, configuration, persistent data format or normal entry point, and before weighing user waiting, time, cost or resources in a design or an acceptance.
+description: Charter shared by every product and environment repository the owner manages. Read before changing a product's API, CLI, configuration, behaviour, persistent data format, normal entry point or the rules that govern them, and before weighing user waiting, time, cost or resources in a design or an acceptance.
 ---
 
 # Common charter
