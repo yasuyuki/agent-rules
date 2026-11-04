@@ -28,7 +28,7 @@ All covered code is in `bin/rulesync_backend.py`. Each TLA+ action models one ca
 | Action | Code |
 | --- | --- |
 | `StartApply` | `apply`: `_output_lock`, then `_recover` only when `.rulesync-transaction.json` exists |
-| `RecoverCheck` | `_recover`: refuse when a journaled path holds neither its before nor its after bytes |
+| `RecoverCheck` | `_recover`: refuse when a journaled path holds neither its before nor its after bytes, else delete the `.<name>.rulesync-tmp-*` files beside the journaled paths |
 | `RecoverRestore`, `RecoverReplace` | `_recover` calling `_restore` |
 | `RecoverRmdir`, `RecoverDone` | `_recover`: `rmdir` of journaled directories, then unlink of the journal |
 | `Validate` | `_validate_reconcile` refusals (externally modified owned file, unowned file would be replaced, unowned same-name skill), `_plan`, and the journal `_write_atomic` |
@@ -39,7 +39,7 @@ All covered code is in `bin/rulesync_backend.py`. Each TLA+ action models one ca
 | `UserEdit` | the user writes or deletes an output while no apply runs |
 
 Last confirmed against the code at commit
-`daab169173fdc3bbbc8f2c5e52251b00310ba5e0`. Move this commit forward only after
+`9e849abc038751247c31007017f14f9d0c5d567b`. Move this commit forward only after
 you have read every change to the covered functions since it and confirmed that
 the table and the model still describe the code.
 
@@ -48,7 +48,7 @@ the table and the model still describe the code.
 From the agent-rules checkout:
 
 ```sh
-git diff daab169173fdc3bbbc8f2c5e52251b00310ba5e0 -- bin/rulesync_backend.py
+git diff 9e849abc038751247c31007017f14f9d0c5d567b -- bin/rulesync_backend.py
 ```
 
 Read the diff for the functions in the table, `MANIFEST`, `JOURNAL` and `LOCK`.
@@ -81,24 +81,23 @@ is missing or wrong.
 | --- | --- | --- |
 | `none` | `NoClobber` | pass |
 | `none` | `AllOrNothing` | pass |
-| `none` | `NoStuck` | violated, known finding F1 |
+| `none` | `NoStuck` | pass |
 | `skip-unowned-check` | `NoClobber` | violated |
 | `recover-skip-conflict` | `NoClobber` | violated |
 | `no-journal` | `AllOrNothing` | violated |
-| `proposed-temp-cleanup` | `NoStuck` | pass |
+| `no-temp-cleanup` | `NoStuck` | violated |
 
 The `none` rows check the current code. The mutation rows prove that each
 promise can fail. `skip-unowned-check` drops the "unowned file would be replaced"
 refusal. `recover-skip-conflict` drops the before-or-after check in `_recover`.
-`no-journal` never writes the journal. `proposed-temp-cleanup` is the smallest
-fix for F1 (`_recover` deletes the `.<name>.rulesync-tmp-*` files beside the
-journaled paths) and shows that the model passes once it exists.
+`no-journal` never writes the journal. `no-temp-cleanup` drops the deletion
+of temporary files in `_recover`, which is the code before F1 was fixed.
 
-## Known finding F1
+## Fixed finding F1
 
-`NoStuck` fails on the current code, tracked in
-[agent-rules#78](https://github.com/yasuyuki/agent-rules/issues/78). TLC's
-shortest path:
+This check found F1 in
+[agent-rules#78](https://github.com/yasuyuki/agent-rules/issues/78). The
+`no-temp-cleanup` variant still shows its shortest path:
 
 1. Apply adds a new skill. It creates `.claude/skills/<id>/` and calls
    `_write_atomic`, which creates `.SKILL.md.rulesync-tmp-*` there.
@@ -108,10 +107,13 @@ shortest path:
    so apply fails with `invalid Rulesync transaction` on every run.
 
 When the killed write was updating an existing skill, the next apply instead
-fails with `unowned same-name skill`. Both were reproduced on the real code by
-killing a child process inside `os.replace`. The user recovers by deleting the
-temporary file. When F1 is fixed, the `none`/`NoStuck` row reports `MISMATCH`
-because it now passes. Change its expectation to `pass` in `scripts/check.py`.
+fails with `unowned same-name skill`.
+`test_hard_exit_inside_atomic_write_recovers_without_manual_cleanup` in
+`tests/test_rulesync_backend.py` reproduces both on the real code.
+
+When the check finds a new product bug, add its row to `RUNS` in
+`scripts/check.py` with the expectation `finding`, so that the script reports
+it on every run until the fix turns the row into a `MISMATCH`.
 
 ## Read a result
 
