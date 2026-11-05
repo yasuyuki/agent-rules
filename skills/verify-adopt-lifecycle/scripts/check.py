@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Model-check AdoptLifecycle.tla and its broken and fixed variants with a pinned TLC."""
+"""Model-check AdoptLifecycle.tla and its broken variants with a pinned TLC."""
 from __future__ import annotations
 
 import argparse
@@ -22,16 +22,15 @@ MAX_FAULTS = 2
 
 # Violations of the current code that are reported, not hidden. Each turns
 # into a MISMATCH once its fix lands.
-FINDINGS = {
-    "InstallResumes": "agent-environment#58",
-    "SwitchResumes": "agent-environment#59",
-    "AdoptedAfterChecks": "agent-environment#60",
-    "AdoptedLeavesNoTask": "agent-environment#60",
-}
+FINDINGS: dict[str, str] = {}
 RUNS = (
     [("none", inv, "finding" if inv in FINDINGS else "pass") for inv in INVARIANTS]
-    + [("fixed", inv, "pass") for inv in INVARIANTS]
     + [
+        ("install-reuses-half-prefix", "InstallResumes", "violated"),
+        ("edit-without-restore", "SwitchResumes", "violated"),
+        ("rerun-skips-task", "AdoptedAfterChecks", "violated"),
+        ("rerun-skips-task", "AdoptedLeavesNoTask", "violated"),
+        ("pending-retire-adopts", "AdoptedLeavesNoTask", "violated"),
         ("apply-trusts-precheck", "AdoptedIsLive", "violated"),
         ("ignore-checks", "AdoptedAfterChecks", "violated"),
     ]
@@ -82,7 +81,7 @@ def run_all(java: str, jar: Path, out: Path) -> int:
         mismatches += not ok
         label = "KNOWN FINDING" if ok and expected == "finding" else ("ok" if ok else "MISMATCH")
         issue = f" {FINDINGS[invariant]}" if expected == "finding" else ""
-        print(f"{label:13} {variant:22} {invariant:20} expected {expected:8} got {actual} "
+        print(f"{label:13} {variant:26} {invariant:20} expected {expected:8} got {actual} "
               f"({detail}){issue}")
     return 1 if mismatches else 0
 

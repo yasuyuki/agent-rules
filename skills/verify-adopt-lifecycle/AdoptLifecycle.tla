@@ -7,7 +7,8 @@
    install: the runtime binding, a rule naming the install (named by
    `git grep`), and a Rulesync export declaration (`reselect_exports`).
    Line numbers are runtimes/adopt_lifecycle.py at agent-environment
-   6b9ff054233220e9d3dc9ed126ac42da15767669. *)
+   0ecadc47f39b4964c77b0e0d096384f9c6653ccf. Each mutation other than "none"
+   removes one guard of that code. *)
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS Mutation, MaxFaults
@@ -15,7 +16,7 @@ CONSTANTS Mutation, MaxFaults
 Files == {"runtime", "rule", "decl"}
 AllNew == [f \in Files |-> "new"]
 AllOld == [f \in Files |-> "old"]
-Fixed == Mutation = "fixed"
+Mut(name) == Mutation = name
 
 VARIABLES
     pc,          \* step of the current run; "idle" between runs
@@ -60,6 +61,9 @@ Init ==
 
 Go(from, to) == pc = from /\ pc' = to
 
+Same == UNCHANGED <<faults, selfFail, halfDir, ready, wt, branch, wtFiles, staged, index,
+                    committed, commitFiles, remote, local, outputs, checks, prechecked>>
+
 \* `selfFail` keeps the first such failure, so the state space stays finite.
 FailSelf(where) ==
     /\ pc' = "idle"
@@ -85,22 +89,19 @@ Rerun ==
     /\ UNCHANGED <<faults, selfFail, halfDir, ready, wt, branch, wtFiles, index, committed,
                    commitFiles, remote, local, outputs, checks>>
 
-
-\* live_checkout (L355-365): fetch, then `merge --ff-only` to origin's default branch.
+\* live_checkout (L391-400): fetch, then `merge --ff-only` to origin's default branch.
 LiveCheckout ==
     /\ Go("start", "install")
     /\ local' = remote
     /\ UNCHANGED <<faults, selfFail, halfDir, ready, wt, branch, wtFiles, staged, index,
                    committed, commitFiles, remote, outputs, checks, prechecked>>
 
-Same == UNCHANGED <<faults, selfFail, halfDir, ready, wt, branch, wtFiles, staged, index,
-                    committed, commitFiles, remote, local, outputs, checks, prechecked>>
-
-\* install (L144-148): the loop over [old, *sorted(old.parent.glob(version-*))]. After the
-\* switch, `old` is the new install and is reused first.
+\* install (L154-157): the loop over [old, *sorted(old.parent.glob(version-*))].
+\* After the switch, `old` is the new install and is reused first, and adopt
+\* (L410, L415-416) calls resume instead of integrate.
 ReuseOld ==
     /\ pc = "install" /\ local["runtime"] = "new"
-    /\ pc' = IF Fixed /\ (wt = "open" \/ branch) THEN "resume" ELSE "verify"
+    /\ pc' = IF Mut("rerun-skips-task") THEN "verify" ELSE "resume"
     /\ Same
 
 \* The loop reuses an install of this version whose modules match.
@@ -109,37 +110,40 @@ ReuseInstall ==
     /\ pc' = "precheck"
     /\ Same
 
-\* The loop (L146) calls venv_python on a prefix without an interpreter, which
-\* raises "has no Python interpreter". Sorting by digest can put it before the
-\* good install, so this can happen even when `ready`.
+\* reusable (L123-130) answers False for a prefix without an interpreter. The
+\* mutation calls venv_python on it, which raises "has no Python interpreter";
+\* sorting by digest can put it before the good install.
 HitHalfDir ==
-    /\ pc = "install" /\ local["runtime"] = "old" /\ halfDir /\ ~Fixed
+    /\ pc = "install" /\ local["runtime"] = "old" /\ halfDir
+    /\ Mut("install-reuses-half-prefix")
     /\ FailSelf("install")
 
-\* No match (L149-164): build a wheel and `python -m venv` a new version-<digest> prefix.
-\* Wheel builds are not byte-reproducible, so each build gets a new prefix.
+\* No match (L158-173): build a wheel and `python -m venv` a new version-<digest>
+\* prefix. Wheel builds are not byte-reproducible, so each build gets a new prefix.
 BuildStart ==
-    /\ pc = "install" /\ local["runtime"] = "old" /\ ~ready /\ (~halfDir \/ Fixed)
+    /\ pc = "install" /\ local["runtime"] = "old" /\ ~ready
+    /\ (~halfDir \/ ~Mut("install-reuses-half-prefix"))
     /\ pc' = "venv"
     /\ Same
 
 VenvDone == Go("venv", "pip") /\ Same
 
-\* pip install --no-index of the kept wheel (L165), then module_mismatches is empty (L168).
+\* pip install --no-index of the kept wheel (L174-175), then module_mismatches
+\* is empty (L176-179).
 PipDone ==
     /\ Go("pip", "precheck")
     /\ ready' = TRUE
     /\ UNCHANGED <<faults, selfFail, halfDir, wt, branch, wtFiles, staged, index,
                    committed, commitFiles, remote, local, outputs, checks, prechecked>>
 
-\* adopt (L374-377): rulesync_states before the switch; every configuration checks true.
+\* adopt (L410-413): rulesync_states before the switch; every configuration checks true.
 Precheck ==
     /\ Go("precheck", "begin")
     /\ prechecked' = TRUE
     /\ UNCHANGED <<faults, selfFail, halfDir, ready, wt, branch, wtFiles, staged, index,
                    committed, commitFiles, remote, local, outputs, checks>>
 
-\* integrate (L269): `lifecycle begin` only when the worktree path does not exist.
+\* integrate (L282): `lifecycle begin` only when the worktree path does not exist.
 Begin ==
     /\ pc = "begin" /\ wt = "none"
     /\ pc' = "subject"
@@ -152,11 +156,22 @@ BeginExisting == pc = "begin" /\ wt = "open" /\ pc' = "subject" /\ Same
 \* A retired worktree path no longer exists, so begin would reuse the task name.
 BeginRetired == pc = "begin" /\ wt = "retired" /\ FailSelf("switch")
 
-\* integrate (L274): `edit` runs only when HEAD's subject is not the switch subject.
-Subject == pc = "subject" /\ pc' = (IF committed THEN "finish" ELSE "repin") /\ Same
+\* integrate (L287-290): `edit` runs only when HEAD's subject is not the switch
+\* subject, after `git restore --source=HEAD --staged --worktree` returns the
+\* worktree and index to HEAD, where every file names the old install.
+Subject ==
+    /\ pc = "subject"
+    /\ IF committed
+         THEN pc' = "finish" /\ Same
+         ELSE /\ pc' = "repin"
+              /\ IF Mut("edit-without-restore")
+                   THEN UNCHANGED <<wtFiles, index>>
+                   ELSE wtFiles' = AllOld /\ index' = {}
+              /\ UNCHANGED <<faults, selfFail, halfDir, ready, wt, branch, staged, committed,
+                             commitFiles, remote, local, outputs, checks, prechecked>>
 
-\* repin (L176-189): replace the old prefix in the runtime binding and rehash its pins.
-\* `git add` always names host.runtime (L284).
+\* repin (L185-198): replace the old prefix in the runtime binding and rehash its pins.
+\* `git add` always names host.runtime (L299).
 Repin ==
     /\ Go("repin", "grep")
     /\ wtFiles' = [wtFiles EXCEPT !["runtime"] = "new"]
@@ -164,7 +179,7 @@ Repin ==
     /\ UNCHANGED <<faults, selfFail, halfDir, ready, wt, branch, index, committed,
                    commitFiles, remote, local, outputs, checks, prechecked>>
 
-\* edit (L231-234): `git grep -l -F old` lists only files that still name the old prefix,
+\* edit (L240-243): `git grep -l -F old` lists only files that still name the old prefix,
 \* then each is rewritten.
 Grep ==
     /\ Go("grep", "reselect")
@@ -173,7 +188,7 @@ Grep ==
     /\ UNCHANGED <<faults, selfFail, halfDir, ready, wt, branch, index, committed,
                    commitFiles, remote, local, outputs, checks, prechecked>>
 
-\* reselect_exports (L217): a declaration whose selected export already has the new
+\* reselect_exports (L226): a declaration whose selected export already has the new
 \* name is skipped (`target.name == current.name`) and is not returned.
 Reselect ==
     /\ Go("reselect", "add")
@@ -182,15 +197,14 @@ Reselect ==
     /\ UNCHANGED <<faults, selfFail, halfDir, ready, wt, branch, index, committed,
                    commitFiles, remote, local, outputs, checks, prechecked>>
 
-\* integrate (L284): git add -- host.runtime *files *declarations. The fixed variant
-\* stages every tracked file that differs from HEAD.
+\* integrate (L299-300): git add -- host.runtime *files *declarations.
 Add ==
     /\ Go("add", "commit")
-    /\ index' = index \cup (IF Fixed THEN {f \in Files : wtFiles[f] = "new"} ELSE staged)
+    /\ index' = index \cup staged
     /\ UNCHANGED <<faults, selfFail, halfDir, ready, wt, branch, wtFiles, staged, committed,
                    commitFiles, remote, local, outputs, checks, prechecked>>
 
-\* integrate (L286): git commit.
+\* integrate (L301): git commit.
 Commit ==
     /\ Go("commit", "finish")
     /\ committed' = TRUE /\ commitFiles' = index /\ index' = {}
@@ -199,13 +213,14 @@ Commit ==
 
 Dirty == {f \in Files : wtFiles[f] = "new"} \ commitFiles
 
-\* lifecycle finish (L294) with the empty plan `{}` refuses tracked changes the plan
+\* lifecycle finish (L309) with the empty plan `{}` refuses tracked changes the plan
 \* does not cover, on every rerun.
 FinishRefuses == pc = "finish" /\ Dirty # {} /\ FailSelf("switch")
 
 \* lifecycle finish --wait-checks: the prepared checks pass and the switch
 \* commit is integrated into origin's default branch. An earlier failure
-\* withdraws the prepared integration and is a Fault at "finish".
+\* withdraws the prepared integration and is a Fault at "finish". A finish
+\* rerun on an integrated task waits for its checks again.
 Integrate ==
     /\ pc = "finish" /\ Dirty = {}
     /\ pc' = "await"
@@ -214,7 +229,7 @@ Integrate ==
     /\ UNCHANGED <<faults, selfFail, halfDir, ready, wt, branch, wtFiles, staged, index,
                    committed, commitFiles, local, outputs, prechecked>>
 
-\* _await_integration_checks on the integrated commit, inside finish (L294).
+\* _await_integration_checks on the integrated commit, inside finish (L309).
 ChecksPass ==
     /\ Go("await", "retire")
     /\ checks' = "pass"
@@ -222,7 +237,7 @@ ChecksPass ==
                    committed, commitFiles, remote, local, outputs, prechecked>>
 
 \* The checks fail: finish returns early, and integrate raises "integrated
-\* without successful checks" (L297). The integration stays in the default branch.
+\* without successful checks" (L312-313). The integration stays in the default branch.
 ChecksFail ==
     /\ pc = "await" /\ faults < MaxFaults
     /\ checks' = "fail"
@@ -232,12 +247,6 @@ ChecksFail ==
     /\ UNCHANGED <<selfFail, halfDir, ready, wt, branch, wtFiles, staged, index,
                    committed, commitFiles, remote, local, outputs, prechecked>>
 
-\* The fixed variant reruns when a rerun's checks already failed: it refuses again.
-ChecksStillFail ==
-    /\ pc = "await" /\ checks = "fail" /\ Fixed
-    /\ pc' = "idle"
-    /\ Same
-
 \* finish retires and reclaims the task worktree (--users-released).
 Retire ==
     /\ Go("retire", "ff")
@@ -245,43 +254,43 @@ Retire ==
     /\ UNCHANGED <<faults, selfFail, halfDir, ready, branch, wtFiles, staged, index,
                    committed, commitFiles, remote, local, outputs, checks, prechecked>>
 
-\* finish catches a retire error and returns `retirement.pending`; adopt only
-\* reports it (L299-302). The fixed variant raises instead.
+\* finish catches a retire error and returns `retirement.pending`; integrate
+\* raises "is integrated but not retired" (L318-319).
 RetirePending ==
     /\ pc = "retire" /\ faults < MaxFaults
     /\ faults' = faults + 1
-    /\ pc' = IF Fixed THEN "idle" ELSE "ff"
+    /\ pc' = IF Mut("pending-retire-adopts") THEN "ff" ELSE "idle"
     /\ UNCHANGED <<selfFail, halfDir, ready, wt, branch, wtFiles, staged, index,
                    committed, commitFiles, remote, local, outputs, checks, prechecked>>
 
-\* integrate (L303-304): fetch and `merge --ff-only` the live checkout.
+\* integrate (L320-321): fetch and `merge --ff-only` the live checkout.
 FastForward ==
     /\ Go("ff", "branch")
     /\ local' = remote
     /\ UNCHANGED <<faults, selfFail, halfDir, ready, wt, branch, wtFiles, staged, index,
                    committed, commitFiles, remote, outputs, checks, prechecked>>
 
-\* integrate (L305-308): `git branch -d` and `push --delete` of the task branch.
+\* delete_branch (L325-335): `git branch -d` and `push --delete` of the task
+\* branch once origin's default branch has it.
 DeleteBranch ==
     /\ Go("branch", "verify")
     /\ branch' = FALSE
     /\ UNCHANGED <<faults, selfFail, halfDir, ready, wt, wtFiles, staged, index,
                    committed, commitFiles, remote, local, outputs, checks, prechecked>>
 
-\* Fixed variant only: a rerun that finds the switch live but its task still
-\* open resumes finish, awaiting the integrated commit's checks again.
+\* resume (L338-344): integrate when the task worktree still exists, which
+\* skips begin and edit and reruns finish; otherwise delete_branch only.
 Resume ==
     /\ pc = "resume"
-    /\ pc' = CASE checks = "pass" -> IF wt = "open" THEN "retire" ELSE "branch"
-               [] OTHER -> "await"
+    /\ pc' = IF wt = "open" THEN "begin" ELSE "branch"
     /\ Same
 
-\* adopt (L379-380): raise when the runtime binding still selects the previous install.
+\* adopt (L417-418): raise when the runtime binding still selects the previous install.
 Verify ==
     /\ pc = "verify"
     /\ IF local["runtime"] = "new" THEN pc' = "apply" /\ Same ELSE FailSelf("switch")
 
-\* apply (L315-328): for each configuration, skip when `check` is true, else apply twice;
+\* apply (L351-364): for each configuration, skip when `check` is true, else apply twice;
 \* then every configuration checks true. Rulesync's own transaction is in
 \* verify-rulesync-transaction; here one apply makes the outputs match.
 Apply ==
@@ -291,7 +300,7 @@ Apply ==
     /\ UNCHANGED <<faults, selfFail, halfDir, ready, wt, branch, wtFiles, staged, index,
                    committed, commitFiles, remote, local, checks, prechecked>>
 
-\* launch (L331-352): agent-runtime --explain resolves the new install, then "adopted" (L383).
+\* launch (L367-388): agent-runtime --explain resolves the new install, then "adopted" (L421).
 Launch == Go("launch", "adopted") /\ Same
 
 Done == pc = "adopted" /\ pc' = pc /\ Same
@@ -301,7 +310,7 @@ Next ==
     \/ ReuseOld \/ ReuseInstall \/ HitHalfDir \/ BuildStart \/ VenvDone \/ PipDone
     \/ Precheck \/ Begin \/ BeginExisting \/ BeginRetired \/ Subject
     \/ Repin \/ Grep \/ Reselect \/ Add \/ Commit
-    \/ FinishRefuses \/ Integrate \/ ChecksPass \/ ChecksFail \/ ChecksStillFail
+    \/ FinishRefuses \/ Integrate \/ ChecksPass \/ ChecksFail
     \/ Retire \/ RetirePending \/ FastForward \/ DeleteBranch \/ Resume
     \/ Verify \/ Apply \/ Launch \/ Done
 

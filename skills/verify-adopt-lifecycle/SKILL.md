@@ -1,6 +1,6 @@
 ---
 name: verify-adopt-lifecycle
-description: Model-check with TLA+ that agent-environment's runtimes/adopt_lifecycle.py `adopt` resumes when the same command runs again after a run that stopped at any step, and reports "adopted" only once the switch is live, its checks passed and its task is retired. Use when a change touches adopt, install, integrate, edit, repin, reselect_exports, apply or live_checkout in runtimes/adopt_lifecycle.py.
+description: Model-check with TLA+ that agent-environment's runtimes/adopt_lifecycle.py `adopt` resumes when the same command runs again after a run that stopped at any step, and reports "adopted" only once the switch is live, its checks passed and its task is retired. Use when a change touches adopt, install, reusable, integrate, resume, delete_branch, edit, repin, reselect_exports, apply or live_checkout in runtimes/adopt_lifecycle.py.
 license: MIT
 ---
 
@@ -31,32 +31,37 @@ outside cause produced; the two `*Resumes` invariants read it.
 ## Coverage
 
 The covered code is `adopt` in `runtimes/adopt_lifecycle.py` of
-agent-environment, with `live_checkout`, `install`, `integrate`, `edit`,
-`repin`, `reselect_exports`, `apply` and `launch`. Each action is one step:
+agent-environment, with `live_checkout`, `install`, `reusable`, `integrate`,
+`resume`, `delete_branch`, `edit`, `repin`, `reselect_exports`, `apply` and
+`launch`. Each action is one step:
 
 | Action | Code |
 | --- | --- |
 | `LiveCheckout` | `live_checkout`: fetch and `merge --ff-only` |
-| `ReuseOld`, `ReuseInstall`, `HitHalfDir` | the reuse loop in `install` over `[old, *sorted(glob(version-*))]`, including `venv_python` raising on a prefix without an interpreter |
+| `ReuseOld`, `ReuseInstall` | the reuse loop in `install` over `[old, *sorted(glob(version-*))]`; `reusable` skips a prefix without an interpreter |
+| `HitHalfDir` | mutation `install-reuses-half-prefix` only: the loop raising on a prefix without an interpreter |
 | `BuildStart`, `VenvDone`, `PipDone` | the wheel build, `python -m venv <prefix>` and the offline `pip install` in `install` |
 | `Precheck` | `rulesync_states` before the switch in `adopt` |
-| `Begin*`, `Subject` | `integrate`: `begin` when the worktree path is missing; `edit` when HEAD's subject is not the switch subject |
+| `Begin*`, `Subject` | `integrate`: `begin` when the worktree path is missing; when HEAD's subject is not the switch subject, `git restore --source=HEAD --staged --worktree`, then `edit` |
 | `Repin`, `Grep`, `Reselect` | `edit`: `repin`, `git grep -l -F old` and its rewrites, `reselect_exports` |
 | `Add`, `Commit` | `integrate`: `git add` of what `edit` returned, then commit |
-| `FinishRefuses`, `Integrate`, `ChecksPass`, `ChecksFail`, `Retire`, `RetirePending` | `lifecycle finish --wait-checks --users-released` with the plan `{}`, and adopt's test of `integration_checks` |
-| `FastForward`, `DeleteBranch` | `integrate`: ff of the live checkout, `branch -d`, `push --delete` |
+| `FinishRefuses`, `Integrate`, `ChecksPass`, `ChecksFail`, `Retire`, `RetirePending` | `lifecycle finish --wait-checks --users-released` with the plan `{}`, and `integrate`'s raise on unsuccessful `integration_checks` or an unretired task |
+| `FastForward`, `DeleteBranch` | `integrate`: ff of the live checkout, then `delete_branch` |
+| `Resume` | `resume`, which `adopt` calls when the live checkout already names the install: `integrate` when the task worktree exists, else `delete_branch` |
 | `Verify`, `Apply`, `Launch` | `adopt`'s `still selects` test, `apply`, `launch` |
 | `Fault` | a kill or an outside error at any step; a kill inside `venv` leaves the prefix without an interpreter |
 
 The model assumes, from the code: wheel builds are not byte-reproducible (two
 builds of one revision gave different SHA-256), so each build gets a new
 `version-<digest>` prefix; `lifecycle finish` refuses tracked changes its plan
-does not cover; and it integrates into `main` before it waits for the
-integration checks. The comments in `AdoptLifecycle.tla` give the line of each
+does not cover; it integrates into `main` before it waits for the
+integration checks; and a finish rerun on an integrated task waits for that
+commit's checks again and then retires it (workspace-lifecycle
+`tests/test_required_checks.py`). The comments in `AdoptLifecycle.tla` give the line of each
 step at the sync commit.
 
 Last confirmed against the code at agent-environment commit
-`6b9ff054233220e9d3dc9ed126ac42da15767669`. Move this commit forward only after
+`0ecadc47f39b4964c77b0e0d096384f9c6653ccf`. Move this commit forward only after
 you have read every change to the covered code since it and confirmed that the
 table, the line comments and the model still describe the code.
 
@@ -65,7 +70,7 @@ table, the line comments and the model still describe the code.
 From the agent-environment checkout:
 
 ```sh
-git diff 6b9ff054233220e9d3dc9ed126ac42da15767669 -- runtimes/adopt_lifecycle.py
+git diff 0ecadc47f39b4964c77b0e0d096384f9c6653ccf -- runtimes/adopt_lifecycle.py
 ```
 
 A change to any function in the table needs the check. `main`, `report`,
@@ -92,47 +97,27 @@ outputs are deleted. It exits 0 when every job matched its expectation, 1 on any
 
 | Mutation | Invariant | Expected |
 | --- | --- | --- |
-| `none` | `InstallResumes` | finding #58 |
-| `none` | `SwitchResumes` | finding #59 |
-| `none` | `AdoptedAfterChecks`, `AdoptedLeavesNoTask` | finding #60 |
-| `none` | `AdoptedIsLive` | pass |
-| `fixed` | every invariant | pass |
+| `none` | every invariant | pass |
+| `install-reuses-half-prefix` | `InstallResumes` | violated |
+| `edit-without-restore` | `SwitchResumes` | violated |
+| `rerun-skips-task` | `AdoptedAfterChecks`, `AdoptedLeavesNoTask` | violated |
+| `pending-retire-adopts` | `AdoptedLeavesNoTask` | violated |
 | `apply-trusts-precheck` | `AdoptedIsLive` | violated |
 | `ignore-checks` | `AdoptedAfterChecks` | violated |
 
+Each mutation removes one guard. `install-reuses-half-prefix` lets the reuse
+loop raise on a prefix without an interpreter. `edit-without-restore` drops
+the restore before `edit`. `rerun-skips-task` makes `adopt` skip `resume`.
+`pending-retire-adopts` drops the raise on an unretired task.
 `apply-trusts-precheck` skips `apply` for configurations that checked true
 before the switch. `ignore-checks` drops the raise on unsuccessful
-`integration_checks`. `fixed` is one design that keeps every promise: the
-reuse loop skips prefixes without an interpreter, the switch commit stages
-every tracked file that differs from HEAD, a retire that stays pending fails
-the run, and a rerun that finds the switch live but its task open resumes
-`finish` (checks, retire, branch deletion) before it reports `adopted`.
+`integration_checks`. `tests/test_adopt_lifecycle.py` in agent-environment
+fails when the real code loses any of the first four guards.
 
-## Known findings
+## Findings
 
-All three were reproduced by importing `runtimes/adopt_lifecycle.py` and
-calling its functions, with stubs only for the host's live installs and
-remotes.
-
-**#58.** [agent-environment#58](https://github.com/yasuyuki/agent-environment/issues/58).
-A run stops inside `python -m venv <prefix>`. On every rerun the reuse loop
-calls `venv_python` on that prefix and raises `has no Python interpreter`,
-before it builds or, when the prefix sorts first, before it reaches a good
-install.
-
-**#59.** [agent-environment#59](https://github.com/yasuyuki/agent-environment/issues/59).
-A run stops after `edit` rewrote the `git grep` files but before the commit.
-The rerun's `edit` returns no such file: `repin` finds no old path, `git grep`
-lists only files still naming it, and `reselect_exports` skips declarations
-already selected. The commit leaves them dirty, and `finish` refuses them on
-every rerun, since the commit subject now matches and `edit` never runs again.
-
-**#60.** [agent-environment#60](https://github.com/yasuyuki/agent-environment/issues/60).
-`finish` integrates into `main`, then the run stops during the check wait, or
-the checks fail and adopt raises. The rerun fast-forwards, `install` reuses
-the new install as `old`, `prefix == old` skips `integrate`, and the run reports
-`adopted` without seeing the checks, with the task worktree and branch left.
-A retire that stays pending reaches `adopted` with the task open in one run.
+None is open. agent-environment#58, #59 and #60 were found by this check and
+fixed in `0ecadc4`; the first four mutations above remove those fixes.
 
 When the check finds a new product bug, add it to `FINDINGS` in
 `scripts/check.py`, so that the script reports it on every run until the fix
@@ -144,7 +129,7 @@ removes the fix.
 
 Read each violation and each passing model with the `/statechart` skill on
 `AdoptLifecycle.tla` and `AdoptLifecycle.cfg`. The cfg allows one stop so the
-whole graph fits the chart budget, and it shows every finding. With `--out`, the
+whole graph fits the chart budget. With `--out`, the
 raw TLC trace is in `<out>/<mutation>-<invariant>/tlc.out`.
 
 Decide whether a violation is a product bug or a modeling error before you act:
