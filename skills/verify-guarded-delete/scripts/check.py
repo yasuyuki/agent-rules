@@ -17,7 +17,7 @@ SPEC = HERE / "GuardedDelete.tla"
 TLC_VERSION = "1.7.4"
 TLC_SHA256 = "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
 INVARIANTS = ["NoDeleteWithoutRecord", "DeletesOnlyRecordedContent", "CompletedMeansRunDeletedAll",
-              "FailedMeansNothingDeleted", "RerunZeroMeansAllDeleted"]
+              "FailedMeansNothingDeleted", "RerunZeroMeansAllDeleted", "RetryCompletes"]
 
 # (platform, variant, invariant, other writers, expected). Use "finding" for a
 # violation of the current code that is reported, not hidden; it turns into a
@@ -29,17 +29,22 @@ RUNS = (
         ("posix", "none", "NoDeleteWithoutRecord", 1, "pass"),
         ("posix", "none", "DeletesOnlyRecordedContent", 1, "finding"),
         ("posix", "none", "CompletedMeansRunDeletedAll", 1, "pass"),
-        ("posix", "none", "FailedMeansNothingDeleted", 1, "finding"),
+        ("posix", "none", "FailedMeansNothingDeleted", 1, "pass"),
         ("posix", "none", "RerunZeroMeansAllDeleted", 1, "pass"),
+        ("posix", "none", "RetryCompletes", 1, "pass"),
         ("windows", "none", "NoDeleteWithoutRecord", 1, "pass"),
         ("windows", "none", "DeletesOnlyRecordedContent", 1, "pass"),
         ("windows", "none", "CompletedMeansRunDeletedAll", 1, "pass"),
-        ("windows", "none", "FailedMeansNothingDeleted", 1, "finding"),
+        ("windows", "none", "FailedMeansNothingDeleted", 1, "pass"),
         ("windows", "none", "RerunZeroMeansAllDeleted", 1, "pass"),
+        ("windows", "none", "RetryCompletes", 1, "pass"),
         ("posix", "skip-readback", "NoDeleteWithoutRecord", 0, "violated"),
         ("windows", "no-handle-check", "DeletesOnlyRecordedContent", 1, "violated"),
         ("posix", "trust-own-count", "CompletedMeansRunDeletedAll", 1, "violated"),
         ("posix", "rerun-without-result", "RerunZeroMeansAllDeleted", 1, "violated"),
+        ("windows", "count-from-filesystem", "FailedMeansNothingDeleted", 1, "violated"),
+        ("posix", "forget-removing", "FailedMeansNothingDeleted", 1, "violated"),
+        ("posix", "retry-same-record", "RetryCompletes", 0, "violated"),
     ]
 )
 
@@ -90,7 +95,7 @@ def run_all(java: str, jar: Path, out: Path) -> int:
         ok = actual == wanted
         mismatches += not ok
         label = "KNOWN FINDING" if ok and expected == "finding" else ("ok" if ok else "MISMATCH")
-        print(f"{label:13} {platform:7} {variant:20} {invariant:27} writers={writers} "
+        print(f"{label:13} {platform:7} {variant:21} {invariant:27} writers={writers} "
               f"expected {expected:8} got {actual} ({detail})")
     return 1 if mismatches else 0
 
