@@ -50,7 +50,7 @@ TLA+ action is one step of it:
 | `Retry` | the caller, as step 3 of agent-environment's `rules/generated-artifact-retention.rule.md` allows, running `run` again with the same targets and a new record path |
 
 Last confirmed against the code at agent-environment commit
-`85ea6fb542f116ee8348b87b2f02122a4deccc23`. Move this commit forward only after
+`828a361d69cb0b4722977e468dd51c455d0bc942`. Move this commit forward only after
 you have read every change to the covered functions since it and confirmed that
 the table and the model still describe the code.
 
@@ -59,7 +59,7 @@ the table and the model still describe the code.
 From the agent-environment checkout:
 
 ```sh
-git diff 85ea6fb542f116ee8348b87b2f02122a4deccc23 -- retention/guarded_delete.py rules/generated-artifact-retention.rule.md
+git diff 828a361d69cb0b4722977e468dd51c455d0bc942 -- retention/guarded_delete.py rules/generated-artifact-retention.rule.md
 ```
 
 Read the diff for the functions in the table, and for the retry wording in step
