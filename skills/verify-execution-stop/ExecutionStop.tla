@@ -13,25 +13,35 @@ CONSTANTS Mutation, Race, Prompts
 VARIABLES bound, active, interrupted, suspended, handoff, continuation,
           checkpoint, newTools, anyTools, resumed, managed, lastResume,
           turnOpen, out, ended, blockedNoTool, doubleBlock, userPaused,
-          lost, raced
+          review, raced
 
 vars == <<bound, active, interrupted, suspended, handoff, continuation,
           checkpoint, newTools, anyTools, resumed, managed, lastResume,
           turnOpen, out, ended, blockedNoTool, doubleBlock, userPaused,
-          lost, raced>>
+          review, raced>>
 
 \* The cache fields are the code's; the rest describe what the user did or saw:
 \*   ended         how the user's current request ended (ghost)
 \*   userPaused    the user interrupted or switched away and has not resumed (ghost)
 \*   blockedNoTool the last demand had no tool run or fresh resumption after it (ghost)
-\*   lost          this Stop's reviewer ran while an Interrupt landed (ghost)
+\* review holds the part of the pre-review cache the verdict branches still
+\* need. The remaining cache fields are stable while the review runs.
+ReviewSnapshot(phase, wasInterrupted, wasResumed, hadHandoff) ==
+  [phase |-> phase, interrupted |-> wasInterrupted, resumed |-> wasResumed,
+   handoff |-> hadHandoff]
+
+IdleReview == ReviewSnapshot("idle", FALSE, FALSE, FALSE)
+ReviewIdle == review.phase = "idle"
+
 TypeOK ==
   /\ {bound, active, interrupted, suspended, handoff, continuation, checkpoint,
       newTools, anyTools, resumed, managed, turnOpen, blockedNoTool, doubleBlock,
-      userPaused, lost} \subseteq BOOLEAN
+      userPaused} \subseteq BOOLEAN
   /\ lastResume \in {0} \cup Prompts
   /\ out \in {"none", "context", "silent", "handoff", "reasonless", "demand", "cancelNotice"}
   /\ ended \in {"none", "complete", "unmanaged", "cancelled"}
+  /\ review \in [phase : {"idle", "working", "interrupted"}, interrupted : BOOLEAN,
+                 resumed : BOOLEAN, handoff : BOOLEAN]
   /\ raced \in 0..Race
 
 Init ==
@@ -40,54 +50,54 @@ Init ==
   /\ newTools = FALSE /\ anyTools = FALSE /\ resumed = FALSE /\ managed = FALSE
   /\ lastResume = 0 /\ turnOpen = FALSE /\ out = "none" /\ ended = "none"
   /\ blockedNoTool = FALSE /\ doubleBlock = FALSE /\ userPaused = FALSE
-  /\ lost = FALSE /\ raced = 0
+  /\ review = IdleReview /\ raced = 0
 
-\* new_request (L71-76); a new binding has an empty receipt directory.
+\* new_request (L102-107); a new binding has an empty receipt directory.
 StartRequest ==
   /\ bound' = TRUE /\ active' = TRUE /\ interrupted' = FALSE /\ suspended' = FALSE
   /\ handoff' = FALSE /\ continuation' = FALSE /\ checkpoint' = FALSE
   /\ newTools' = FALSE /\ anyTools' = FALSE /\ resumed' = FALSE /\ managed' = FALSE
   /\ lastResume' = 0 /\ turnOpen' = TRUE /\ out' = "context" /\ ended' = "none"
   /\ blockedNoTool' = FALSE /\ userPaused' = FALSE
-  /\ UNCHANGED <<doubleBlock, lost, raced>>
+  /\ UNCHANGED <<doubleBlock, review, raced>>
 
 \* ---------- the user: UserPromptSubmit and Interrupt ----------
 
-\* L135-141, L153: a prompt with one Issue URL and no active request.
+\* L173-190: a prompt with one Issue URL and no active request.
 UserGivesIssue ==
-  /\ ~turnOpen
+  /\ ReviewIdle /\ ~turnOpen
   /\ ~bound \/ ~active
   /\ StartRequest
 
-\* L172-173: the classifier says replace.
+\* L209-210: the classifier says replace.
 UserPointsToOtherIssue ==
-  /\ ~turnOpen
+  /\ ReviewIdle /\ ~turnOpen
   /\ bound /\ active
   /\ StartRequest
 
-\* L135-139: no active request and no URL.
+\* L173-177: no active request and no URL.
 UserChats ==
-  /\ ~turnOpen
+  /\ ReviewIdle /\ ~turnOpen
   /\ ~bound \/ ~active
   /\ interrupted' = FALSE
   /\ turnOpen' = TRUE /\ out' = "none"
   /\ UNCHANGED <<bound, active, suspended, handoff, continuation, checkpoint,
                  newTools, anyTools, resumed, managed, lastResume, ended,
-                 blockedNoTool, doubleBlock, userPaused, lost, raced>>
+                 blockedNoTool, doubleBlock, userPaused, review, raced>>
 
-\* L177-179: the classifier says retain.
+\* L214-216: the classifier says retain.
 UserFollowsUp ==
-  /\ ~turnOpen
+  /\ ReviewIdle /\ ~turnOpen
   /\ bound /\ active
   /\ continuation' = FALSE
   /\ turnOpen' = TRUE /\ out' = "context"
   /\ UNCHANGED <<bound, active, interrupted, suspended, handoff, checkpoint,
                  newTools, anyTools, resumed, managed, lastResume, ended,
-                 blockedNoTool, doubleBlock, userPaused, lost, raced>>
+                 blockedNoTool, doubleBlock, userPaused, review, raced>>
 
-\* L177-183: the classifier says resume; a repeated prompt is not fresh.
+\* L214-220: the classifier says resume; a repeated prompt is not fresh.
 UserResumes ==
-  /\ ~turnOpen
+  /\ ReviewIdle /\ ~turnOpen
   /\ bound /\ active
   /\ \E p \in Prompts :
        LET fresh == (handoff \/ interrupted \/ suspended) /\ p # lastResume IN
@@ -98,130 +108,153 @@ UserResumes ==
   /\ continuation' = FALSE /\ userPaused' = FALSE
   /\ turnOpen' = TRUE /\ out' = "context"
   /\ UNCHANGED <<bound, active, checkpoint, newTools, anyTools, managed, ended,
-                 doubleBlock, lost, raced>>
+                 doubleBlock, review, raced>>
 
-\* L174-176: the classifier says suspend, or it failed (L163-166).
+\* L211-213: the classifier says suspend, or it failed (L201-203).
 UserSwitchesTask ==
-  /\ ~turnOpen
+  /\ ReviewIdle /\ ~turnOpen
   /\ bound /\ active
   /\ suspended' = TRUE /\ continuation' = FALSE /\ resumed' = FALSE
   /\ handoff' = TRUE /\ userPaused' = TRUE
   /\ turnOpen' = TRUE /\ out' = "context"
   /\ UNCHANGED <<bound, active, interrupted, checkpoint, newTools, anyTools,
-                 managed, lastResume, ended, blockedNoTool, doubleBlock, lost, raced>>
+                 managed, lastResume, ended, blockedNoTool, doubleBlock, review, raced>>
 
-\* L167-171: the classifier says cancel.
+\* L204-208: the classifier says cancel.
 UserCancels ==
-  /\ ~turnOpen
+  /\ ReviewIdle /\ ~turnOpen
   /\ bound /\ active
   /\ active' = IF Mutation = "cancel-keeps-active" THEN active ELSE FALSE
-  /\ interrupted' = TRUE /\ continuation' = FALSE
+  /\ interrupted' = (Mutation = "cancel-looks-interrupted") /\ continuation' = FALSE
   /\ handoff' = FALSE /\ ended' = "cancelled" /\ userPaused' = FALSE
   /\ turnOpen' = TRUE /\ out' = "none"
   /\ UNCHANGED <<bound, suspended, checkpoint, newTools, anyTools, resumed,
-                 managed, lastResume, blockedNoTool, doubleBlock, lost, raced>>
+                 managed, lastResume, blockedNoTool, doubleBlock, review, raced>>
 
-\* L120-125: Interrupt for the cached turn.
+\* L148-152: Interrupt for the cached turn.
 UserInterrupts ==
-  /\ turnOpen
-  /\ IF bound
+  /\ ReviewIdle /\ turnOpen
+  /\ IF bound /\ active
        THEN interrupted' = TRUE /\ resumed' = FALSE /\ handoff' = TRUE
        ELSE UNCHANGED <<interrupted, resumed, handoff>>
   /\ userPaused' = (userPaused \/ (bound /\ active))
   /\ turnOpen' = FALSE /\ out' = "none"
   /\ UNCHANGED <<bound, active, suspended, continuation, checkpoint, newTools,
                  anyTools, managed, lastResume, ended, blockedNoTool, doubleBlock,
-                 lost, raced>>
+                 review, raced>>
 
 \* ---------- the agent and the hook: PostToolUse and Stop ----------
 
-\* L195-200: a receipt for the current binding.
+\* L234-238: a receipt for the current binding.
 ToolRuns ==
-  /\ turnOpen
+  /\ ReviewIdle /\ turnOpen
   /\ bound /\ ~suspended /\ active
   /\ newTools' = TRUE /\ anyTools' = TRUE /\ blockedNoTool' = FALSE
   /\ UNCHANGED <<bound, active, interrupted, suspended, handoff, continuation,
                  checkpoint, resumed, managed, lastResume, turnOpen, out, ended,
-                 doubleBlock, userPaused, lost, raced>>
+                 doubleBlock, userPaused, review, raced>>
 
-PausedAtStop == interrupted /\ Mutation # "stop-ignores-interrupt"
+PausedAtStop ==
+  /\ interrupted /\ Mutation # "stop-ignores-interrupt"
+  /\ active \/ Mutation = "cancel-looks-interrupted"
 
-\* L188-191, L204: no request, suspended, or not active.
+\* L225-232: no request, suspended, or not active.
 StopQuietly ==
-  /\ turnOpen
+  /\ ReviewIdle /\ turnOpen
   /\ ~bound \/ suspended \/ (~PausedAtStop /\ ~active)
   /\ turnOpen' = FALSE /\ out' = "silent"
   /\ UNCHANGED <<bound, active, interrupted, suspended, handoff, continuation,
                  checkpoint, newTools, anyTools, resumed, managed, lastResume,
-                 ended, blockedNoTool, doubleBlock, userPaused, lost, raced>>
+                 ended, blockedNoTool, doubleBlock, userPaused, review, raced>>
 
-\* L202-203: an interrupted request stops with its cached handoff.
+\* L239-240: an interrupted request stops with its cached handoff.
 StopWhileInterrupted ==
-  /\ turnOpen
+  /\ ReviewIdle /\ turnOpen
   /\ bound /\ ~suspended /\ PausedAtStop
   /\ out' = IF handoff THEN "handoff" ELSE "reasonless"
   /\ turnOpen' = FALSE
   /\ UNCHANGED <<bound, active, interrupted, suspended, handoff, continuation,
                  checkpoint, newTools, anyTools, resumed, managed, lastResume,
-                 ended, blockedNoTool, doubleBlock, userPaused, lost, raced>>
+                 ended, blockedNoTool, doubleBlock, userPaused, review, raced>>
 
 Ready ==
-  /\ turnOpen
+  /\ ReviewIdle /\ turnOpen
   /\ bound /\ ~suspended /\ ~PausedAtStop /\ active
 
-\* L216-221: a demand was made and no receipt is new since.
+\* L260-261: a demand was made and no receipt is new since.
 StopNoNewEvidence ==
   /\ Ready
   /\ checkpoint /\ continuation /\ ~newTools
   /\ handoff' = TRUE /\ continuation' = FALSE /\ out' = "handoff" /\ turnOpen' = FALSE
   /\ UNCHANGED <<bound, active, interrupted, suspended, checkpoint, newTools,
                  anyTools, resumed, managed, lastResume, ended, blockedNoTool,
-                 doubleBlock, userPaused, lost, raced>>
+                 doubleBlock, userPaused, review, raced>>
 
-\* L222-267: the resolver and reviewer run, which takes seconds. When lost is
-\* TRUE, an Interrupt for this turn wrote the cache meanwhile; this Stop then
-\* writes back its own copy (write_state, L23-32), the turn has ended, and its
-\* output is not shown.
-Assess ==
+\* L141-144, L241, L262-288: the review runs on the cache read at Stop.
+StartStopReview ==
   /\ Ready
   /\ ~(checkpoint /\ continuation /\ ~newTools)
-  /\ \E l \in IF raced < Race THEN BOOLEAN ELSE {FALSE} :
-       /\ lost' = l
-       /\ raced' = raced + (IF l THEN 1 ELSE 0)
-       /\ userPaused' = (userPaused \/ l)
+  /\ review' = ReviewSnapshot("working", interrupted, resumed, handoff)
+  /\ UNCHANGED <<bound, active, interrupted, suspended, handoff, continuation,
+                 checkpoint, newTools, anyTools, resumed, managed, lastResume,
+                 turnOpen, out, ended, blockedNoTool, doubleBlock, userPaused, raced>>
+
+\* L148-152: Interrupt publishes a newer cache while the review is outside the lock.
+InterruptDuringReview ==
+  /\ review.phase = "working" /\ raced < Race
+  /\ interrupted' = TRUE /\ resumed' = FALSE /\ handoff' = TRUE
+  /\ turnOpen' = FALSE /\ out' = "none" /\ userPaused' = TRUE
+  /\ review' = [review EXCEPT !.phase = "interrupted"]
+  /\ raced' = raced + 1
+  /\ UNCHANGED <<bound, active, suspended, continuation, checkpoint, newTools,
+                 anyTools, managed, lastResume, ended, blockedNoTool, doubleBlock>>
+
+\* L242-245: a changed cache discards the assessment and its response.
+DiscardStopReview ==
+  /\ review.phase = "interrupted" /\ Mutation # "review-overwrites-interrupt"
+  /\ review' = IdleReview /\ out' = "silent"
+  /\ UNCHANGED <<bound, active, interrupted, suspended, handoff, continuation,
+                 checkpoint, newTools, anyTools, resumed, managed, lastResume,
+                 turnOpen, ended, blockedNoTool, doubleBlock, userPaused, raced>>
+
+ReviewWasInterrupted == review.phase = "interrupted"
+
+Assess ==
+  /\ review.phase = "working" \/ (ReviewWasInterrupted /\ Mutation = "review-overwrites-interrupt")
+  /\ review' = IdleReview /\ UNCHANGED <<raced, userPaused>>
   /\ resumed' = FALSE
   /\ checkpoint' = TRUE /\ newTools' = FALSE
 
-Show(o, open) ==
-  /\ out' = IF lost' THEN "none" ELSE o
-  /\ turnOpen' = (open /\ ~lost')
+Show(result, open) ==
+  /\ out' = IF ReviewWasInterrupted THEN "none" ELSE result
+  /\ turnOpen' = (open /\ ~ReviewWasInterrupted)
 
 HandOff ==
   /\ handoff' = TRUE /\ continuation' = FALSE /\ Show("handoff", FALSE)
-  /\ managed' = TRUE
-  /\ UNCHANGED <<bound, active, interrupted, suspended, anyTools, lastResume,
+  /\ managed' = TRUE /\ interrupted' = review.interrupted
+  /\ UNCHANGED <<bound, active, suspended, anyTools, lastResume,
                  ended, blockedNoTool, doubleBlock>>
 
-\* L268-279: continue with progress the hook accepts.
+\* L308-318: continue with progress the hook accepts.
 ReviewerContinueAccepted ==
   /\ Assess
-  /\ resumed \/ ~checkpoint \/ newTools \/ Mutation = "trust-advanced"
+  /\ review.resumed \/ ~checkpoint \/ newTools \/ Mutation = "trust-advanced"
   /\ continuation' = TRUE /\ Show("demand", TRUE) /\ managed' = TRUE
-  /\ doubleBlock' = (doubleBlock \/ (blockedNoTool /\ ~lost'))
-  /\ blockedNoTool' = ~lost'
-  /\ UNCHANGED <<bound, active, interrupted, suspended, handoff, anyTools,
-                 lastResume, ended>>
+  /\ doubleBlock' = (doubleBlock \/ (blockedNoTool /\ ~ReviewWasInterrupted))
+  /\ blockedNoTool' = ~ReviewWasInterrupted
+  /\ interrupted' = review.interrupted /\ handoff' = review.handoff
+  /\ UNCHANGED <<bound, active, suspended, anyTools, lastResume, ended>>
 
-\* L280-283: continue without accepted progress.
+\* L319-320: continue without accepted progress.
 ReviewerContinueWithoutProgress == Assess /\ HandOff
 
-\* L224-248, L280-283: the contract or the review fails, or says unverified.
+\* L262-288, L319-320: the contract or the review fails, or says unverified.
 ReviewerUnverified == Assess /\ HandOff
 
-\* L289-291: stopped as blocked.
+\* L325: stopped as blocked.
 ReviewerBlocked == Assess /\ HandOff
 
-\* L284-288: stopped as cancelled.
+\* L321-324: stopped as cancelled.
 ReviewerCancelled ==
   /\ Assess
   /\ active' = FALSE /\ interrupted' = FALSE /\ continuation' = FALSE
@@ -229,32 +262,33 @@ ReviewerCancelled ==
   /\ managed' = TRUE
   /\ UNCHANGED <<bound, suspended, anyTools, lastResume, blockedNoTool, doubleBlock>>
 
-\* L292-298: complete, backed by some receipt (L251).
+\* L326-331: complete, backed by some receipt (L291).
 ReviewerComplete ==
   /\ Assess
   /\ anyTools \/ Mutation = "complete-without-receipts"
   /\ continuation' = FALSE /\ ended' = "complete"
   /\ active' = IF Mutation = "complete-keeps-active" THEN active ELSE FALSE
   /\ managed' = TRUE /\ Show("silent", FALSE)
-  /\ UNCHANGED <<bound, interrupted, suspended, handoff, anyTools, lastResume,
-                 blockedNoTool, doubleBlock>>
+  /\ interrupted' = review.interrupted /\ handoff' = review.handoff
+  /\ UNCHANGED <<bound, suspended, anyTools, lastResume, blockedNoTool, doubleBlock>>
 
-\* L251-256: complete with no receipt becomes unverified.
+\* L291-296: complete with no receipt becomes unverified.
 ReviewerCompleteWithoutEvidence ==
   /\ Assess
   /\ ~anyTools /\ Mutation # "complete-without-receipts"
   /\ HandOff
 
-\* L292-298: unmanaged before any managed verdict.
+\* L326-331: unmanaged before any managed verdict.
 ReviewerUnmanaged ==
   /\ Assess
   /\ ~managed
   /\ continuation' = FALSE /\ active' = FALSE /\ ended' = "unmanaged"
   /\ Show("silent", FALSE)
-  /\ UNCHANGED <<bound, interrupted, suspended, handoff, anyTools, managed,
-                 lastResume, blockedNoTool, doubleBlock>>
+  /\ interrupted' = review.interrupted /\ handoff' = review.handoff
+  /\ UNCHANGED <<bound, suspended, anyTools, managed, lastResume,
+                 blockedNoTool, doubleBlock>>
 
-\* L257-262: unmanaged after a managed verdict becomes unverified.
+\* L297-302: unmanaged after a managed verdict becomes unverified.
 ReviewerUnmanagedAfterWork ==
   /\ Assess
   /\ managed
@@ -266,6 +300,7 @@ User ==
 
 System ==
   \/ ToolRuns \/ StopQuietly \/ StopWhileInterrupted \/ StopNoNewEvidence
+  \/ StartStopReview \/ InterruptDuringReview \/ DiscardStopReview
   \/ ReviewerContinueAccepted \/ ReviewerContinueWithoutProgress
   \/ ReviewerUnverified \/ ReviewerBlocked \/ ReviewerCancelled
   \/ ReviewerComplete \/ ReviewerCompleteWithoutEvidence

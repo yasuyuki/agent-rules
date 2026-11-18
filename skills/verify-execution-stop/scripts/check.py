@@ -22,7 +22,7 @@ INVARIANTS = ["NoDemandWhilePaused", "NoCompleteWithoutEvidence", "NoRepeatedDem
 # (variant, invariant, race, expected). race is how many Interrupts may land
 # while a Stop's reviewer runs. Use "finding" for a violation of the current
 # code that is reported, not hidden; it turns into a mismatch once fixed.
-FINDINGS = {(0, "EveryStopHasReason"), (1, "EveryStopHasReason"), (1, "NoDemandWhilePaused")}
+FINDINGS: set[tuple[int, str]] = set()
 RUNS = (
     [("none", inv, race, "finding" if (race, inv) in FINDINGS else "pass")
      for race in (0, 1) for inv in INVARIANTS]
@@ -32,6 +32,8 @@ RUNS = (
         ("trust-advanced", "NoRepeatedDemandWithoutEvidence", 0, "violated"),
         ("cancel-keeps-active", "CancelledNeverContinues", 0, "violated"),
         ("complete-keeps-active", "NoHandoffAfterFinish", 0, "violated"),
+        ("cancel-looks-interrupted", "EveryStopHasReason", 0, "violated"),
+        ("review-overwrites-interrupt", "NoDemandWhilePaused", 1, "violated"),
     ]
 )
 
