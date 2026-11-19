@@ -1,14 +1,15 @@
 ---
 name: verify-funkot-player
-description: Verify Funkot Player's playlist removal and Undo requests through its browser UI, with synthetic IPC, retained screenshots, and isolated cleanup. Use for frontend verification, not native playback or persistence acceptance.
+description: Verify Funkot Player's playlist occurrence removal with Undo and deletion of the displayed source playlist through its browser UI, with synthetic IPC, retained screenshots, and isolated cleanup. Use for frontend verification, not native playback or persistence acceptance.
 license: MIT
 ---
 
 # Verify Funkot Player
 
-Verified on Linux with Codex against player revision `666fc4b`, including a
-fresh-session replay and a wrong-Undo-response challenge. Each future run
-requires its own evidence; this result does not certify another revision.
+Verified on Linux with Claude Code against player revision `1a3d3f2` for both
+features. The fresh-session replay and wrong-Undo-response challenge ran with
+Codex at `666fc4b`. Each future run requires its own evidence; this result does
+not certify another revision.
 
 Use an explicitly selected `funkot-player` checkout. Read its `AGENTS.md`,
 `CONTEXT.md`, `.claude/skills/ui-design/SKILL.md`, and `docs/ui-design.md`.
@@ -46,15 +47,16 @@ uses the existing `npm run ui:capture` entry. Playwright owns its fresh browser
 and Vite server on loopback port 1422. Its configuration refuses a borrowed
 server. The helper clears inherited Tauri host overrides for this run.
 
-Read [the selected feature](features/playlist-undo.md) before Drive. Expectations
-are saved before launch. The helper checks both configured viewports, exact test
-identity, assertion results, and screenshot files. It retains the JSON report,
+Read every feature in [the index](features/README.md) before Drive. One capture
+run drives all of them. Expectations are saved before launch. The helper checks
+both configured viewports, exact test identity, assertion results, and one
+screenshot file per feature and viewport. It retains the JSON report,
 command logs, input hashes, and screenshots outside scratch state.
 
 ## Judge and clean up
 
 Read the printed `result.json`. Check `feature_result`, `cleanup.ok`, and the
-referenced artifacts after cleanup. Inspect both screenshots against the target's
+referenced artifacts after cleanup. Inspect every screenshot against the target's
 UI review criteria and write findings in the same evidence directory. The helper
 does not claim visual approval from a successful capture.
 

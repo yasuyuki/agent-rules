@@ -15,13 +15,9 @@ In the selected checkout, inspect these existing sources before running:
 - `docs/ui-design.md`, browser verification and native boundary.
 - `README.md`, the named playlist's saved order and playback position.
 
-The helper runs this exact existing entry in its isolated frontend copy:
-
-```sh
-npm run ui:capture -- tests/ui/queue-ui.spec.mjs \
-  --grep 'playlist removal keeps Undo and a poll retains the selected occurrence' \
-  --reporter=json --output "$run_evidence/results"
-```
+The helper runs this test in its isolated frontend copy through one existing
+`npm run ui:capture` invocation that names every feature's spec file and joins
+the exact titles in `--grep`, with `--reporter=json --output "$run_evidence/results"`.
 
 `PLAYWRIGHT_JSON_OUTPUT_NAME` points to that run's `playwright.json`.
 Preparation and readiness are owned by `playwright.config.mjs`. Vite serves

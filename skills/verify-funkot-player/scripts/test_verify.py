@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 
-from verify import TITLE, judge
+from verify import FEATURES, judge
 
 
 class EvidenceTests(unittest.TestCase):
@@ -15,12 +15,12 @@ class EvidenceTests(unittest.TestCase):
             evidence = Path(directory).resolve()
             image = evidence / "capture.jpg"
             image.write_bytes(b"synthetic detector fixture")
-            report = {"suites": [{"specs": [{"title": TITLE, "ok": True, "tests": [
+            report = {"suites": [{"specs": [{"title": title, "ok": True, "tests": [
                 {"projectName": project, "status": "expected", "results": [{"status": "passed", "attachments": [
-                    {"name": "playlist-undo", "path": str(image)}]}]}
-                for project in ("desktop", "narrow")]}]}]}
-            self.assertEqual(judge(report, evidence), [str(image), str(image)])
-            for mutation in ("missing", "skipped", "wrong", "retry", "error"):
+                    {"name": feature["capture"], "path": str(image)}]}]}
+                for project in ("desktop", "narrow")]} for title, feature in FEATURES.items()]}]}
+            self.assertEqual(judge(report, evidence), [str(image)] * 2 * len(FEATURES))
+            for mutation in ("missing", "skipped", "wrong", "retry", "error", "feature-absent", "capture-swapped"):
                 bad = copy.deepcopy(report)
                 spec = bad["suites"][0]["specs"][0]
                 if mutation == "missing":
@@ -31,6 +31,10 @@ class EvidenceTests(unittest.TestCase):
                     spec["title"] = "help screen exits zero"
                 elif mutation == "retry":
                     spec["tests"][0]["results"] *= 2
+                elif mutation == "feature-absent":
+                    bad["suites"][0]["specs"].pop()
+                elif mutation == "capture-swapped":
+                    spec["tests"][0]["results"][0]["attachments"][0]["name"] = "unrelated"
                 else:
                     bad["errors"] = [{"message": "server error"}]
                 with self.subTest(mutation=mutation), self.assertRaises(ValueError):

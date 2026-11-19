@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -16,7 +17,14 @@ import tempfile
 from datetime import datetime, timezone
 
 
-TITLE = "playlist removal keeps Undo and a poll retains the selected occurrence"
+FEATURES = {
+    "playlist removal keeps Undo and a poll retains the selected occurrence": {
+        "spec": "tests/ui/queue-ui.spec.mjs", "capture": "playlist-undo",
+        "expect": [{"kind": "remove", "id": "night", "entry_id": "a"}, {"kind": "undo_remove", "undo_id": "undo-1"}]},
+    "the displayed source list is deleted from its menu and the dialog explains the switch and failures": {
+        "spec": "tests/ui/playlist.spec.mjs", "capture": "delete-source-failure",
+        "expect": [{"kind": "delete", "id": "night", "confirm_name": "Night set with an intentionally very long name"}] * 2},
+}
 INPUTS = ["src", "tests/ui", "index.html", "package.json", "package-lock.json",
           "playwright.config.mjs", "svelte.config.js", "tsconfig.json", "vite.config.ts"]
 NOT_RUN = ["native IPC", "disk persistence and restart", "audio", "OS dialogs",
@@ -34,27 +42,28 @@ def port_free():
 
 
 def judge(report, evidence):
-    tests = []
+    tests = {title: [] for title in FEATURES}
 
     def visit(suites):
         for suite in suites:
             for spec in suite.get("specs", []):
-                if spec.get("title") != TITLE or not spec.get("ok"):
+                if spec.get("title") not in tests or not spec.get("ok"):
                     raise ValueError("Wrong or failed test identity")
-                tests.extend(spec.get("tests", []))
+                tests[spec["title"]].extend(spec.get("tests", []))
             visit(suite.get("suites", []))
 
     visit(report.get("suites", []))
-    if report.get("errors") or sorted(t.get("projectName", "") for t in tests) != ["desktop", "narrow"]:
-        raise ValueError("Expected one desktop and one narrow test, without report errors")
+    if report.get("errors") or any(sorted(t.get("projectName", "") for t in found) != ["desktop", "narrow"] for found in tests.values()):
+        raise ValueError("Expected one desktop and one narrow test per feature, without report errors")
     artifacts = []
-    for test in tests:
+    for title, test in ((t, x) for t, found in tests.items() for x in found):
         results = test.get("results", [])
         if test.get("status") != "expected" or len(results) != 1 or results[0].get("status") != "passed":
             raise ValueError("Skipped, retried, or unsuccessful test")
-        captures = [a for a in results[0].get("attachments", []) if a.get("name") == "playlist-undo"]
+        name = FEATURES[title]["capture"]
+        captures = [a for a in results[0].get("attachments", []) if a.get("name") == name]
         if len(captures) != 1:
-            raise ValueError("Missing unique playlist-undo screenshot")
+            raise ValueError(f"Missing unique {name} screenshot")
         path = Path(captures[0]["path"]).resolve()
         if not path.is_relative_to(evidence.resolve()) or not path.is_file() or path.stat().st_size == 0:
             raise ValueError("Screenshot is missing or outside retained evidence")
@@ -77,9 +86,9 @@ def main():
     evidence = Path(tempfile.mkdtemp(prefix="funkot-browser-", dir=evidence_root))
     record = {
         "started_at": datetime.now(timezone.utc).isoformat(), "agent": args.agent,
-        "repo": str(repo), "evidence": str(evidence), "feature": TITLE,
-        "expectations": {"projects": ["desktop", "narrow"], "remove": {"kind": "remove", "id": "night", "entry_id": "a"},
-                         "undo": {"kind": "undo_remove", "undo_id": "undo-1"}, "undo_button_after": "absent"},
+        "repo": str(repo), "evidence": str(evidence), "features": list(FEATURES),
+        "expectations": {"projects": ["desktop", "narrow"],
+                         "playlist_commands": {title: f["expect"] for title, f in FEATURES.items()}},
         "feature_result": "not-run", "not_run": NOT_RUN, "commands": [], "artifacts": [],
         "cleanup": {"ok": False}, "owned": {},
         "helper_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -149,7 +158,9 @@ def main():
             run(["npx", "--no-install", "playwright", "install", "chromium"], scratch)
             run(["node", "--input-type=module", "-e", "import { chromium } from '@playwright/test'; const browser = await chromium.launch(); await browser.close();"], scratch)
             record["feature_result"] = "fail"
-            run(["npm", "run", "ui:capture", "--", "tests/ui/queue-ui.spec.mjs", "--grep", TITLE, "--reporter=json", "--output", str(evidence / "results")], scratch)
+            specs = sorted({f["spec"] for f in FEATURES.values()})
+            grep = "|".join(re.escape(title) for title in FEATURES)
+            run(["npm", "run", "ui:capture", "--", *specs, "--grep", grep, "--reporter=json", "--output", str(evidence / "results")], scratch)
             record["artifacts"] = judge(json.loads((evidence / "playwright.json").read_text()), evidence)
             record["feature_result"] = "pass"
             record["result"] = "pass"
