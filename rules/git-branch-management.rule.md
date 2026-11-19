@@ -13,6 +13,9 @@ task/topic/worktree を再利用する。独立して並行更新する成果物
 workspace 契約の owner は独立 package `workspace-lifecycle`。採用済み環境の明示入口を使い、
 新 source の install を旧 registry・hook の切替許可にしない。未移行 consumer は固定済み旧 source を
 使い続ける。操作契約は採用版 CLI の help に従い、登録や許可を host 間で移さない。
+funkot-player と funkot-autodj（`feat/player-ui`）の新しい task は、Windows の session で
+`wl`（workspace-lifecycle-native）を使って始める。切替より前に始めた task は、
+workspace-lifecycle のまま完了か退役まで進める。
 
 同じ作業の Git 更新と、変更の所有・受入・統合の判断は lead が担う。
 完了した所有変更は秘密・ユーザーデータ・他者成果を除いて保存し、受入済みの正確な
