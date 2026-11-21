@@ -15,7 +15,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parents[1]
 SPEC = HERE / "PlacementRouting.tla"
 TLC_SHA256 = "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
-INVARIANTS = ["PlacementNeverStalls", "SourceEditedOnDevelopment"]
+INVARIANTS = ["PlacementNeverStalls", "NoNewSessionOnDevelopment"]
 CONTROLLER = "windows-controller"
 MODEL_ENVS = {CONTROLLER, "ubuntu-operator", "ubuntu-26-development"}
 
@@ -23,11 +23,11 @@ MODEL_ENVS = {CONTROLLER, "ubuntu-operator", "ubuntu-26-development"}
 # for a violation of the current rule that is reported, not hidden.
 FINDINGS: set[tuple[str, str]] = set()
 RUNS = (
-    [("by-target", inv, "finding" if ("by-target", inv) in FINDINGS else "pass")
+    [("windows-sessions", inv, "finding" if ("windows-sessions", inv) in FINDINGS else "pass")
      for inv in INVARIANTS + ["deadlock"]]
     + [
         ("by-repo-kind", "PlacementNeverStalls", "violated"),
-        ("controller-edits", "SourceEditedOnDevelopment", "violated"),
+        ("by-target", "NoNewSessionOnDevelopment", "violated"),
     ]
 )
 
