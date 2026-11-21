@@ -901,7 +901,18 @@ def main() -> int:
         shutil.rmtree(root, ignore_errors=True)
         # The disposable VM owns final workspace cleanup. Never use deletion as
         # evidence that the same-workspace rollback succeeded.
-    return 0 if result["status"] == "pass" else 1
+    if result["status"] == "pass":
+        return 0
+    auth_statuses = sorted({
+        call["response_http_status"] for call in result.get("codex_wire_metadata", [])
+        if call["response_http_status"] in (401, 403)
+    })
+    auth_detail = (
+        " codex_auth_http=" + ",".join(map(str, auth_statuses)) if auth_statuses else ""
+    )
+    print(f"Native E2E status={result['status']} phase={result['phase']}{auth_detail}",
+          file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":
