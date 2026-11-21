@@ -20,9 +20,21 @@ workspace-lifecycle のまま完了か退役まで進める。
 同じ作業の Git 更新と、変更の所有・受入・統合の判断は lead が担う。
 完了した所有変更は秘密・ユーザーデータ・他者成果を除いて保存し、受入済みの正確な
 内容を依存順に登録統合先から実際の remote default まで通常統合する。topic の保存だけで完了にしない。
+Target integration は登録した統合先に届いた状態を指す。Issue は **Default integration**、
+つまり受入済み成果が repository の remote default branch に届いたことを確認してから close する。
+統合先が feature branch の場合は、その成果を default branch に届けてから close する。
 
 同名 remote の取込み、別 clone/host との担当の引継ぎ、dirty の解消、checkout の退役を行うときは
 skill `git-topic-lifecycle` を読む。
 
 cherry-pick、rebase、reset、force push、履歴書換えの既存承認境界を守る。既存 hook の無効化・
 上書きや新旧 writer の並行採用を統合・移行の代用にしない。
+
+## task 完了時の checkout 退役
+
+- legacy workspace-lifecycle は task worktree の外から `retire --users-released` を実行し、
+  `reclaim --preservation-evidence <統合 commit の URL>` で recovery copy を回収する。
+  worktree 内から実行した `finish` の退役は pending のまま残る。
+- `wl` は `wl retire` または `wl finish --retire` で slot を空ける。recovery copy の回収手順はない。
+  `wl finish --retire` を呼んだ session はその task の作業を終了する。続ける作業は新しい
+  `wl begin` で始める。
