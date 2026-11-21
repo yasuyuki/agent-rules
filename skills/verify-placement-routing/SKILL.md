@@ -43,7 +43,7 @@ every target". `TypeOK` guards the model itself.
 route or environment fails the run until the model is updated.
 
 Last confirmed against work-records `6c01142b4fdd010c19fa7699175011fd888ef393`, agent-rules
-`@AGENT_RULES_COMMIT@` and agent-environment `5da2541`. Move a commit forward
+`ae8ab0ad45fa14a5c1fed0e42629ecdebc1ee549` and agent-environment `5da2541`. Move a commit forward
 only after you have read every change to the covered text and code since it
 and confirmed that the table and the model still describe it.
 
@@ -51,7 +51,7 @@ and confirmed that the table and the model still describe it.
 
 ```sh
 git -C <work-records> diff 6c01142b4fdd010c19fa7699175011fd888ef393 -- README.md rules/rulesync/windows-controller/rules/workspace.md
-git -C <agent-rules> diff @AGENT_RULES_COMMIT@ -- skills/maintain-environment-inventory
+git -C <agent-rules> diff ae8ab0ad45fa14a5c1fed0e42629ecdebc1ee549 -- skills/maintain-environment-inventory
 git -C <agent-environment> diff 5da2541 -- pstack/environments.json pstack/sync.py
 ```
 
