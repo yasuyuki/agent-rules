@@ -11,6 +11,17 @@ case "$scenario" in
   *) exit 2 ;;
 esac
 
+phase=isolated-user
+failure_reason='see the setup step log'
+report_setup_failure() {
+  local status=$?
+  if (( status != 0 )) && [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    printf 'Native E2E setup failed at `%s` (exit %d): %s.\n' \
+      "$phase" "$status" "$failure_reason" >> "$GITHUB_STEP_SUMMARY"
+  fi
+}
+trap report_setup_failure EXIT
+
 sudo useradd --create-home --shell /bin/bash native-e2e
 sudo chmod 700 /home/native-e2e
 sudo chmod -R o-rwx "$GITHUB_WORKSPACE"
@@ -62,6 +73,7 @@ except (urllib.error.URLError, TimeoutError):
     print(f'{vendor} model preflight network failure', file=sys.stderr)
 PY
 done
+phase=prepare-cli-install
 cd /tmp
 tools_root=/opt/agent-rules-native-tools
 sudo install -d -m 755 -o "$(id -un)" "$tools_root"
@@ -69,6 +81,7 @@ export HOME="$tools_root"
 export PATH="$tools_root/.local/bin:$tools_root/npm/bin:$PATH"
 
 for vendor in "${vendors[@]}"; do
+  phase="${vendor}-cli-install"
   case "$vendor" in
     claude)
       npm install --global --prefix "$tools_root/npm" @anthropic-ai/claude-code@2.1.283
@@ -77,17 +90,30 @@ for vendor in "${vendors[@]}"; do
       model=$claude_model
       ;;
     codex)
+      phase=codex-sandbox-packages
       sudo apt-get update -qq
-      sudo apt-get install -y -qq bubblewrap apparmor-profiles apparmor-utils
-      sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
-        /etc/apparmor.d/bwrap-userns-restrict
-      sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+      sudo apt-get install -y -qq bubblewrap apparmor
+      phase=codex-sandbox-profile
+      profile=/etc/apparmor.d/bwrap-userns-restrict
+      if [[ ! -r "$profile" ]]; then
+        sudo apt-get install -y -qq apparmor-profiles
+        extra_profile=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+        if [[ ! -r "$extra_profile" ]]; then
+          failure_reason='Ubuntu packages did not provide the bubblewrap AppArmor profile'
+          printf '%s\n' "$failure_reason" >&2
+          exit 1
+        fi
+        sudo install -m 0644 "$extra_profile" "$profile"
+      fi
+      sudo apparmor_parser -r "$profile"
+      phase=codex-sandbox-probe
       if ! sudo -n -u native-e2e bwrap --unshare-user --ro-bind / / \
           --tmpfs /tmp --dev-bind /dev /dev --proc /proc --chdir /tmp \
           -- /usr/bin/python3 -c 'print(1)' >/dev/null 2>&1; then
         echo 'Codex Linux sandbox prerequisite failed for isolated user' >&2
         exit 1
       fi
+      phase=codex-cli-install
       npm install --global --prefix "$tools_root/npm" @openai/codex@0.157.1
       cli="$tools_root/npm/bin/codex"
       expected='codex-cli 0.157.1'
@@ -132,14 +158,17 @@ for vendor in "${vendors[@]}"; do
   fi
 done
 
+phase=checkout-isolation
 if sudo -n -u native-e2e test -r "$GITHUB_WORKSPACE"; then
   echo 'probe user can read the source checkout' >&2
   exit 1
 fi
 
 if [[ " ${vendors[*]} " == *' codex '* ]]; then
+  phase=codex-cli-login
   printf '%s' "$OPENAI_API_KEY" | sudo -n -u native-e2e env HOME=/home/native-e2e \
     "$tools_root/npm/bin/codex" login --with-api-key >/dev/null
+  phase=codex-model-catalog
   sudo -n -u native-e2e env HOME=/home/native-e2e CODEX_HOME=/home/native-e2e/.codex \
     python3 - "$tools_root/npm/bin/codex" <<'PY'
 import json
