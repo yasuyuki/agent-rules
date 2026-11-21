@@ -20,6 +20,15 @@ against capability evidence. OS/distro names and active state do not establish
 those facts; unknown remains unknown and cannot justify selection or a
 contract-changing preparation.
 
+For work that changes placement or state, list every environment it must
+update. Select a starting environment whose recorded routes reach each of
+them; an environment without a recorded route reaches only itself. Purpose
+does not override this: when the editing environment cannot reach a target,
+start where the routes start and use the binding's delegation route for the
+source work. Name an environment to the user or another agent by its catalog
+`id`, with its entry point when they must act there, never only by an OS,
+host role or label such as "normal Linux".
+
 Repurposing a named environment is a change, not a fallback. Preserve its other
 purposes unless their removal is requested or necessary for the requested isolation.
 Choose among
