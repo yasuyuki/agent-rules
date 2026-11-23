@@ -62,11 +62,16 @@ registry.
 Register every installed supported CLI, including the constructing agent, from
 declared descriptors and installation locations; placement `absent` does not
 mean its CLI is absent. Deliver this skill and its conditional binding to every
-registered agent through `place.py apply/check`. Use native discovery where it
+registered agent through the writer that the site's placement instructions
+name. A site migrated to Rulesync (its output root holds
+`.rulesync-ownership.json`) uses `agent-rules apply/check --config <its config>`;
+never run `place.py apply/check/adopt` there. Only a site not yet migrated uses
+`place.py apply/check`. Use native discovery where it
 exists, otherwise the managed always-read reference; an agent with neither is
 incomplete. Never overwrite unmanaged skill directories.
 
-Run full affected-site readiness with
+On a Rulesync site, check readiness with `agent-rules check` and native
+discovery. On a site not yet migrated, run full affected-site readiness with
 `place.py check --declaration <D> --site <S> --readiness`; use ordinary
 `check` for partial placement. Readiness resolves the site's binding and checks
 the registered environment contract; it is not session-behavior acceptance. On
