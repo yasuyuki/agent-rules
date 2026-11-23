@@ -313,8 +313,8 @@ CLI in that environment; it is broader than normal start and cannot be narrowed
 to one workspace. It neither changes state nor proves successful agent work.
 
 For versioned declarations, add a reviewed CLI descriptor and locations, then
-run `inventory declare-agent` in the registered topic tracking the declaration
-and catalog. It registers that CLI as pending; it does not install it. Save and
+run `inventory declare-agent` in the slot of the `wl` task that tracks the
+declaration and catalog. It registers that CLI as pending; it does not install it. Save and
 integrate the declaration through normal Git work before runtime adoption.
 On the selected runtime use its existing saved inputs:
 
