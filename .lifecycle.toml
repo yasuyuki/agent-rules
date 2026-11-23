@@ -1,0 +1,7 @@
+# Read by wl (workspace-lifecycle-native) from the commit a finish accepted.
+# The required checks in .github/required-checks.json run the tests on GitHub
+# runners; the documentation check is not among them, so it runs here.
+
+[[validation]]
+argv = ["python3", "tests/docs_check.py"]
+where = "any"
